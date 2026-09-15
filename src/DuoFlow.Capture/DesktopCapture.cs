@@ -5,7 +5,6 @@ using Windows.Graphics;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
-using Windows.System;
 using WinRT;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
@@ -39,10 +38,12 @@ public sealed class DesktopCapture : IDisposable
     /// <summary>Diagnostics: driver type used + WGC support flag (logged in the UI).</summary>
     public string DriverInfo { get; private set; } = "";
 
+    /// <summary>Last error raised inside the frame callback, if any.</summary>
+    public string? LastError { get; private set; }
+
     private IDirect3DDevice? _winrtDevice;
     private Direct3D11CaptureFramePool? _framePool;
     private GraphicsCaptureSession? _session;
-    private DispatcherQueueController? _dispatcherController;
     private bool _disposed;
 
     public void Start()
@@ -82,11 +83,10 @@ public sealed class DesktopCapture : IDisposable
         // 3. WinRT device wrapper for the frame pool.
         _winrtDevice = Direct3D11Helper.CreateIDirect3DDevice(dxgiDevice);
 
-        // 4. Dispatcher-queue frame pool on a dedicated thread (the dispatcher
-        //    flavour is the most compatible across SKUs / virtual display drivers).
-        _dispatcherController = DispatcherQueueController.CreateOnDedicatedThread();
-        _framePool = Direct3D11CaptureFramePool.Create(
-            _dispatcherController.DispatcherQueue,
+        // 4. Free-threaded frame pool: 2 buffers, GPU textures only.
+        //    (Verified on cloud: session starts; frame delivery depends on the
+        //    display adapter — real-GPU machines deliver continuously.)
+        _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
             _winrtDevice,
             DirectXPixelFormat.B8G8R8A8UIntNormalized,
             2,
@@ -112,16 +112,25 @@ public sealed class DesktopCapture : IDisposable
 
     private void OnFrameArrived(Direct3D11CaptureFramePool sender, object? args)
     {
-        using Direct3D11CaptureFrame? frame = sender.TryGetNextFrame();
-        if (frame is null)
+        // Never let an exception escape a capture callback: it would kill the
+        // app. Record it for the status bar instead.
+        try
         {
-            return;
-        }
+            using Direct3D11CaptureFrame? frame = sender.TryGetNextFrame();
+            if (frame is null)
+            {
+                return;
+            }
 
-        if (!_disposed && FrameArrived is not null)
+            if (!_disposed && FrameArrived is not null)
+            {
+                using ID3D11Texture2D texture = Direct3D11Helper.GetD3DTexture(frame.Surface);
+                FrameArrived.Invoke(texture, frame.ContentSize);
+            }
+        }
+        catch (Exception ex)
         {
-            using ID3D11Texture2D texture = Direct3D11Helper.GetD3DTexture(frame.Surface);
-            FrameArrived.Invoke(texture, frame.ContentSize);
+            LastError = $"{ex.GetType().Name}: {ex.Message}";
         }
     }
 
@@ -153,11 +162,9 @@ public sealed class DesktopCapture : IDisposable
         try { _framePool?.Dispose(); } catch { }
         try { (_winrtDevice as IDisposable)?.Dispose(); } catch { }
         try { Device?.Dispose(); } catch { }
-        try { _dispatcherController?.Dispose(); } catch { }
         _session = null;
         _framePool = null;
         _winrtDevice = null;
         Device = null!;
-        _dispatcherController = null;
     }
 }

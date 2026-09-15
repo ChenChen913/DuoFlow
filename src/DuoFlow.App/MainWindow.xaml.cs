@@ -54,9 +54,12 @@ public sealed partial class MainWindow : Window
                 long now = _renderer.PresentedFrames;
                 long fps = now - _lastFrameCount;
                 _lastFrameCount = now;
-                string noFrameHint = (now == 0 && _ticks++ >= 5)
-                    ? " · ⚠ 云端虚拟显卡未产生帧（真机正常）"
+                string noFrameHint = _ticks >= 5
+                    ? (_capture.LastError is not null
+                        ? $" · ⚠ 帧回调异常：{_capture.LastError}"
+                        : " · ⚠ 会话已启动但无帧送达（云端虚拟显卡限制，真机待验证）")
                     : "";
+                _ticks++;
                 UpdateStatus(
                     $"捕获中：{_capture.MonitorDescription} · {size.Width}×{size.Height} · " +
                     $"GPU texture · {_capture.DriverInfo} · {fps} FPS · 已捕获 {now} 帧{noFrameHint}");
