@@ -1,0 +1,47 @@
+# Build artifacts
+bin/
+obj/
+build/
+out/
+publish/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Rider
+.idea/
+
+# Windows App / MSIX
+AppPackages/
+BundleArtifacts/
+*.appx
+*.msix
+*.appxbundle
+*.msixupload
+*.appxupload
+
+# Compiled shader output
+shaders/bin/
+*.cso
+*.pdb
+
+# Test results
+TestResults/
+[Ll]ogs/
+
+# User config
+config/user.json
+config/calibration/*.json
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets & credentials — never commit
+*.env
+*.pfx
+*.snk
