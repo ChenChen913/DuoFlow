@@ -63,6 +63,35 @@ public static class OverlayNative
     [DllImport("dwmapi.dll")]
     private static extern int DwmExtendFrameIntoClientArea(IntPtr hWnd, ref MARGINS pMarInset);
 
+    // ---- Classic Win32 monitor enumeration (avoids the DisplayArea.FindAll
+    //      WinRT projection, which throws InvalidCastException on some
+    //      Windows App SDK versions) ----
+
+    public const uint MONITOR_DEFAULTTONEAREST = 2;
+    public const uint MONITORINFOF_PRIMARY = 1;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MONITORINFO
+    {
+        public int cbSize;
+        public RECT rcMonitor;
+        public RECT rcWork;
+        public uint dwFlags;
+    }
+
+    public delegate bool MonitorEnumProc(
+        IntPtr hMonitor, IntPtr hdcMonitor, ref RECT lprcMonitor, IntPtr dwData);
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll")]
+    public static extern bool EnumDisplayMonitors(
+        IntPtr hdc, IntPtr lprcClip, MonitorEnumProc lpfnEnum, IntPtr dwData);
+
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
+    public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
     public static long GetExStyle(IntPtr hwnd)
         => IntPtr.Size == 8
             ? GetWindowLongPtr64(hwnd, GWL_EXSTYLE).ToInt64()

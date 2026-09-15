@@ -1,7 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text.Json;
-using Microsoft.UI.Windowing;
 
 namespace DuoFlow.App;
 
@@ -31,13 +32,17 @@ public sealed class OverlayReport
     public double CaptureFps { get; set; }
     public string CaptureState { get; set; } = "unknown";
 
-    public System.Collections.Generic.List<string> Warnings { get; set; } = new();
+    public List<string> Warnings { get; set; } = new();
 }
 
 /// <summary>
 /// Collects the overlay window properties (styles are read back from the
 /// actual Win32 window, not from our intentions) and persists the smoke
 /// result for the CI acceptance gate.
+///
+/// Every section is fault-isolated: a projection glitch in one section must
+/// not void the whole report (CI asserts on the booleans, warnings explain
+/// what could not be read).
 /// </summary>
 public static class OverlayProbe
 {
@@ -46,45 +51,111 @@ public static class OverlayProbe
         var report = new OverlayReport();
         if (overlay is null)
         {
-            return report; // OverlayCreated = false
+            Trace.Log("probe: overlay is null");
+            return report;
         }
 
         report.OverlayCreated = true;
 
-        IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(overlay);
-        long ex = OverlayNative.GetExStyle(hwnd);
-        report.Topmost = (ex & OverlayNative.WS_EX_TOPMOST) != 0;
-        report.ClickThrough = (ex & OverlayNative.WS_EX_TRANSPARENT) != 0;
-        report.NoActivate = (ex & OverlayNative.WS_EX_NOACTIVATE) != 0;
-        report.ToolWindow = (ex & OverlayNative.WS_EX_TOOLWINDOW) != 0;
-
-        // Window rect vs. primary screen rect -> "fullscreen" means the
-        // overlay exactly covers the physical monitor.
-        Windows.Graphics.RectInt32 screen = Microsoft.UI.Windowing.DisplayArea.Primary.OuterBounds;
-        report.ScreenRect = $"{screen.X},{screen.Y} {screen.Width}×{screen.Height}";
-        if (OverlayNative.GetWindowRect(hwnd, out OverlayNative.RECT wr))
+        // -- Section 1: extended styles + window rect (read back from Win32) --
+        try
         {
-            int w = wr.Right - wr.Left;
-            int h = wr.Bottom - wr.Top;
-            report.WindowRect = $"{wr.Left},{wr.Top} {w}×{h}";
-            report.Fullscreen = wr.Left == screen.X
-                && wr.Top == screen.Y
-                && w == screen.Width
-                && h == screen.Height;
+            IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(overlay);
+            long ex = OverlayNative.GetExStyle(hwnd);
+            report.Topmost = (ex & OverlayNative.WS_EX_TOPMOST) != 0;
+            report.ClickThrough = (ex & OverlayNative.WS_EX_TRANSPARENT) != 0;
+            report.NoActivate = (ex & OverlayNative.WS_EX_NOACTIVATE) != 0;
+            report.ToolWindow = (ex & OverlayNative.WS_EX_TOOLWINDOW) != 0;
+
+            if (OverlayNative.GetWindowRect(hwnd, out OverlayNative.RECT wr))
+            {
+                report.WindowRect =
+                    $"{wr.Left},{wr.Top} {wr.Right - wr.Left}×{wr.Bottom - wr.Top}";
+            }
+        }
+        catch (Exception ex)
+        {
+            report.Warnings.Add($"styles: {ex.GetType().Name}: {ex.Message}");
+            Trace.Log($"probe: styles section FAILED: {ex.Message}");
         }
 
-        report.TransparentDwm = overlay.DwmExtended;
+        // -- Section 2: fullscreen check (window rect vs. its monitor rect).
+        //      Classic Win32 only: DisplayArea.FindAll() has a known
+        //      InvalidCastException issue in the WinAppSDK projection. --
+        try
+        {
+            IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(overlay);
+            IntPtr hmon = OverlayNative.MonitorFromWindow(
+                hwnd, OverlayNative.MONITOR_DEFAULTTONEAREST);
+            var info = new OverlayNative.MONITORINFO
+            {
+                cbSize = Marshal.SizeOf<OverlayNative.MONITORINFO>(),
+            };
+            if (hmon != IntPtr.Zero && OverlayNative.GetMonitorInfo(hmon, ref info))
+            {
+                OverlayNative.RECT m = info.rcMonitor;
+                report.ScreenRect = $"{m.Left},{m.Top} {m.Right - m.Left}×{m.Bottom - m.Top}";
 
-        // Multi-monitor enumeration (code-path verification; a real
-        // multi-monitor layout is a true-machine follow-up).
-        var areas = DisplayArea.FindAll();
-        report.MonitorCount = areas.Count;
-        report.Monitors = string.Join("; ", areas.Select(a =>
-            $"{a.OuterBounds.X},{a.OuterBounds.Y} {a.OuterBounds.Width}×{a.OuterBounds.Height}"));
+                if (OverlayNative.GetWindowRect(hwnd, out OverlayNative.RECT wr))
+                {
+                    report.Fullscreen =
+                        wr.Left == m.Left
+                        && wr.Top == m.Top
+                        && (wr.Right - wr.Left) == (m.Right - m.Left)
+                        && (wr.Bottom - wr.Top) == (m.Bottom - m.Top);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            report.Warnings.Add($"fullscreen: {ex.GetType().Name}: {ex.Message}");
+            Trace.Log($"probe: fullscreen section FAILED: {ex.Message}");
+        }
 
-        report.CaptureFrames = overlay.Renderer?.PresentedFrames ?? 0;
-        report.CaptureState = overlay.CaptureState;
-        report.Warnings = new System.Collections.Generic.List<string>(overlay.Warnings);
+        // -- Section 3: multi-monitor enumeration (classic Win32) --
+        try
+        {
+            var rects = new List<string>();
+            int count = 0;
+            OverlayNative.EnumDisplayMonitors(
+                IntPtr.Zero, IntPtr.Zero,
+                (IntPtr hMonitor, IntPtr hdc, ref OverlayNative.RECT rect, IntPtr data) =>
+                {
+                    var mi = new OverlayNative.MONITORINFO
+                    {
+                        cbSize = Marshal.SizeOf<OverlayNative.MONITORINFO>(),
+                    };
+                    if (OverlayNative.GetMonitorInfo(hMonitor, ref mi))
+                    {
+                        OverlayNative.RECT m = mi.rcMonitor;
+                        rects.Add($"{m.Left},{m.Top} {m.Right - m.Left}×{m.Bottom - m.Top}");
+                    }
+                    count++;
+                    return true;
+                },
+                IntPtr.Zero);
+            report.MonitorCount = count;
+            report.Monitors = string.Join("; ", rects);
+        }
+        catch (Exception ex)
+        {
+            report.Warnings.Add($"monitors: {ex.GetType().Name}: {ex.Message}");
+            Trace.Log($"probe: monitors section FAILED: {ex.Message}");
+        }
+
+        // -- Section 4: transparency flag + capture counters --
+        try
+        {
+            report.TransparentDwm = overlay.DwmExtended;
+            report.CaptureFrames = overlay.Renderer?.PresentedFrames ?? 0;
+            report.CaptureState = overlay.CaptureState;
+            report.Warnings.AddRange(overlay.Warnings);
+        }
+        catch (Exception ex)
+        {
+            report.Warnings.Add($"capture: {ex.GetType().Name}: {ex.Message}");
+            Trace.Log($"probe: capture section FAILED: {ex.Message}");
+        }
 
         return report;
     }
