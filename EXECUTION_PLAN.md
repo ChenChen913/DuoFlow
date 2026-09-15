@@ -302,7 +302,7 @@
 
 - **必须** Windows 11 真机（或开启 GPU 直通的虚拟机）；
 - .NET 8 SDK + Visual Studio 2022（勾选 WinUI / Windows App SDK workload）+ 支持 D3D11 的 GPU（建议开启 D3D Debug Layer）；
-- 辅助脚本 `scripts/setup-windows.ps1` 可自动完成 SDK 检测与最小工程脚手架（详见脚本注释）；
+- 辅助脚本 [`scripts/setup-windows.ps1`](scripts/setup-windows.ps1) 可自动完成 SDK 检测与最小工程脚手架；**脚本放哪 / 用什么工具 / 怎么执行 / 预期输出 / 故障排查，见 [`docs/SETUP_WINDOWS.md`](docs/SETUP_WINDOWS.md)**；
 - **Linux / 云端沙箱只能做**：文档维护、接口与架构设计、纯 .NET 跨平台类库与单元测试；**不能**构建 WinUI 3 应用（Windows App SDK 仅支持 windows TFM）。
 
 ### 6.2 架构与文档同步关系
