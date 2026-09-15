@@ -69,9 +69,7 @@ public sealed class CaptureRenderer : IDisposable
         var panelNative = _panel.As<ISwapChainPanelNative>();
         panelNative.SetSwapChain(_swapChain);
 
-        Guid iidTexture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
-        _swapChain.GetBuffer(0u, iidTexture2D, out IntPtr pBackBuffer).CheckError();
-        _backBuffer = new ID3D11Texture2D(pBackBuffer);
+        _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
 
         // GPU -> GPU: every captured frame is copied and presented directly.
         _capture.FrameArrived += OnFrameArrived;
