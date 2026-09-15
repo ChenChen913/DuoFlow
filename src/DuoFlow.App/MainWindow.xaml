@@ -6,21 +6,22 @@
     Title="DuoFlow">
 
     <Grid>
-        <StackPanel
-            VerticalAlignment="Center"
+        <!-- M0.2: live desktop capture, blitted GPU -> GPU -->
+        <SwapChainPanel x:Name="CapturePanel" />
+
+        <Border
+            VerticalAlignment="Bottom"
             HorizontalAlignment="Center"
-            Spacing="12">
+            Margin="0,0,0,24"
+            Background="#CC111111"
+            CornerRadius="10"
+            Padding="16,8">
             <TextBlock
-                Text="Hello, DuoFlow!"
-                FontSize="32"
-                FontWeight="SemiBold"
-                HorizontalAlignment="Center" />
-            <TextBlock
-                Text="M0.1 · WinUI 3 toolchain verified"
-                FontSize="14"
-                Opacity="0.7"
-                HorizontalAlignment="Center" />
-        </StackPanel>
+                x:Name="StatusText"
+                Foreground="White"
+                FontSize="13"
+                Text="M0.2 · starting capture..." />
+        </Border>
     </Grid>
 
 </Window>
