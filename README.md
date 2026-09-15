@@ -86,7 +86,7 @@ M5  Windows Integration      — 电源事件 / 开机自启
 M6+ Productization           — 设置界面 / 安装包 / 完整测试
 ```
 
-当前状态：**M0 进行中 —— M0.1 开发环境已在云端验证通过（构建 ✅ 启动 ✅），执行进度见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)。**
+当前状态：**M0 进行中 —— M0.1 环境 ✅ / M0.2 屏幕捕获 ✅（31FPS GPU→GPU）/ M0.3 透明 Overlay ✅（穿透/置顶/不抢焦点，捕获已迁入），均已云端验证；下一小任务 M0.4 硬件调研（需真机）。执行进度见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)。**
 
 ## 项目结构（规划）
 

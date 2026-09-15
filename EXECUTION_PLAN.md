@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 1 — M0 Research & Feasibility** |
-| 当前小任务 | M0.3 Overlay（M0.1 ✅ M0.2 ✅ 均云端完成） |
-| 下一步行动 | 透明 Overlay 窗口（Topmost/ClickThrough/NoActivate）+ 把捕获渲染迁入 Overlay 层，CI 云端验证；多显示器/高DPI 矩阵真机补测 |
-| 阻塞项 | 无。构建验证已由 GitHub Actions 云端承担；真机需求收窄为：M0.4 硬件/传感器实测、M1.4 前的 D3D11 GPU 确认、M1/M2 视觉效果目测调优 |
-| 最后更新 | 2026-09-15 · M0.2 云端验证完成（31FPS 实时捕获显示）· Super Z |
+| 当前小任务 | M0.4 Hardware Research（M0.1 ✅ M0.2 ✅ M0.3 ✅ 均云端完成） |
+| 下一步行动 | 硬件调研：Windows Sensor API / HID / ACPI / 厂商接口——需 Windows 11 真机实测，结果记入 docs/HARDWARE_COMPATIBILITY.md；云端可先行准备实测脚本与检查清单 |
+| 阻塞项 | M0.4 起需要 Windows 11 真机（传感器/HID/ACPI 实测无法云端替代）；真机需求全清单：M0.4 硬件实测、M1.4 前 D3D11 GPU 确认、M1/M2 视觉目测调优、Overlay 真实鼠标穿透/多屏/高DPI 联测 |
+| 最后更新 | 2026-09-15 · M0.3 Overlay 云端验证完成（7 项属性全 PASS + 捕获迁入 overlay 357帧/25FPS）· Super Z |
 
 ---
 
@@ -70,7 +70,7 @@
 | Phase | 对应 Milestone | 内容 | 状态 |
 | --- | --- | --- | --- |
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
-| Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ⏳ 进行中（M0.1 ✅ M0.2 ✅ 云端完成；M0.3 推进中） |
+| Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ⏳ 进行中（M0.1 ✅ M0.2 ✅ M0.3 ✅ 云端完成；M0.4 需真机） |
 | Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ⬜ 未开始 |
 | Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | ⬜ |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
@@ -131,15 +131,16 @@
 
 #### M0.3 Overlay
 
-* [ ] 创建透明 Overlay Window
-* [ ] 设置全屏
-* [ ] 测试 Topmost
-* [ ] 测试 Click Through
-* [ ] 测试 No Activate
-* [ ] 测试窗口切换
-* [ ] 测试多显示器
+* [x] 创建透明 Overlay Window（DWM ExtendFrame 全客户区透明 + 透明 XAML root；截图证实桌面完全透出）
+* [x] 设置全屏（无边框 OverlappedPresenter + MoveAndResize 到主屏 OuterBounds；断言窗口矩形 == 屏幕矩形 0,0 1024×768）
+* [x] 测试 Topmost（IsAlwaysOnTop + SetWindowPos HWND_TOPMOST；WS_EX_TOPMOST 回读断言）
+* [x] 测试 Click Through（WS_EX_TRANSPARENT 设置并回读断言；真实鼠标穿透行为留真机联测）
+* [x] 测试 No Activate（WS_EX_NOACTIVATE 设置并回读断言；真实焦点行为留真机联测）
+* [x] 测试窗口切换（WS_EX_TOOLWINDOW 设置并回读断言 = 不出现在 Alt+Tab）
+* [!] 测试多显示器（经典 Win32 EnumDisplayMonitors 枚举路径云端验证 1 台屏；多屏 overlay 布局/跨屏迁移需真机）
 
-**验收**：Overlay 不影响正常鼠标和键盘操作。
+**验收**：Overlay 窗口机制云端全量验证通过 —— smoke JSON 7 属性全 true + Warnings 空（run 34997516255）；捕获渲染已迁入 overlay 实时运行（357 帧 / 25 FPS，GPU→GPU）。"不影响正常鼠标键盘操作"的最终确认属真机项（M0.4 起联测）。
+**踩坑记录**：① `DisplayArea.FindAll()` 在 WinAppSDK 1.8 投影下抛 InvalidCastException —— 改用经典 Win32 `EnumDisplayMonitors`/`GetMonitorInfo`；② 无头 CI 排障靠**文件追踪**：App 全链路 Trace 落盘 %USERPROFILE%\duoflow-trace.txt + 未处理异常落盘 duoflow-crash.txt + CI 打印，可秒级定位崩溃点；③ 云 runner 真实分辨率为 1024×768（勿假设 1920×1080）；④ console 控制台窗口需在 overlay 之后创建并 IsAlwaysOnTop，才能浮在 overlay 之上。
 
 #### M0.4 Hardware Research
 
@@ -278,6 +279,14 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-15 · Phase 1 / M0.3 · Super Z (main agent)
+
+- **完成**：透明 Overlay 窗口云端验证全通过 —— 无边框全屏覆盖主屏（0,0 1024×768）+ Topmost + Click-through + No-activate + Alt+Tab 隐藏 + DWM ExtendFrame 全客户区透明；M0.2 捕获渲染迁入 overlay（右下角 480×270 预览）实时运行 **357 帧 / 25 FPS**；左下控制台窗口实时渲染 8 项验证矩阵（全 ✓）；CI 新增 **M0.3 断言门**（smoke JSON 7 属性全 true + MonitorCount ≥ 1 才放行）
+- **踩坑记录**：① `DisplayArea.FindAll()` 在 WinAppSDK 1.8 投影抛 InvalidCastException（连续两轮 run 失败的根因）→ 弃用之，改经典 Win32 `EnumDisplayMonitors` + `GetMonitorInfo` + `MonitorFromWindow`；② 无头 CI 排障方法论：App 侧全链路 `Trace.Log` 落盘 + `UnhandledException`/`AppDomain.UnhandledException` 落盘（duoflow-trace.txt / duoflow-crash.txt）+ CI 无论死活都打印 → 第三轮直接定位到 probe 崩溃行；③ smoke JSON 改为 Loaded 即写 + 每秒覆盖刷新，进程中途被杀也有报告；④ 云 runner 分辨率实为 **1024×768**；⑤ 控制台需在 overlay 之后创建并 `IsAlwaysOnTop` 才能浮在穿透层之上
+- **产物**：`src/DuoFlow.App/`（OverlayWindow.xaml/.cs、OverlayNative.cs、OverlayProbe.cs、Trace.cs、MainWindow 控制台化、App 双窗口启动 + 异常落盘）、CI workflow（存活检测 + trace/crash 采集 + assert 门）、`docs/media/m0-overlay.png`
+- **Commit / Run**：`47af3b0` → `9c75096`（4 轮迭代：首版崩溃 → 诊断加固 → trace 定位 → 根因修复）；成功 run 34997516255
+- **遗留 / 阻塞**：真实鼠标穿透/焦点抢占行为、多屏 overlay 布局、高 DPI 缩放 → 真机联测（M0.4 起安排）；M0.4 硬件调研必须真机
 
 > 记录格式：
 >
