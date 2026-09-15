@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using DuoFlow.Capture;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
@@ -28,6 +29,9 @@ public sealed partial class OverlayWindow : Window
     /// <summary>Capture chain state, surfaced to the console/CI report.</summary>
     public string CaptureState { get; private set; } = "starting";
 
+    /// <summary>Non-fatal setup issues (style bits that could not be set, etc.).</summary>
+    public List<string> Warnings { get; } = new();
+
     public CaptureRenderer? Renderer => _renderer;
 
     public OverlayWindow()
@@ -36,32 +40,56 @@ public sealed partial class OverlayWindow : Window
 
         IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
 
-        // Borderless + always-on-top via the AppWindow presenter.
-        AppWindow appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
-        if (appWindow.Presenter is OverlappedPresenter presenter)
+        // 1. Borderless + always-on-top + fullscreen covering the primary monitor.
+        try
         {
-            presenter.SetBorderAndTitleBar(false, false);
-            presenter.IsAlwaysOnTop = true;
-            presenter.IsResizable = false;
-            presenter.IsMaximizable = false;
-            presenter.IsMinimizable = false;
+            AppWindow appWindow = AppWindow.GetFromWindowId(Win32Interop.GetWindowIdFromWindow(hwnd));
+            if (appWindow.Presenter is OverlappedPresenter presenter)
+            {
+                presenter.SetBorderAndTitleBar(false, false);
+                presenter.IsAlwaysOnTop = true;
+                presenter.IsResizable = false;
+                presenter.IsMaximizable = false;
+                presenter.IsMinimizable = false;
+            }
+
+            RectInt32 screen = DisplayArea.Primary.OuterBounds;
+            appWindow.MoveAndResize(screen);
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"presenter/fullscreen: {ex.Message}");
         }
 
-        // Click-through + never steal focus + hidden from Alt+Tab.
-        long exStyle = OverlayNative.GetExStyle(hwnd);
-        OverlayNative.SetExStyle(hwnd,
-            exStyle
-                | OverlayNative.WS_EX_TRANSPARENT
-                | OverlayNative.WS_EX_NOACTIVATE
-                | OverlayNative.WS_EX_TOOLWINDOW);
-        OverlayNative.ForceTopmost(hwnd);
+        // 2. Click-through + never steal focus + hidden from Alt+Tab.
+        try
+        {
+            long exStyle = OverlayNative.GetExStyle(hwnd);
+            OverlayNative.SetExStyle(hwnd,
+                exStyle
+                    | OverlayNative.WS_EX_TRANSPARENT
+                    | OverlayNative.WS_EX_NOACTIVATE
+                    | OverlayNative.WS_EX_TOOLWINDOW);
+            OverlayNative.ForceTopmost(hwnd);
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"exstyle: {ex.Message}");
+        }
 
-        // Fully transparent client area (DWM glass frame over everything).
-        DwmExtended = OverlayNative.ExtendFrame(hwnd) == 0;
-
-        // Cover the entire primary monitor (outer bounds == the screen).
-        RectInt32 screen = DisplayArea.Primary.OuterBounds;
-        appWindow.MoveAndResize(screen);
+        // 3. Fully transparent client area (DWM glass frame over everything).
+        try
+        {
+            DwmExtended = OverlayNative.ExtendFrame(hwnd) == 0;
+            if (!DwmExtended)
+            {
+                Warnings.Add("dwm: ExtendFrameIntoClientArea failed");
+            }
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"dwm: {ex.Message}");
+        }
 
         ((FrameworkElement)Content).Loaded += OnLoaded;
         Closed += (_, _) => Cleanup();

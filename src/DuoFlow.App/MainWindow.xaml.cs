@@ -34,15 +34,22 @@ public sealed partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        // Bottom-left control panel, always on top of the overlay.
-        RectInt32 work = DisplayArea.Primary.WorkArea;
-        AppWindow.Resize(new SizeInt32(580, 470));
-        int x = work.X + 24;
-        int y = Math.Max(work.Y + work.Height - 494, work.Y + 8);
-        AppWindow.Move(new PointInt32(x, y));
-        if (AppWindow.Presenter is OverlappedPresenter presenter)
+        try
         {
-            presenter.IsAlwaysOnTop = true;
+            // Bottom-left control panel, always on top of the overlay.
+            RectInt32 work = DisplayArea.Primary.WorkArea;
+            AppWindow.Resize(new SizeInt32(580, 470));
+            int x = work.X + 24;
+            int y = Math.Max(work.Y + work.Height - 494, work.Y + 8);
+            AppWindow.Move(new PointInt32(x, y));
+            if (AppWindow.Presenter is OverlappedPresenter presenter)
+            {
+                presenter.IsAlwaysOnTop = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Report.Text = $"[console] window positioning failed: {ex.Message}";
         }
 
         _timer = DispatcherQueue.CreateTimer();
@@ -55,7 +62,17 @@ public sealed partial class MainWindow : Window
     {
         _ticks++;
 
-        OverlayReport report = OverlayProbe.Collect(_overlay);
+        OverlayReport report;
+        try
+        {
+            report = OverlayProbe.Collect(_overlay);
+        }
+        catch (Exception ex)
+        {
+            Report.Text = $"[probe] 收集失败：{ex.GetType().Name}: {ex.Message}";
+            return;
+        }
+
         _lastFps = report.CaptureFrames - _lastFrames;
         _lastFrames = report.CaptureFrames;
         report.CaptureFps = _lastFps;

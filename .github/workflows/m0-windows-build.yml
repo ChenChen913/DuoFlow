@@ -71,10 +71,16 @@ jobs:
           if (-not $exe) { Write-Warning "DuoFlow.App.exe not found"; exit 0 }
           Write-Host "Launching: $($exe.FullName) --overlay-smoke"
           Start-Process -FilePath $exe.FullName -ArgumentList "--overlay-smoke"
-          Start-Sleep -Seconds 16
-          $p = Get-Process -Name "DuoFlow.App" -ErrorAction SilentlyContinue
-          if ($p) {
-            Write-Host "APP RUNNING OK  PID=$($p.Id)"
+          $alive = $false
+          for ($i = 1; $i -le 8; $i++) {
+            Start-Sleep -Seconds 2
+            $p = Get-Process -Name "DuoFlow.App" -ErrorAction SilentlyContinue
+            if (-not $p) { Write-Host "PROCESS EXITED after ~$($i*2)s"; break }
+            if ($i -eq 4) { Write-Host "app alive at 8s (pid $($p.Id))" }
+            $alive = $true
+          }
+          if ($alive) {
+            Write-Host "APP RUNNING OK (survived 16s)"
             $jsonPath = "$env:USERPROFILE\duoflow-overlay-smoke.json"
             if (Test-Path $jsonPath) {
               Write-Host "== OVERLAY SMOKE JSON =="
@@ -95,7 +101,14 @@ jobs:
             } catch { Write-Warning "Screenshot failed: $_" }
             Stop-Process -Name "DuoFlow.App" -Force -ErrorAction SilentlyContinue
           } else {
-            Write-Warning "App process not found after 16s (headless session may have blocked GUI startup)"
+            $crash = "$env:USERPROFILE\duoflow-crash.txt"
+            if (Test-Path $crash) {
+              Write-Host "== CRASH LOG =="
+              Get-Content $crash
+              Copy-Item $crash "$PWD/duoflow-crash.txt" -Force
+            } else {
+              Write-Warning "process died without writing a crash log"
+            }
           }
 
       # ---- M0.3 acceptance gate: overlay window properties must all hold ----
@@ -128,4 +141,5 @@ jobs:
             m0-build.binlog
             duoflow-window.png
             duoflow-overlay-smoke.json
+            duoflow-crash.txt
           if-no-files-found: ignore

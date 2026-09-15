@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using Microsoft.UI.Xaml;
 
 namespace DuoFlow.App;
@@ -12,10 +13,51 @@ public partial class App : Application
 {
     private OverlayWindow? _overlay;
     private MainWindow? _console;
+    private int _swallowCount;
 
     public App()
     {
         InitializeComponent();
+
+        // M0.3 diagnostics: persist unhandled exceptions so a headless CI run
+        // reveals WHY a launch died instead of silently exiting.
+        UnhandledException += OnUiUnhandled;
+        AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandled;
+    }
+
+    private static string CrashLog
+        => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            "duoflow-crash.txt");
+
+    private void OnUiUnhandled(object sender, Microsoft.UI.Xaml.UnhandledExceptionEventArgs e)
+    {
+        try
+        {
+            File.AppendAllText(CrashLog, $"[UI.Unhandled] {e.Message}\n{e.Exception}\n\n");
+        }
+        catch
+        {
+            // Never let the logger itself crash the app.
+        }
+
+        // Keep the app alive so the console can still produce the smoke JSON;
+        // bail out (crash loudly) after 50 swallowed exceptions.
+        if (++_swallowCount < 50)
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void OnDomainUnhandled(object sender, System.UnhandledExceptionEventArgs e)
+    {
+        try
+        {
+            File.AppendAllText(CrashLog, $"[Domain.Unhandled] {e.ExceptionObject}\n\n");
+        }
+        catch
+        {
+        }
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
@@ -34,13 +76,20 @@ public partial class App : Application
             _overlay = new OverlayWindow();
             _overlay.Activate();
         }
-        catch
+        catch (Exception ex)
         {
-            // The console reports OverlayCreated=false; never crash the launch.
-            _overlay = null;
+            try { File.AppendAllText(CrashLog, $"[Overlay ctor] {ex}\n\n"); } catch { }
+            _overlay = null; // console reports OverlayCreated=false
         }
 
-        _console = new MainWindow(_overlay, smoke);
-        _console.Activate();
+        try
+        {
+            _console = new MainWindow(_overlay, smoke);
+            _console.Activate();
+        }
+        catch (Exception ex)
+        {
+            try { File.AppendAllText(CrashLog, $"[Console ctor] {ex}\n\n"); } catch { }
+        }
     }
 }

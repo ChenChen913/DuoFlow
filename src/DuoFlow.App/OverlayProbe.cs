@@ -30,6 +30,8 @@ public sealed class OverlayReport
     public long CaptureFrames { get; set; }
     public double CaptureFps { get; set; }
     public string CaptureState { get; set; } = "unknown";
+
+    public System.Collections.Generic.List<string> Warnings { get; set; } = new();
 }
 
 /// <summary>
@@ -82,6 +84,7 @@ public static class OverlayProbe
 
         report.CaptureFrames = overlay.Renderer?.PresentedFrames ?? 0;
         report.CaptureState = overlay.CaptureState;
+        report.Warnings = new System.Collections.Generic.List<string>(overlay.Warnings);
 
         return report;
     }
