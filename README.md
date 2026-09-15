@@ -1,3 +1,9 @@
+<div align="right">
+
+**简体中文** ｜ [English](README.en.md)
+
+</div>
+
 # DuoFlow
 
 > Windows 11 笔记本开合视觉特效系统
@@ -61,9 +67,10 @@ DuoFlow 是一个运行于 Windows 11 笔记本上的桌面视觉特效程序：
 
 | 文档 | 回答的问题 |
 | --- | --- |
+| [EXECUTION_PLAN.md](EXECUTION_PLAN.md) | 项目**执行到哪一步了、接下来做什么**（交接入口：进度打勾 / 状态快照 / 进度日志，AI Agent 接手必读） |
 | [docs/PROJECT_SPEC.md](docs/PROJECT_SPEC.md) | 项目**要做什么**（完整规格说明 v0.2，含摄像头适配层与 Power & Sleep Architecture） |
 | [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md) | 项目**已经决定怎么做**（DD-001 ~ DD-034，约束后续 AI 与重构的"事实层"） |
-| [docs/TODO.md](docs/TODO.md) | 项目**现在做到哪里**（M0 ~ M12 开发路线图，当前 Milestone：M0） |
+| [docs/TODO.md](docs/TODO.md) | 项目**任务如何定义**（M0 ~ M12 开发路线图与验收标准） |
 | [docs/HARDWARE_COMPATIBILITY.md](docs/HARDWARE_COMPATIBILITY.md) | 项目**真实环境到底是什么**（摄像头适配预案、能力等级、实测记录库） |
 | [docs/TECHNICAL_PROPOSAL.md](docs/TECHNICAL_PROPOSAL.md) | 项目**最初怎么想的**（立项阶段完整技术方案，保留原始设计推理） |
 
@@ -79,12 +86,13 @@ M5  Windows Integration      — 电源事件 / 开机自启
 M6+ Productization           — 设置界面 / 安装包 / 完整测试
 ```
 
-当前状态：**Specification 阶段，待进入 M0。**
+当前状态：**Specification 与仓库基建完成，执行进度见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)。**
 
 ## 项目结构（规划）
 
 ```text
 DuoFlow/
+├── EXECUTION_PLAN.md       # 项目执行文档（AI Agent 交接入口）
 ├── src/
 │   ├── DuoFlow.App/        # WinUI 3 应用入口与设置界面
 │   ├── DuoFlow.Core/       # LidState / AnimationEngine
@@ -94,6 +102,7 @@ DuoFlow/
 │   ├── DuoFlow.Render/     # D3D Renderer / Overlay
 │   └── DuoFlow.Power/      # 电源事件监听
 ├── shaders/                # HLSL：Warp / HingeMask / Blur / Dimming / Gradient / LightSweep
+├── scripts/                # 环境准备 / 辅助脚本
 ├── config/
 ├── tests/
 └── docs/
