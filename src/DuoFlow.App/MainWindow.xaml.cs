@@ -1,92 +1,92 @@
 using System;
-using DuoFlow.Capture;
 using Microsoft.UI.Dispatching;
+using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
 using Windows.Graphics;
 
 namespace DuoFlow.App;
 
 /// <summary>
-/// M0.2 verification window: captures the primary desktop and shows it live
-/// inside a SwapChainPanel, proving the Desktop -> GPU texture -> panel chain.
+/// M0.3 control console: lives bottom-left, always on top of the overlay,
+/// and live-renders the verification matrix (fullscreen / topmost /
+/// click-through / no-activate / tool-window / DWM transparency /
+/// multi-monitor enum / capture FPS). In smoke mode it also writes
+/// duoflow-overlay-smoke.json for the CI acceptance gate.
 /// </summary>
 public sealed partial class MainWindow : Window
 {
-    private DesktopCapture? _capture;
-    private CaptureRenderer? _renderer;
-    private DispatcherQueueTimer? _fpsTimer;
-    private long _lastFrameCount;
-    private int _started;
-    private int _ticks;
+    private readonly OverlayWindow? _overlay;
+    private readonly bool _smoke;
 
-    public MainWindow()
+    private DispatcherQueueTimer? _timer;
+    private long _lastFrames;
+    private double _lastFps;
+    private int _ticks;
+    private bool _written;
+
+    public MainWindow(OverlayWindow? overlay, bool smoke)
     {
+        _overlay = overlay;
+        _smoke = smoke;
         InitializeComponent();
         ((FrameworkElement)Content).Loaded += OnLoaded;
-        Closed += (sender, args) => Cleanup();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
-        if (Interlocked.Exchange(ref _started, 1) == 1)
+        // Bottom-left control panel, always on top of the overlay.
+        RectInt32 work = DisplayArea.Primary.WorkArea;
+        AppWindow.Resize(new SizeInt32(580, 470));
+        int x = work.X + 24;
+        int y = Math.Max(work.Y + work.Height - 494, work.Y + 8);
+        AppWindow.Move(new PointInt32(x, y));
+        if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
-            return;
+            presenter.IsAlwaysOnTop = true;
         }
 
-        try
+        _timer = DispatcherQueue.CreateTimer();
+        _timer.Interval = TimeSpan.FromSeconds(1);
+        _timer.Tick += (_, _) => Refresh();
+        _timer.Start();
+    }
+
+    private void Refresh()
+    {
+        _ticks++;
+
+        OverlayReport report = OverlayProbe.Collect(_overlay);
+        _lastFps = report.CaptureFrames - _lastFrames;
+        _lastFrames = report.CaptureFrames;
+        report.CaptureFps = _lastFps;
+
+        Report.Text = Format(report);
+
+        if (_smoke && !_written && _ticks >= 10)
         {
-            _capture = new DesktopCapture();
-            _capture.Start();
-
-            _renderer = new CaptureRenderer(CapturePanel, _capture);
-            _renderer.Initialize();
-
-            SizeInt32 size = _capture.Item.Size;
-            UpdateStatus(
-                $"捕获中：{_capture.MonitorDescription} · {size.Width}×{size.Height} · " +
-                $"GPU texture · {_capture.DriverInfo} · 0 FPS");
-
-            _fpsTimer = DispatcherQueue.CreateTimer();
-            _fpsTimer.Interval = TimeSpan.FromSeconds(1);
-            _fpsTimer.Tick += (_, _) =>
+            try
             {
-                long now = _renderer.PresentedFrames;
-                long fps = now - _lastFrameCount;
-                _lastFrameCount = now;
-                string noFrameHint = (now == 0 && _ticks >= 5)
-                    ? (_capture.LastError is not null
-                        ? $" · ⚠ 帧回调异常：{_capture.LastError}"
-                        : " · ⚠ 会话已启动但无帧送达（云端虚拟显卡限制，真机待验证）")
-                    : "";
-                _ticks++;
-                UpdateStatus(
-                    $"捕获中：{_capture.MonitorDescription} · {size.Width}×{size.Height} · " +
-                    $"GPU texture · {_capture.DriverInfo} · {fps} FPS · 已捕获 {now} 帧{noFrameHint}");
-            };
-            _fpsTimer.Start();
-        }
-        catch (Exception ex)
-        {
-            // Never crash the demo: surface the failure in the status bar so the
-            // CI screenshot still documents what happened.
-            StatusText.Text = $"捕获失败：{ex.GetType().Name}: {ex.Message}";
-            StatusText.Foreground = new Microsoft.UI.Xaml.Media.SolidColorBrush(
-                Microsoft.UI.Colors.OrangeRed);
+                OverlayProbe.WriteSmokeJson(report);
+                _written = true;
+            }
+            catch (Exception ex)
+            {
+                Report.Text = Format(report) + $"\n[smoke] JSON 写入失败：{ex.Message}";
+            }
         }
     }
 
-    private void UpdateStatus(string message)
-    {
-        DispatcherQueue.TryEnqueue(() => StatusText.Text = message);
-    }
+    private static string Mark(bool ok) => ok ? "✓ 通过" : "✗ 未通过";
 
-    private void Cleanup()
-    {
-        _fpsTimer?.Stop();
-        _renderer?.Dispose();
-        _capture?.Dispose();
-        _renderer = null;
-        _capture = null;
-    }
+    private string Format(OverlayReport r) =>
+        $"Overlay 创建            {Mark(r.OverlayCreated)}\n" +
+        $"全屏覆盖                {Mark(r.Fullscreen)}    窗口 {r.WindowRect} / 屏幕 {r.ScreenRect}\n" +
+        $"Topmost 置顶            {Mark(r.Topmost)}    WS_EX_TOPMOST\n" +
+        $"Click Through 穿透      {Mark(r.ClickThrough)}    WS_EX_TRANSPARENT（真实鼠标穿透待真机）\n" +
+        $"No Activate 不抢焦点    {Mark(r.NoActivate)}    WS_EX_NOACTIVATE\n" +
+        $"Alt+Tab 隐藏            {Mark(r.ToolWindow)}    WS_EX_TOOLWINDOW\n" +
+        $"DWM 透明                {Mark(r.TransparentDwm)}\n" +
+        $"多显示器枚举            {r.MonitorCount} 台    {r.Monitors}\n" +
+        $"─────────────────────────────────────\n" +
+        $"捕获·渲染（迁入 overlay）  {r.CaptureState} · {_lastFps:0} FPS · 累计 {r.CaptureFrames} 帧（GPU→GPU）";
 }

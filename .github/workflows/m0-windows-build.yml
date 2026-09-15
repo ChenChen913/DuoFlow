@@ -56,10 +56,12 @@ jobs:
           /restore /p:Configuration=Debug /p:Platform=x64 /p:RuntimeIdentifier=win-x64
           /bl:m0-build.binlog /nologo /v:m
 
-      # ---- Best effort: launch the app and screenshot the desktop ----
+      # ---- Best effort: launch overlay smoke + screenshot the desktop ----
       # GUI availability on hosted runners can vary; failures here must NOT
       # fail the job (the build gate above is the M0.1 acceptance criterion).
-      - name: Launch app + screenshot (best effort)
+      # M0.3: the app now launches the fullscreen overlay + console and, in
+      # --overlay-smoke mode, writes duoflow-overlay-smoke.json after ~10s.
+      - name: Launch overlay smoke + screenshot (best effort)
         continue-on-error: true
         shell: pwsh
         run: |
@@ -67,12 +69,20 @@ jobs:
                  Where-Object { $_.FullName -notmatch "obj" } |
                  Select-Object -First 1
           if (-not $exe) { Write-Warning "DuoFlow.App.exe not found"; exit 0 }
-          Write-Host "Launching: $($exe.FullName)"
-          Start-Process -FilePath $exe.FullName
-          Start-Sleep -Seconds 10
+          Write-Host "Launching: $($exe.FullName) --overlay-smoke"
+          Start-Process -FilePath $exe.FullName -ArgumentList "--overlay-smoke"
+          Start-Sleep -Seconds 16
           $p = Get-Process -Name "DuoFlow.App" -ErrorAction SilentlyContinue
           if ($p) {
-            Write-Host "APP RUNNING OK  PID=$($p.Id)  WindowTitle='$($p.MainWindowTitle)'"
+            Write-Host "APP RUNNING OK  PID=$($p.Id)"
+            $jsonPath = "$env:USERPROFILE\duoflow-overlay-smoke.json"
+            if (Test-Path $jsonPath) {
+              Write-Host "== OVERLAY SMOKE JSON =="
+              Get-Content $jsonPath
+              Copy-Item $jsonPath "$PWD/duoflow-overlay-smoke.json" -Force
+            } else {
+              Write-Warning "duoflow-overlay-smoke.json not written (app may have failed early)"
+            }
             try {
               Add-Type -AssemblyName System.Windows.Forms
               Add-Type -AssemblyName System.Drawing
@@ -85,8 +95,29 @@ jobs:
             } catch { Write-Warning "Screenshot failed: $_" }
             Stop-Process -Name "DuoFlow.App" -Force -ErrorAction SilentlyContinue
           } else {
-            Write-Warning "App process not found after 10s (headless session may have blocked GUI startup)"
+            Write-Warning "App process not found after 16s (headless session may have blocked GUI startup)"
           }
+
+      # ---- M0.3 acceptance gate: overlay window properties must all hold ----
+      - name: Assert overlay properties (M0.3 gate)
+        shell: pwsh
+        run: |
+          $jsonPath = "$PWD/duoflow-overlay-smoke.json"
+          if (-not (Test-Path $jsonPath)) {
+            Write-Error "smoke JSON missing — overlay did not report (see launch step log)"
+            exit 1
+          }
+          $j = Get-Content $jsonPath | ConvertFrom-Json
+          $fail = @()
+          foreach ($prop in 'OverlayCreated','Fullscreen','Topmost','ClickThrough','NoActivate','ToolWindow','TransparentDwm') {
+            if (-not $j.$prop) { $fail += $prop }
+          }
+          if ($j.MonitorCount -lt 1) { $fail += 'MonitorCount' }
+          if ($fail.Count -gt 0) {
+            Write-Error "M0.3 overlay checks FAILED: $($fail -join ', ')"
+            exit 1
+          }
+          Write-Host "M0.3 overlay property checks PASSED (monitors=$($j.MonitorCount), capture=$($j.CaptureState), frames=$($j.CaptureFrames))"
 
       - name: Upload build log + screenshot
         if: always()
@@ -96,4 +127,5 @@ jobs:
           path: |
             m0-build.binlog
             duoflow-window.png
+            duoflow-overlay-smoke.json
           if-no-files-found: ignore
