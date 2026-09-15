@@ -87,7 +87,7 @@ M5  Windows Integration      — power events / autostart
 M6+ Productization           — settings UI / installer / full test suite
 ```
 
-Current status: **M0 in progress — M0.1 toolchain ✅ / M0.2 screen capture ✅ (31 FPS, GPU→GPU) / M0.3 transparent overlay ✅ (click-through / topmost / no-activate, capture moved into the overlay), all verified in the cloud; next up M0.4 hardware research (real machine required). See [EXECUTION_PLAN.md](EXECUTION_PLAN.md) for live execution progress.**
+Current status: **M0 in progress — M0.1 toolchain ✅ / M0.2 screen capture ✅ (31 FPS, GPU→GPU) / M0.3 transparent overlay ✅ (click-through / topmost / no-activate, capture moved into the overlay), all verified in the cloud; M0.4 hardware research: cloud preparation done (one-shot probe script + real-machine checklist), awaiting a probe run on the real machine. See [EXECUTION_PLAN.md](EXECUTION_PLAN.md) for live execution progress.**
 
 ## Project structure (planned)
 

@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 1 — M0 Research & Feasibility** |
-| 当前小任务 | M0.4 Hardware Research（M0.1 ✅ M0.2 ✅ M0.3 ✅ 均云端完成） |
-| 下一步行动 | 硬件调研：Windows Sensor API / HID / ACPI / 厂商接口——需 Windows 11 真机实测，结果记入 docs/HARDWARE_COMPATIBILITY.md；云端可先行准备实测脚本与检查清单 |
-| 阻塞项 | M0.4 起需要 Windows 11 真机（传感器/HID/ACPI 实测无法云端替代）；真机需求全清单：M0.4 硬件实测、M1.4 前 D3D11 GPU 确认、M1/M2 视觉目测调优、Overlay 真实鼠标穿透/多屏/高DPI 联测 |
-| 最后更新 | 2026-09-15 · M0.3 Overlay 云端验证完成（7 项属性全 PASS + 捕获迁入 overlay 357帧/25FPS）· Super Z |
+| 当前小任务 | M0.4 Hardware Research——云端准备已完成（一键探针脚本 ✅ + 真机检查清单 ✅，run 35036286869 全绿）；余下 6 项需真机实测 |
+| 下一步行动 | ① 在 Windows 11 真机跑 `scripts/hardware-probe.ps1`（执行方法：docs/SETUP_WINDOWS.md 第七节，30 秒只读）→ ② 把 `hardware-probe-result.json` 交回 Agent → ③ 回填 HARDWARE_COMPATIBILITY §5.1/§5 并打勾 M0.4；Manual Provider / Animation Engine 等无硬件依赖项可与真机测试并行提前（M1.1） |
+| 阻塞项 | M0.4 打勾需要真机探针数据；真机需求全清单：M0.4 硬件实测、M1.4 前 D3D11 GPU 确认、M1/M2 视觉目测调优、Overlay 真实鼠标穿透/多屏/高DPI 联测 |
+| 最后更新 | 2026-09-15 · M0.4 云端准备完成（探针 3 轮迭代全绿，发现并记录 Server SKU 投影裁剪假象）· Super Z |
 
 ---
 
@@ -144,14 +144,17 @@
 
 #### M0.4 Hardware Research
 
-* [ ] 检查 Windows Sensor API
-* [ ] 检查 HID
-* [ ] 检查 ACPI
-* [ ] 检查联想等厂商硬件接口
-* [ ] 记录实际测试结果（禁止凭网络资料下结论）
-* [ ] 更新 `docs/HARDWARE_COMPATIBILITY.md` 实测区
+> **云端准备（2026-09-15 完成）**：一键探针脚本 + 检查清单已就绪并通过云端 CI 验证；
+> 以下前 6 项的 Supported/Not found 结论只能来自真机探针数据（禁止凭网络资料下结论）。
 
-**验收**：当前开发机的传感器/接口能力有实测记录。
+* [ ] 检查 Windows Sensor API —— 探针 Section 1 就绪；云端已验证 HingeAngleSensor 全链路调用路径（run 35036286869），结论值待真机
+* [ ] 检查 HID —— 探针 Section 2 就绪，待真机数据
+* [ ] 检查 ACPI —— 探针 Section 3 就绪，待真机数据（重点：盖设备 PNP0C0D）
+* [ ] 检查联想等厂商硬件接口 —— 探针 Section 4 就绪，待真机数据
+* [ ] 记录实际测试结果（禁止凭网络资料下结论）—— 待真机
+* [ ] 更新 `docs/HARDWARE_COMPATIBILITY.md` 实测区 —— §5.1 检查清单（A-E 五层）已建，待回填"实测值"列
+* [x] **（新增·云端完成）** 准备一键实测探针 `scripts/hardware-probe.ps1`：7 段只读检测（系统/WinRT Sensor API/HID/ACPI/厂商接口/摄像头/GPU 基线），分段隔离，PS 5.1/7 双兼容，JSON 报告；CI 新增探针 job（语法门禁 + PS 5.1 真实执行 + JSON 机器可读校验 + artifact），3 轮迭代全绿
+* [x] **（新增·云端完成）** 建立真机实测检查清单（HARDWARE_COMPATIBILITY §5.1，JSON 字段级判读依据 + 待填实测值）与执行指南（SETUP_WINDOWS §7：放哪/工具/命令/预期输出/判读表/排错表）
 
 ### Phase 2 — M1 Rendering MVP
 
@@ -279,6 +282,13 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-15 · Phase 1 / M0.4（云端准备） · Super Z (main agent)
+
+- **完成**：M0.4 云端可做部分全部完成——① 一键硬件探针 `scripts/hardware-probe.ps1`（7 段只读检测：0 系统 / 1 WinRT Sensor API / 2 HID / 3 ACPI / 4 厂商接口 / 5 摄像头 / 6 GPU 基线；分段隔离、PS 5.1/7 双兼容、JSON 报告）；② CI 新增 `hardware-probe` job（Parser 语法门禁 → Windows PowerShell 5.1 真实执行 → JSON 机器可读校验 → artifact 上传）；③ `docs/SETUP_WINDOWS.md` 第七节执行指南（放哪/工具/命令/预期输出/判读速查表/排错表）；④ `docs/HARDWARE_COMPATIBILITY.md` §5.1 真机实测检查清单（A-E 五层 × JSON 字段级判读依据 × 待填实测值）
+- **云端实证（3 轮迭代，run 35035382145 → 35035937851 → 35036286869 全绿）**：① **HingeAngleSensor 全链路走通**——GetDefaultAsync 操作对象正常返回、await 正常完成、"API 可用但无默认传感器"路径正是真机普通笔记本最可能的结论，代码路径已完整覆盖；② **发现 Server SKU 投影裁剪假象**：Accelerometer 等 5 类在 Server 2025 的 PS 5.1 投影上静态方法缺失（报"does not contain a method named 'GetDefaultAsync'"），而桌面 Win11 上同样的类型字面量调用是社区标准模式——已写入 JSON `note` 字段防真机误判（真机同样报错才可判 API 不可用）；③ **WinRT 静态调用铁律**：必须用类型字面量直接调用 `[Ns.Type, Ns, ContentType = WindowsRuntime]::Method()`；经 `[Type]` 变量的 `$t::Method()` 在 PS 5.1 会抛"方法不存在"或静默返回 null（两种都实测踩到）
+- **产物**：`scripts/hardware-probe.ps1`、CI `hardware-probe` job、`SETUP_WINDOWS §7`、`HARDWARE_COMPATIBILITY §5.1`；commits `e06538e` → `f965fdd` → `3735b00`
+- **遗留 / 阻塞**：M0.4 前 6 项（Sensor API/HID/ACPI/厂商/记录/实测区回填）全部需要真机探针数据；真机操作路径已由 SETUP_WINDOWS §7 备好（30 秒只读，结果 JSON 交回即可回填打勾）；M1.1 Manual Provider 等无硬件依赖项可先行
 
 ### 2026-09-15 · Phase 1 / M0.3 · Super Z (main agent)
 
