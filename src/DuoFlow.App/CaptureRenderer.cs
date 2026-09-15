@@ -3,6 +3,7 @@ using System.Threading;
 using DuoFlow.Capture;
 using DuoFlow.Capture.Interop;
 using Microsoft.UI.Xaml.Controls;
+using Windows.Graphics;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.Mathematics;

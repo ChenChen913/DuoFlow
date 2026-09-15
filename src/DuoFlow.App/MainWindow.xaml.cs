@@ -23,7 +23,7 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         ((FrameworkElement)Content).Loaded += OnLoaded;
-        Closed += OnClosed;
+        Closed += (sender, args) => Cleanup();
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
@@ -74,7 +74,7 @@ public sealed partial class MainWindow : Window
         DispatcherQueue.TryEnqueue(() => StatusText.Text = message);
     }
 
-    private void OnClosed(object sender, WindowClosedEventArgs args)
+    private void Cleanup()
     {
         _fpsTimer?.Stop();
         _renderer?.Dispose();
