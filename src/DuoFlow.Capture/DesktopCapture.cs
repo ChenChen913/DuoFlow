@@ -6,6 +6,7 @@ using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
 using WinRT;
+using SharpGen.Runtime;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
