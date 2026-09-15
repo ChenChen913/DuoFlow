@@ -53,7 +53,8 @@ public sealed class DesktopCapture : IDisposable
             DriverType.Hardware,
             DeviceCreationFlags.BgraSupport,
             null,
-            out ID3D11Device device).CheckError();
+            out ID3D11Device? deviceOut).CheckError();
+        ID3D11Device device = deviceOut!;
         Device = device;
         using IDXGIDevice dxgiDevice = device.QueryInterface<IDXGIDevice>();
 
@@ -62,7 +63,7 @@ public sealed class DesktopCapture : IDisposable
         Guid iid = NativeMethods.GraphicsCaptureItemIID;
         var interop = GraphicsCaptureItem.As<IGraphicsCaptureItemInterop>();
         IntPtr itemAbi = interop.CreateForMonitor(hMonitor, ref iid);
-        Item = GraphicsCaptureItem.FromAbi(itemAbi);
+        Item = GraphicsCaptureItem.FromAbi(itemAbi)!;
         Marshal.Release(itemAbi);
 
         // 3. WinRT device wrapper for the frame pool.

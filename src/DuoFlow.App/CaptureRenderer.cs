@@ -7,7 +7,6 @@ using Windows.Graphics;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Vortice.Mathematics;
-using Vortice.WinUI;
 using WinRT;
 
 namespace DuoFlow.App;
@@ -53,24 +52,26 @@ public sealed class CaptureRenderer : IDisposable
         _factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>().QueryInterface<IDXGIFactory2>();
         var description = new SwapChainDescription1
         {
-            Width = size.Width,
-            Height = size.Height,
+            Width = (uint)size.Width,
+            Height = (uint)size.Height,
             Format = Format.B8G8R8A8_UNorm,
             Stereo = false,
             SampleDescription = new SampleDescription(1, 0),
-            Usage = Usage.RenderTargetOutput,
+            BufferUsage = Usage.RenderTargetOutput,
             BufferCount = 2,
             Scaling = Scaling.Stretch,
             SwapEffect = SwapEffect.FlipSequential,
             AlphaMode = AlphaMode.Premultiplied,
         };
-        _swapChain = _factory.CreateSwapChainForComposition(device, description);
+        _swapChain = _factory.CreateSwapChainForComposition(device, description, null);
 
-        // Bind to the WinUI SwapChainPanel (WinUI 3 interop from Vortice.WinUI).
+        // Bind to the WinUI SwapChainPanel (WinUI 3 interop lives in Vortice.DXGI).
         var panelNative = _panel.As<ISwapChainPanelNative>();
         panelNative.SetSwapChain(_swapChain);
 
-        _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
+        Guid iidTexture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
+        _swapChain.GetBuffer(0u, iidTexture2D, out IntPtr pBackBuffer).CheckError();
+        _backBuffer = new ID3D11Texture2D(pBackBuffer);
 
         // GPU -> GPU: every captured frame is copied and presented directly.
         _capture.FrameArrived += OnFrameArrived;
