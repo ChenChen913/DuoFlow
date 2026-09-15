@@ -87,7 +87,7 @@ M5  Windows Integration      — power events / autostart
 M6+ Productization           — settings UI / installer / full test suite
 ```
 
-Current status: **Specification and repository scaffolding complete; see [EXECUTION_PLAN.md](EXECUTION_PLAN.md) for live execution progress.**
+Current status: **M0 in progress — M0.1 dev environment verified in the cloud (build ✅ launch ✅); see [EXECUTION_PLAN.md](EXECUTION_PLAN.md) for live execution progress.**
 
 ## Project structure (planned)
 

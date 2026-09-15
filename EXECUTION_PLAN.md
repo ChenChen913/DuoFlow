@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 1 — M0 Research & Feasibility** |
-| 当前小任务 | M0.1 开发环境（尚未开始） |
-| 下一步行动 | 在 Windows 11 真机上运行 `scripts/setup-windows.ps1` 或手动安装 .NET 8 SDK / VS 2022 / Windows App SDK，创建最小 WinUI 3 工程并跑通 Hello World |
-| 阻塞项 | 无硬阻塞。环境限制：M0.1 起需要 Windows 11 真机，Linux/云端沙箱无法构建 WinUI 3（详见 §6.1） |
-| 最后更新 | 2026-09-15 · Phase 0 完成（双语 README / Topics / 本执行文档）· Super Z |
+| 当前小任务 | M0.2 Windows Graphics Capture（M0.1 已云端完成 ✅） |
+| 下一步行动 | 开发最小屏幕捕获 Demo（Windows.Graphics.Capture，GPU→GPU），CI 云端构建验证；runner 有桌面会话，可尝试在云端直接截图验证捕获链路 |
+| 阻塞项 | 无。构建验证已由 GitHub Actions 云端承担；真机需求收窄为：M0.4 硬件/传感器实测、M1.4 前的 D3D11 GPU 确认、M1/M2 视觉效果目测调优 |
+| 最后更新 | 2026-09-15 · M0.1 云端验证完成 · Super Z |
 
 ---
 
@@ -70,7 +70,7 @@
 | Phase | 对应 Milestone | 内容 | 状态 |
 | --- | --- | --- | --- |
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
-| Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ⏳ 进行中（未开始实际任务） |
+| Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ⏳ 进行中（M0.1 ✅ 云端完成；M0.2 推进中） |
 | Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ⬜ 未开始 |
 | Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | ⬜ |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
@@ -102,18 +102,18 @@
 
 ### Phase 1 — M0 Research & Feasibility ⏳（当前阶段）
 
-#### M0.1 开发环境
+#### M0.1 开发环境 ✅（2026-09-15 于 GitHub Actions 云端 Windows 完成）
 
-* [ ] 确认 Windows 11 开发环境（版本 / 内部号，记录到 §5 日志）
-* [ ] 安装 .NET 8 SDK
-* [ ] 安装 Visual Studio 2022 或 Build Tools（含 WinUI 3 / Windows App SDK workload）
-* [ ] 确认 Windows App SDK 版本可用
-* [ ] 确认 Direct3D 11 开发环境（GPU / D3D Debug Layer）
-* [ ] 创建最小 WinUI 3 项目（`src/DuoFlow.App`）
-* [ ] 编译并运行 Hello World
+* [x] 确认 Windows 开发环境（Actions `windows-latest` = Windows Server 2025 Datacenter Build 26100，与 Win11 同核；真机 Windows 11 实测顺延至 M0.4/M5）
+* [x] .NET SDK 可用（runner 预装 .NET 10.0.400，net8.0-windows TFM 构建通过）
+* [x] Visual Studio MSBuild 可用（vswhere 定位；WinUI 3 必须用 VS MSBuild，dotnet CLI 报 MSB4062）
+* [x] 确认 Windows App SDK 可用（Microsoft.WindowsAppSDK 1.6.250602001，自包含运行时自举成功）
+* [ ] 确认 Direct3D 11 开发环境（GPU / D3D Debug Layer）——云端无独立 GPU，随 M1.4 渲染开发在真机确认
+* [x] 创建最小 WinUI 3 项目（`src/DuoFlow.App`，未打包模式 WindowsPackageType=None）
+* [x] 编译并运行 Hello World（CI 构建 ✅ + 进程启动 ✅ PID 8724 窗口标题 'DuoFlow' + 桌面截图）
 
-**验收**：项目可成功 Build；程序可启动并显示窗口。
-**产物**：最小工程 + 环境信息记录（追加到 §5 日志）。
+**验收**：项目可成功 Build ✅；程序可启动并显示窗口 ✅（证据：`docs/media/m0-hello-world.png`，Actions run 34986217173）。
+**产物**：`src/DuoFlow.App` 最小工程、`.github/workflows/m0-windows-build.yml`（云端构建门禁）、环境信息记录（§5）。
 
 #### M0.2 Windows Graphics Capture
 
@@ -287,6 +287,14 @@
 > - **遗留 / 阻塞**：
 > ```
 
+### 2026-09-15 · Phase 1 / M0.1 · Super Z (main agent)
+
+- **完成**：无需用户真机——在 GitHub Actions 云端 Windows（windows-latest = Server 2025 Build 26100）完成 M0.1 全套验证：VS MSBuild 定位 → `src/DuoFlow.App`（最小 WinUI 3，未打包自包含）构建成功 → 应用启动成功（PID 8724，窗口标题 'DuoFlow'）→ 桌面截图留证
+- **踩坑记录**：WinUI 3 用 `dotnet CLI` 构建报 MSB4062（PRI 任务 DLL 随 VS 分发，dotnet SDK 内没有）；修复 = CI 改用 vswhere 定位 VS MSBuild /restore 构建
+- **产物**：`src/DuoFlow.App`（7 文件）、`.github/workflows/m0-windows-build.yml`（每次 push 自动构建+启动+截图）、`docs/media/m0-hello-world.png`
+- **Commit / Run**：`0b0b572` → `90a5cc7`；Actions run 34986217173（success）
+- **遗留 / 阻塞**：D3D11 Debug Layer 需真机 GPU（M1.4 前确认）；Windows 11 真机实测顺延至 M0.4 硬件调研
+
 ### 2026-09-15 · Phase 0 · Super Z (main agent)
 
 - **完成**：创建公开仓库；三份聊天记录（聊天记录01-03.txt）沉淀为 5 份基线文档；双语 README（中英互切）；GitHub Topics 20 个 + 双语仓库描述；创建本执行文档并确立交接协议
@@ -300,10 +308,10 @@
 
 ### 6.1 开发环境要求（Phase 1 起生效）
 
-- **必须** Windows 11 真机（或开启 GPU 直通的虚拟机）；
-- .NET 8 SDK + Visual Studio 2022（勾选 WinUI / Windows App SDK workload）+ 支持 D3D11 的 GPU（建议开启 D3D Debug Layer）；
+- **构建级验证已上云**：GitHub Actions `m0-windows-build` 工作流在 `windows-latest`（Windows Server 2025 + 预装 VS + .NET SDK）上自动完成 编译 → 启动 → 截图，每次 push 自动触发；WinUI 3 必须用 VS MSBuild 构建（dotnet CLI 会报 MSB4062）；
+- 本地开发仍建议 Windows 11 真机 + VS 2022 + 支持 D3D11 的 GPU（D3D Debug Layer）；可用 `scripts/setup-windows.ps1` 一键准备；
 - 辅助脚本 [`scripts/setup-windows.ps1`](scripts/setup-windows.ps1) 可自动完成 SDK 检测与最小工程脚手架；**脚本放哪 / 用什么工具 / 怎么执行 / 预期输出 / 故障排查，见 [`docs/SETUP_WINDOWS.md`](docs/SETUP_WINDOWS.md)**；
-- **Linux / 云端沙箱只能做**：文档维护、接口与架构设计、纯 .NET 跨平台类库与单元测试；**不能**构建 WinUI 3 应用（Windows App SDK 仅支持 windows TFM）。
+- **Linux 沙箱只能做**：文档维护、代码编写、git 操作；WinUI 3 的 Windows 构建验证由 Actions 云端承担（Windows App SDK 仅支持 windows TFM，且必须 VS MSBuild）。
 
 ### 6.2 架构与文档同步关系
 

@@ -86,7 +86,7 @@ M5  Windows Integration      — 电源事件 / 开机自启
 M6+ Productization           — 设置界面 / 安装包 / 完整测试
 ```
 
-当前状态：**Specification 与仓库基建完成，执行进度见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)。**
+当前状态：**M0 进行中 —— M0.1 开发环境已在云端验证通过（构建 ✅ 启动 ✅），执行进度见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)。**
 
 ## 项目结构（规划）
 
