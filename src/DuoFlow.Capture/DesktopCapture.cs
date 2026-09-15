@@ -79,7 +79,8 @@ public sealed class DesktopCapture : IDisposable
         // 5. Session. Cosmetic options are best-effort (permission-gated on some builds).
         _session = _framePool.CreateCaptureSession(Item);
         TrySet(_session, session => session.IsCursorCaptureEnabled = true);
-        TrySet(_session, session => session.IsBorderRequired = false);
+        // IsBorderRequired requires a 22000+ TFM projection and special permission;
+        // skipped for M0.2 (border/outline does not affect the feasibility result).
         _session.StartCapture();
     }
 
