@@ -131,20 +131,39 @@ if ($PSVersionTable.PSEdition -eq "Core") {
     }
 
     # Probe one WinRT sensor class.
-    #   $GetType : scriptblock returning the projected WinRT type literal
-    #   $ReadFn  : scriptblock param($s) returning one sync reading (or $null)
-    #   $DescFn  : scriptblock param($reading) returning a human-readable sample
+    # IMPORTANT (learned on CI, Windows PowerShell 5.1):
+    #   Calling a WinRT static method through a [Type] variable
+    #   ($rtType::GetDefaultAsync()) binds unreliably - it either throws
+    #   "does not contain a method named 'GetDefaultAsync'" or silently
+    #   returns $null. The reliable pattern is the TYPE LITERAL direct
+    #   static call, so both $OpFn and $TypeFn below embed the full
+    #   literal: [Ns.Type, Ns, ContentType = WindowsRuntime]::Method()
     function Test-WinRtSensor {
-        param([string]$Key, [scriptblock]$GetType, [scriptblock]$ReadFn, [scriptblock]$DescFn)
+        param([string]$Key, [scriptblock]$OpFn, [scriptblock]$TypeFn, [scriptblock]$ReadFn, [scriptblock]$DescFn)
         try {
-            $rtType = & $GetType          # PowerShell type literal (5.1 WinRT projection)
+            $rtType = & $TypeFn    # literal type (loads the projection)
+            $op = & $OpFn          # literal static call -> IAsyncOperation
+
+            if ($null -eq $op) {
+                # Static call silently returned null: this is a binding
+                # anomaly, NOT proof that the hardware is absent.
+                $script:Result.sensorApi.sensors[$Key] = [ordered]@{
+                    supported = $false
+                    note = "binding anomaly: GetDefaultAsync() returned null op (treat as Unknown)"
+                }
+                Write-No "$Key : null op (binding anomaly, treat as Unknown)"
+                return
+            }
+
             $sensor = $null
-            $op = $rtType::GetDefaultAsync()
-            if ($op) { $sensor = Await-WinRt $op $rtType }
+            $sensor = Await-WinRt $op $rtType
 
             if ($null -eq $sensor) {
-                $script:Result.sensorApi.sensors[$Key] = [ordered]@{ supported = $false }
-                Write-No "$Key : GetDefaultAsync() returned null"
+                $script:Result.sensorApi.sensors[$Key] = [ordered]@{
+                    supported = $false
+                    note = "API available; GetDefaultAsync() completed but no default sensor is present"
+                }
+                Write-No "$Key : API OK, no default sensor present"
                 return
             }
 
@@ -170,31 +189,37 @@ if ($PSVersionTable.PSEdition -eq "Core") {
     # qualifier is PowerShell-specific projection syntax (5.1) and must stay
     # inside the type literals - it is NOT valid for [Type]::GetType().
     Test-WinRtSensor "HingeAngleSensor" `
+        { [Windows.Devices.Sensors.HingeAngleSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
         { [Windows.Devices.Sensors.HingeAngleSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
         { param($s) $s.GetCurrentReading() } `
         { param($r) "angle=$($r.AngleInDegrees) deg" }
 
     Test-WinRtSensor "Accelerometer" `
+        { [Windows.Devices.Sensors.Accelerometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
         { [Windows.Devices.Sensors.Accelerometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
         { param($s) $s.GetCurrentReading() } `
         { param($r) "acc=($($r.AccelerationX), $($r.AccelerationY), $($r.AccelerationZ)) g" }
 
     Test-WinRtSensor "Gyrometer" `
+        { [Windows.Devices.Sensors.Gyrometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
         { [Windows.Devices.Sensors.Gyrometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
         { param($s) $s.GetCurrentReading() } `
         { param($r) "gyro=($($r.AngularVelocityX), $($r.AngularVelocityY), $($r.AngularVelocityZ)) deg/s" }
 
     Test-WinRtSensor "Inclinometer" `
+        { [Windows.Devices.Sensors.Inclinometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
         { [Windows.Devices.Sensors.Inclinometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
         { param($s) $s.GetCurrentReading() } `
         { param($r) "pitch=$($r.PitchDegrees), roll=$($r.RollDegrees), yaw=$($r.YawDegrees)" }
 
     Test-WinRtSensor "SimpleOrientationSensor" `
+        { [Windows.Devices.Sensors.SimpleOrientationSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
         { [Windows.Devices.Sensors.SimpleOrientationSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
         { param($s) $s.GetCurrentOrientation() } `
         { param($r) "orientation=$($r.Orientation)" }
 
     Test-WinRtSensor "LightSensor" `
+        { [Windows.Devices.Sensors.LightSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
         { [Windows.Devices.Sensors.LightSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
         { param($s) $s.GetCurrentReading() } `
         { param($r) "lux=$($r.IlluminanceInLux)" }
