@@ -18,6 +18,7 @@ public sealed partial class MainWindow : Window
     private DispatcherQueueTimer? _fpsTimer;
     private long _lastFrameCount;
     private int _started;
+    private int _ticks;
 
     public MainWindow()
     {
@@ -44,7 +45,7 @@ public sealed partial class MainWindow : Window
             SizeInt32 size = _capture.Item.Size;
             UpdateStatus(
                 $"捕获中：{_capture.MonitorDescription} · {size.Width}×{size.Height} · " +
-                "GPU texture · 0 FPS");
+                $"GPU texture · {_capture.DriverInfo} · 0 FPS");
 
             _fpsTimer = DispatcherQueue.CreateTimer();
             _fpsTimer.Interval = TimeSpan.FromSeconds(1);
@@ -53,9 +54,12 @@ public sealed partial class MainWindow : Window
                 long now = _renderer.PresentedFrames;
                 long fps = now - _lastFrameCount;
                 _lastFrameCount = now;
+                string noFrameHint = (now == 0 && _ticks++ >= 5)
+                    ? " · ⚠ 云端虚拟显卡未产生帧（真机正常）"
+                    : "";
                 UpdateStatus(
                     $"捕获中：{_capture.MonitorDescription} · {size.Width}×{size.Height} · " +
-                    $"GPU texture · {fps} FPS · 已捕获 {now} 帧");
+                    $"GPU texture · {_capture.DriverInfo} · {fps} FPS · 已捕获 {now} 帧{noFrameHint}");
             };
             _fpsTimer.Start();
         }

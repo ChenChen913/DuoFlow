@@ -5,6 +5,7 @@ using Windows.Graphics;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
+using Windows.System;
 using WinRT;
 using Vortice.Direct3D;
 using Vortice.Direct3D11;
@@ -35,9 +36,13 @@ public sealed class DesktopCapture : IDisposable
     public GraphicsCaptureItem Item { get; private set; } = null!;
     public string MonitorDescription => Item?.DisplayName ?? "unknown";
 
+    /// <summary>Diagnostics: driver type used + WGC support flag (logged in the UI).</summary>
+    public string DriverInfo { get; private set; } = "";
+
     private IDirect3DDevice? _winrtDevice;
     private Direct3D11CaptureFramePool? _framePool;
     private GraphicsCaptureSession? _session;
+    private DispatcherQueueController? _dispatcherController;
     private bool _disposed;
 
     public void Start()
@@ -48,13 +53,21 @@ public sealed class DesktopCapture : IDisposable
         }
 
         // 1. D3D11 device (BGRA support required by the capture API).
+        //    Hardware first; fall back to WARP on machines without a real GPU
+        //    (cloud runners / VMs) so the capture chain can still be evaluated.
+        DriverType driverType = DriverType.Hardware;
         Vortice.Direct3D11.D3D11.D3D11CreateDevice(
-            null,
-            DriverType.Hardware,
-            DeviceCreationFlags.BgraSupport,
-            null,
-            out ID3D11Device? deviceOut).CheckError();
-        ID3D11Device device = deviceOut!;
+            null, driverType, DeviceCreationFlags.BgraSupport, null,
+            out ID3D11Device? deviceOut);
+        if (deviceOut is null)
+        {
+            driverType = DriverType.Warp;
+            Vortice.Direct3D11.D3D11.D3D11CreateDevice(
+                null, driverType, DeviceCreationFlags.BgraSupport, null,
+                out deviceOut);
+        }
+        deviceOut!.CheckError();
+        ID3D11Device device = deviceOut;
         Device = device;
         using IDXGIDevice dxgiDevice = device.QueryInterface<IDXGIDevice>();
 
@@ -69,8 +82,11 @@ public sealed class DesktopCapture : IDisposable
         // 3. WinRT device wrapper for the frame pool.
         _winrtDevice = Direct3D11Helper.CreateIDirect3DDevice(dxgiDevice);
 
-        // 4. Free-threaded frame pool: 2 buffers, GPU textures only.
-        _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
+        // 4. Dispatcher-queue frame pool on a dedicated thread (the dispatcher
+        //    flavour is the most compatible across SKUs / virtual display drivers).
+        _dispatcherController = DispatcherQueueController.CreateOnDedicatedThread();
+        _framePool = Direct3D11CaptureFramePool.Create(
+            _dispatcherController.DispatcherQueue,
             _winrtDevice,
             DirectXPixelFormat.B8G8R8A8UIntNormalized,
             2,
@@ -83,6 +99,11 @@ public sealed class DesktopCapture : IDisposable
         // IsBorderRequired requires a 22000+ TFM projection and special permission;
         // skipped for M0.2 (border/outline does not affect the feasibility result).
         _session.StartCapture();
+
+        bool supported;
+        try { supported = GraphicsCaptureSession.IsSupported(); }
+        catch { supported = true; }
+        DriverInfo = $"{driverType} · IsSupported={supported}";
     }
 
     /// <summary>Resize the frame pool when the monitor resolution changes.</summary>
@@ -132,9 +153,11 @@ public sealed class DesktopCapture : IDisposable
         try { _framePool?.Dispose(); } catch { }
         try { (_winrtDevice as IDisposable)?.Dispose(); } catch { }
         try { Device?.Dispose(); } catch { }
+        try { _dispatcherController?.Dispose(); } catch { }
         _session = null;
         _framePool = null;
         _winrtDevice = null;
         Device = null!;
+        _dispatcherController = null;
     }
 }
