@@ -120,3 +120,89 @@ dotnet run
 2. 在 §2 快照更新"当前小任务 / 下一步行动"；
 3. 在 §5 追加一条进度日志（记下 Windows 版本号、.NET SDK 版本）；
 4. commit：`phase(M0.1): dev environment verified + minimal WinUI 3 project`。
+
+---
+
+## 七、M0.4 硬件实测探针（hardware-probe.ps1）
+
+> 对应 `EXECUTION_PLAN.md` 的 M0.4 Hardware Research，脚本本体是 [`scripts/hardware-probe.ps1`](../scripts/hardware-probe.ps1)。
+> **它做什么**：只读检测你这台笔记本的传感器 / HID / ACPI / 厂商接口能力，生成一份 JSON 报告，交给 AI Agent 回填 `docs/HARDWARE_COMPATIBILITY.md`。**全程只读，不上传任何数据，不改系统任何设置。**
+
+### 7.1 脚本放在哪里执行？
+
+和第六节一样：**整个仓库克隆或解压后，脚本保持在 `DuoFlow\scripts\` 原位**，位置不对会找不到输出目录（默认输出到当前目录，所以进仓库根目录跑最省事）。
+
+### 7.2 用什么工具执行？
+
+**Windows 自带的 Windows PowerShell 5.1**（开始菜单搜 "PowerShell"，蓝色图标的那个；不要选 "PowerShell 7 (pwsh)"）。
+
+原因：传感器 API（WinRT）只有在 Windows PowerShell 5.1 里能调用。用 pwsh 7 也能跑，但第一节传感器检测会被跳过（脚本会明确提示），还得用 5.1 重跑一遍。**不需要管理员权限**，但管理员身份能多看到个别设备，建议照第六节习惯用管理员窗口。
+
+### 7.3 怎么执行？（完整命令）
+
+```powershell
+# 1. 进入仓库根目录（按你的实际路径调整）
+cd C:\Dev\DuoFlow
+
+# 2. 解除当前窗口的脚本运行限制（只对本窗口生效，安全）
+Set-ExecutionPolicy -Scope Process Bypass -Force
+
+# 3. 运行硬件探针（30 秒内完成）
+.\scripts\hardware-probe.ps1
+```
+
+### 7.4 执行后预期看到什么？
+
+正常输出是 7 段（`[FOUND]` 绿色 = 检测到，`[NOT FOUND]` 黄色 = 没检测到，**黄色不是报错**，"没这个硬件"本身就是有效结论）：
+
+```text
+==> Section 0: System basics
+    OS          : Microsoft Windows 11 专业版 (build 22631)
+    Machine     : LENOVO 82XXXXXXXX
+    CPU         : 12th Gen Intel(R) Core(TM) ...
+
+==> Section 1: Windows Sensor API (WinRT)
+    [NOT FOUND] HingeAngleSensor : GetDefaultAsync() returned null   ← 普通笔记本的预期结果
+    [FOUND] Accelerometer supported | acc=(...) g
+
+==> Section 2: HID / PnP sensor devices
+    ...
+==> Section 3: ACPI layer
+    [FOUND] ACPI lid device present: ...        ← 有盖设备很有价值，记下来
+    ...
+==> Section 4: Vendor WMI interfaces
+    ...
+==> Section 5: Camera inventory
+    ...
+==> Section 6: GPU / display
+    [FOUND] GPU: Intel(R) Iris(R) Xe Graphics | 31.0.101.xxxx
+==> Writing result JSON
+    [FOUND] JSON written: C:\Dev\DuoFlow\hardware-probe-result.json
+==> SUMMARY
+    Sections executed: 7 | errors: 0
+    NEXT STEP: send hardware-probe-result.json back to the AI Agent.
+```
+
+**成功标志**：最后 SUMMARY 行 `errors: 0`（或只有个别 `[ERROR]`），且仓库根目录出现 `hardware-probe-result.json`。
+
+**做完后**：把 JSON 文件内容（或整段控制台输出截图）发给 AI Agent，它会：① 回填 `docs/HARDWARE_COMPATIBILITY.md` 第 5 节实测行；② 在 `EXECUTION_PLAN.md` 打勾 M0.4；③ 更新快照与日志。
+
+### 7.5 结果怎么判读？（速查表）
+
+| 检测项 | 结果 | 含义 |
+| --- | --- | --- |
+| HingeAngleSensor | NOT FOUND | 普通笔记本普遍如此（该 API 主要面向双屏设备）→ 传感器 Provider 走 HID/摄像头路线 |
+| HingeAngleSensor | FOUND | 少见的高价值硬件，记录 DeviceId，M4 直接接入 |
+| Accelerometer / Inclinometer | FOUND | 可作为开合角度的间接信号源（需实测噪声，M4 验证） |
+| PnP `Sensor` 类设备 | ≥1 | 存在传感器集线器（Sensor Hub），HID 传感器路线可行性高 |
+| ACPI 盖设备 PNP0C0D | FOUND | BIOS 层有盖事件，可探索监听方案（Windows 对普通笔记本不一定暴露） |
+| 厂商 WMI 类（Lenovo 等） | FOUND | 记录类名清单，M4 探索厂商私有接口 |
+
+### 7.6 常见问题排查
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 提示 "SKIPPED: pwsh 7 ..." | 你用的是 PowerShell 7，换用 Windows PowerShell 5.1 重跑（开始菜单搜 PowerShell，蓝图标） |
+| `Get-PnpDevice` 报红字 | 少数精简系统缺 PnpDevice 模块；用管理员窗口重跑；仍失败则把报错发给 AI Agent |
+| 某段出现 `[ERROR]` 行 | 单段失败不影响其他段，照常把 JSON 发回，AI Agent 会标注该段待重测 |
+| JSON 文件找不到 | 看最后 SUMMARY 上方的 `[FOUND] JSON written: <路径>`，按那个路径找；或确认你在仓库根目录运行的 |

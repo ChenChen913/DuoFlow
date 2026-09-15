@@ -1,15 +1,22 @@
 # =====================================================================
 # DuoFlow — M0 Windows cloud build (runs on GitHub's hosted Windows VM)
 # =====================================================================
-# Purpose (EXECUTION_PLAN.md Phase 1 / M0.1):
-#   - Verify the .NET 8 + WinUI 3 toolchain by building src/DuoFlow.App
-#     on a real Windows environment in the cloud, so no local Windows
-#     machine is required for build-level verification.
-#   - Best-effort: launch the app headless, prove the process starts,
-#     and capture a screenshot of the desktop.
+# Purpose (EXECUTION_PLAN.md Phase 1 / M0):
+#   job 1  build-winui      : verify the .NET 8 + WinUI 3 toolchain by
+#                             building src/DuoFlow.App on a real Windows
+#                             environment in the cloud (M0.1), launch the
+#                             app headless + screenshot (M0.1), and assert
+#                             overlay properties (M0.3).
+#   job 2  hardware-probe   : run scripts/hardware-probe.ps1 (M0.4) under
+#                             Windows PowerShell 5.1 to prove the probe is
+#                             bug-free on a real Windows host. The runner is
+#                             a VM without real sensors, so "NOT FOUND"
+#                             results are expected — what we verify here is
+#                             that every code path executes without crashing
+#                             and produces hardware-probe-result.json.
 #
-# Runs automatically on every push touching src/ or this workflow,
-# and can be triggered manually from the Actions tab (workflow_dispatch).
+# Runs automatically on every push touching src/, scripts/hardware-probe.ps1
+# or this workflow, and can be triggered manually (workflow_dispatch).
 # =====================================================================
 
 name: M0 Windows Build
@@ -19,6 +26,7 @@ on:
     branches: [main]
     paths:
       - "src/**"
+      - "scripts/hardware-probe.ps1"
       - ".github/workflows/m0-windows-build.yml"
   workflow_dispatch:
 
@@ -153,4 +161,51 @@ jobs:
             duoflow-overlay-smoke.json
             duoflow-trace.txt
             duoflow-crash.txt
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------
+  # M0.4: prove hardware-probe.ps1 runs cleanly on a real Windows host.
+  # shell: powershell = Windows PowerShell 5.1 (required for the WinRT
+  # sensor projection; pwsh 7 cannot query WinRT sensors).
+  # ---------------------------------------------------------------------
+  hardware-probe:
+    name: Run hardware probe (M0.4 script verification)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Fail fast on syntax errors before anything else runs.
+      - name: Parse-check hardware-probe.ps1
+        shell: powershell
+        run: |
+          $tokens = $null; $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            "$PWD/scripts/hardware-probe.ps1", [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host "PARSE ERROR: $($_.Message) @ line $($_.Extent.StartLineNumber)" }
+            Write-Error "hardware-probe.ps1 has $($errors.Count) syntax error(s)"
+            exit 1
+          }
+          Write-Host "hardware-probe.ps1 parses cleanly"
+
+      - name: Run hardware probe
+        shell: powershell
+        run: |
+          & "$PWD/scripts/hardware-probe.ps1" -OutputDir "$PWD"
+          if (-not (Test-Path "$PWD/hardware-probe-result.json")) {
+            Write-Error "hardware-probe-result.json was not produced"
+            exit 1
+          }
+          # Prove the JSON is machine-readable before we ship it as an artifact.
+          $null = Get-Content "$PWD/hardware-probe-result.json" -Raw | ConvertFrom-Json
+          Write-Host "JSON validates OK"
+
+      - name: Upload probe result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-probe-result
+          path: hardware-probe-result.json
           if-no-files-found: ignore
