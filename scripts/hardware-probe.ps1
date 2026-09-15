@@ -180,7 +180,21 @@ if ($PSVersionTable.PSEdition -eq "Core") {
             $script:Result.sensorApi.sensors[$Key] = $rec
             Write-Ok "$Key supported$(if ($rec.sample) { ' | ' + $rec.sample })"
         } catch {
-            $script:Result.sensorApi.sensors[$Key] = [ordered]@{ supported = $false; error = $_.Exception.Message }
+            $err = $_.Exception.Message
+            $note = $null
+            if ($err -match "does not contain a method named") {
+                # CI finding: on windows-latest (Windows SERVER 2025) the sensor
+                # projections are incomplete - static methods are missing from
+                # the projected types. On desktop Windows 11 the same literal
+                # call is the standard, community-proven pattern. So on the
+                # real machine this usually means the API is really absent.
+                $note = "static method missing on projected type; on Windows Server this is a known SKU projection gap - on desktop Win11 treat this result as definitive"
+            }
+            $script:Result.sensorApi.sensors[$Key] = [ordered]@{
+                supported = $false
+                error = $err
+                note  = $note
+            }
             Add-SectionError "sensorApi/$Key" $_.Exception.Message
         }
     }
