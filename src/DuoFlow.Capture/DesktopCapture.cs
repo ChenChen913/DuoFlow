@@ -56,18 +56,18 @@ public sealed class DesktopCapture : IDisposable
         //    Hardware first; fall back to WARP on machines without a real GPU
         //    (cloud runners / VMs) so the capture chain can still be evaluated.
         DriverType driverType = DriverType.Hardware;
-        Vortice.Direct3D11.D3D11.D3D11CreateDevice(
+        Result hr = Vortice.Direct3D11.D3D11.D3D11CreateDevice(
             null, driverType, DeviceCreationFlags.BgraSupport, null,
             out ID3D11Device? deviceOut);
-        if (deviceOut is null)
+        if (hr.Failure || deviceOut is null)
         {
             driverType = DriverType.Warp;
-            Vortice.Direct3D11.D3D11.D3D11CreateDevice(
+            hr = Vortice.Direct3D11.D3D11.D3D11CreateDevice(
                 null, driverType, DeviceCreationFlags.BgraSupport, null,
                 out deviceOut);
         }
-        deviceOut!.CheckError();
-        ID3D11Device device = deviceOut;
+        hr.CheckError();
+        ID3D11Device device = deviceOut!;
         Device = device;
         using IDXGIDevice dxgiDevice = device.QueryInterface<IDXGIDevice>();
 
