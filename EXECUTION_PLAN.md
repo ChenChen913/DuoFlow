@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 1 — M0 Research & Feasibility** |
-| 当前小任务 | M0.2 Windows Graphics Capture（M0.1 已云端完成 ✅） |
-| 下一步行动 | 开发最小屏幕捕获 Demo（Windows.Graphics.Capture，GPU→GPU），CI 云端构建验证；runner 有桌面会话，可尝试在云端直接截图验证捕获链路 |
+| 当前小任务 | M0.3 Overlay（M0.1 ✅ M0.2 ✅ 均云端完成） |
+| 下一步行动 | 透明 Overlay 窗口（Topmost/ClickThrough/NoActivate）+ 把捕获渲染迁入 Overlay 层，CI 云端验证；多显示器/高DPI 矩阵真机补测 |
 | 阻塞项 | 无。构建验证已由 GitHub Actions 云端承担；真机需求收窄为：M0.4 硬件/传感器实测、M1.4 前的 D3D11 GPU 确认、M1/M2 视觉效果目测调优 |
-| 最后更新 | 2026-09-15 · M0.1 云端验证完成 · Super Z |
+| 最后更新 | 2026-09-15 · M0.2 云端验证完成（31FPS 实时捕获显示）· Super Z |
 
 ---
 
@@ -70,7 +70,7 @@
 | Phase | 对应 Milestone | 内容 | 状态 |
 | --- | --- | --- | --- |
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
-| Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ⏳ 进行中（M0.1 ✅ 云端完成；M0.2 推进中） |
+| Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ⏳ 进行中（M0.1 ✅ M0.2 ✅ 云端完成；M0.3 推进中） |
 | Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ⬜ 未开始 |
 | Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | ⬜ |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
@@ -115,17 +115,19 @@
 **验收**：项目可成功 Build ✅；程序可启动并显示窗口 ✅（证据：`docs/media/m0-hello-world.png`，Actions run 34986217173）。
 **产物**：`src/DuoFlow.App` 最小工程、`.github/workflows/m0-windows-build.yml`（云端构建门禁）、环境信息记录（§5）。
 
-#### M0.2 Windows Graphics Capture
+#### M0.2 Windows Graphics Capture ✅（2026-09-15 云端验证，帧实时显示 31FPS）
 
-* [ ] 创建最小屏幕捕获 Demo
-* [ ] 获取主显示器
-* [ ] 捕获桌面纹理
-* [ ] 验证 GPU Texture（DirectX / Direct3D11 interop，不落地 CPU Bitmap）
-* [ ] 测试不同分辨率
-* [ ] 测试高 DPI
-* [ ] 测试高刷新率
+* [x] 创建最小屏幕捕获 Demo（`src/DuoFlow.Capture` 类库 + App 内 `CaptureRenderer`）
+* [x] 获取主显示器（`MonitorFromWindow` + `IGraphicsCaptureItemInterop.CreateForMonitor`，无需选屏 UI）
+* [x] 捕获桌面纹理（FrameArrived → ID3D11Texture2D，实测云端 231 帧/7.5s）
+* [x] 验证 GPU Texture（Device→FramePool→CopyResource→Composition SwapChain 全程 GPU→GPU，无 CPU Bitmap；D3D 设备 Hardware 档）
+* [x] 实时显示（SwapChainPanel 组合交换链，云端实测 **31 FPS**，见 `docs/media/m0-capture.png` 镜像递归截图）
+* [ ] 测试不同分辨率（真机项：多台不同分辨率显示器）
+* [ ] 测试高 DPI（真机项：DPI 缩放 >100% 的屏幕）
+* [ ] 测试高刷新率（真机项：90/120/144Hz 屏；云端虚拟屏仅 60Hz）
 
-**验收**：Desktop → Captured Texture 实时显示。
+**验收**：Desktop → Captured Texture 实时显示 ✅（云端 31FPS；不同分辨率/高DPI/高刷属真机矩阵测试，顺延至 M1 联调）。
+**踩坑记录**：① `IDirect3DDxgiInterfaceAccess` 必须 `InterfaceIsIUnknown`（.NET8 对 IInspectable ComImport 抛 PNSE）；② WinUI3 SwapChainPanel 绑定用 `Vortice.WinUI.ISwapChainPanelNative(panel)` 构造器；③ WinAppSDK 需 ≥1.8 配 Vortice.WinUI 3.8。
 
 #### M0.3 Overlay
 
@@ -286,6 +288,14 @@
 > - **Commit**：
 > - **遗留 / 阻塞**：
 > ```
+
+### 2026-09-15 · Phase 1 / M0.2 · Super Z (main agent)
+
+- **完成**：屏幕捕获全链路云端验证——`DuoFlow.Capture` 类库（DesktopCapture + D3D11 interop）→ FrameArrived GPU 纹理 → CopyResource → Composition SwapChain → SwapChainPanel 实时显示；云端实测 **31 FPS / 231 帧**，截图呈现镜像递归效果（`docs/media/m0-capture.png`）
+- **踩坑记录**：① Vortice API 用法以包内 XML 文档为准（ISwapChainPanelNative 已从 Vortice.WinUI 迁至 Vortice.DXGI，WinUI3 面板绑定用 `new Vortice.WinUI.ISwapChainPanelNative(panel)` 构造器）；② `IDirect3DDxgiInterfaceAccess` 必须 `InterfaceIsIUnknown`，.NET8 对 IInspectable ComImport 抛 PlatformNotSupportedException；③ WinAppSDK 升至 1.8（Vortice.WinUI 3.8.3 依赖）；④ TFM 升至 net8.0-windows10.0.22621
+- **产物**：`src/DuoFlow.Capture`（4 文件）、`src/DuoFlow.App/CaptureRenderer.cs`、MainWindow 捕获化改造、`docs/media/m0-capture.png`
+- **Commit / Run**：`2873946`→`b4f1d12`（10 轮迭代）；最终成功 run 34992429365
+- **遗留 / 阻塞**：不同分辨率/高DPI/高刷测试矩阵需真机；FPS 提示逻辑已修（b4f1d12）
 
 ### 2026-09-15 · Phase 1 / M0.1 · Super Z (main agent)
 
