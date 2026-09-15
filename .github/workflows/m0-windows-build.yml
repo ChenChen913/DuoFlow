@@ -37,12 +37,24 @@ jobs:
           Write-Host "== dotnet SDKs ==";  dotnet --list-sdks
           Write-Host "== OS ==";          (Get-CimInstance Win32_OperatingSystem) | Select-Object Caption, BuildNumber, Version | Format-List
 
+      # WinUI 3 must be built with VS MSBuild: the PRI/MRT build tasks
+      # (Microsoft.Build.Packaging.Pri.Tasks.dll) ship with Visual Studio,
+      # not with the dotnet SDK -> "dotnet build" fails with MSB4062.
+      - name: Locate VS MSBuild
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+          if (-not $msbuild) { Write-Error "VS MSBuild not found on runner" }
+          Write-Host "MSBuild found: $msbuild"
+          "MSBUILD_EXE=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Build DuoFlow.App (WinUI 3)
         shell: pwsh
         run: >
-          dotnet build src/DuoFlow.App/DuoFlow.App.csproj
-          -c Debug -p:Platform=x64
-          -bl:m0-build.binlog
+          & $env:MSBUILD_EXE "src/DuoFlow.App/DuoFlow.App.csproj"
+          /restore /p:Configuration=Debug /p:Platform=x64 /p:RuntimeIdentifier=win-x64
+          /bl:m0-build.binlog /nologo /v:m
 
       # ---- Best effort: launch the app and screenshot the desktop ----
       # GUI availability on hosted runners can vary; failures here must NOT
