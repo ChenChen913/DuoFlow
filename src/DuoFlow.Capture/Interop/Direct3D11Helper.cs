@@ -29,10 +29,14 @@ public static class Direct3D11Helper
     /// <summary>
     /// WinRT IDirect3DDxgiInterfaceAccess: lets us retrieve the native DXGI/D3D
     /// pointer behind an IDirect3DSurface.
+    /// NOTE: declared as IUnknown-based — .NET 8's built-in COM hosting throws
+    /// PlatformNotSupportedException for IInspectable-flavoured ComImport casts,
+    /// while QI only needs IUnknown at the ABI level (same pattern the official
+    /// samples use).
     /// </summary>
     [ComImport]
     [Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIInspectable)]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
     public interface IDirect3DDxgiInterfaceAccess
     {
         IntPtr GetInterface([In] ref Guid iid);
