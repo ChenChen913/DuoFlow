@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
     <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
     <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
     <RootNamespace>DuoFlow.App</RootNamespace>
@@ -25,6 +25,7 @@
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.*" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.*" />
     <PackageReference Include="Vortice.DXGI" Version="3.*" />
+    <PackageReference Include="Vortice.WinUI" Version="3.*" />
   </ItemGroup>
 
   <ItemGroup>

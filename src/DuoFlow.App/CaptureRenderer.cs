@@ -65,8 +65,9 @@ public sealed class CaptureRenderer : IDisposable
         };
         _swapChain = _factory.CreateSwapChainForComposition(device, description, null);
 
-        // Bind to the WinUI SwapChainPanel (WinUI 3 interop lives in Vortice.DXGI).
-        var panelNative = _panel.As<ISwapChainPanelNative>();
+        // Bind to the WinUI SwapChainPanel via the WinUI 3 interop wrapper
+        // (QI 'ISwapChainPanelNative' {63aad0b8-...} from microsoft.ui.xaml dxinterop).
+        using var panelNative = new Vortice.WinUI.ISwapChainPanelNative(_panel);
         panelNative.SetSwapChain(_swapChain);
 
         _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
