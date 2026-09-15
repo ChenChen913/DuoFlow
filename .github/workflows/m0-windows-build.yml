@@ -1,0 +1,87 @@
+# =====================================================================
+# DuoFlow — M0 Windows cloud build (runs on GitHub's hosted Windows VM)
+# =====================================================================
+# Purpose (EXECUTION_PLAN.md Phase 1 / M0.1):
+#   - Verify the .NET 8 + WinUI 3 toolchain by building src/DuoFlow.App
+#     on a real Windows environment in the cloud, so no local Windows
+#     machine is required for build-level verification.
+#   - Best-effort: launch the app headless, prove the process starts,
+#     and capture a screenshot of the desktop.
+#
+# Runs automatically on every push touching src/ or this workflow,
+# and can be triggered manually from the Actions tab (workflow_dispatch).
+# =====================================================================
+
+name: M0 Windows Build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - ".github/workflows/m0-windows-build.yml"
+  workflow_dispatch:
+
+jobs:
+  build-winui:
+    name: Build & launch DuoFlow.App (WinUI 3)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify toolchain (.NET SDK / MSBuild)
+        shell: pwsh
+        run: |
+          Write-Host "== dotnet SDKs ==";  dotnet --list-sdks
+          Write-Host "== OS ==";          (Get-CimInstance Win32_OperatingSystem) | Select-Object Caption, BuildNumber, Version | Format-List
+
+      - name: Build DuoFlow.App (WinUI 3)
+        shell: pwsh
+        run: >
+          dotnet build src/DuoFlow.App/DuoFlow.App.csproj
+          -c Debug -p:Platform=x64
+          -bl:m0-build.binlog
+
+      # ---- Best effort: launch the app and screenshot the desktop ----
+      # GUI availability on hosted runners can vary; failures here must NOT
+      # fail the job (the build gate above is the M0.1 acceptance criterion).
+      - name: Launch app + screenshot (best effort)
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "src/DuoFlow.App/bin" -Recurse -Filter "DuoFlow.App.exe" |
+                 Where-Object { $_.FullName -notmatch "obj" } |
+                 Select-Object -First 1
+          if (-not $exe) { Write-Warning "DuoFlow.App.exe not found"; exit 0 }
+          Write-Host "Launching: $($exe.FullName)"
+          Start-Process -FilePath $exe.FullName
+          Start-Sleep -Seconds 10
+          $p = Get-Process -Name "DuoFlow.App" -ErrorAction SilentlyContinue
+          if ($p) {
+            Write-Host "APP RUNNING OK  PID=$($p.Id)  WindowTitle='$($p.MainWindowTitle)'"
+            try {
+              Add-Type -AssemblyName System.Windows.Forms
+              Add-Type -AssemblyName System.Drawing
+              $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+              $bmp.Save("$PWD/duoflow-window.png")
+              Write-Host "SCREENSHOT SAVED: $PWD/duoflow-window.png"
+            } catch { Write-Warning "Screenshot failed: $_" }
+            Stop-Process -Name "DuoFlow.App" -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Warning "App process not found after 10s (headless session may have blocked GUI startup)"
+          }
+
+      - name: Upload build log + screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: m0-build-logs
+          path: |
+            m0-build.binlog
+            duoflow-window.png
+          if-no-files-found: ignore
