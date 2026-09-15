@@ -81,6 +81,23 @@ jobs:
           }
           if ($alive) {
             Write-Host "APP RUNNING OK (survived 16s)"
+          }
+          # Always surface the app-side trace + crash log (if any).
+          $trace = "$env:USERPROFILE\duoflow-trace.txt"
+          if (Test-Path $trace) {
+            Write-Host "== APP TRACE =="
+            Get-Content $trace
+            Copy-Item $trace "$PWD/duoflow-trace.txt" -Force
+          } else {
+            Write-Warning "no trace file written by the app"
+          }
+          $crash = "$env:USERPROFILE\duoflow-crash.txt"
+          if (Test-Path $crash) {
+            Write-Host "== CRASH LOG =="
+            Get-Content $crash
+            Copy-Item $crash "$PWD/duoflow-crash.txt" -Force
+          }
+          if ($alive) {
             $jsonPath = "$env:USERPROFILE\duoflow-overlay-smoke.json"
             if (Test-Path $jsonPath) {
               Write-Host "== OVERLAY SMOKE JSON =="
@@ -101,14 +118,7 @@ jobs:
             } catch { Write-Warning "Screenshot failed: $_" }
             Stop-Process -Name "DuoFlow.App" -Force -ErrorAction SilentlyContinue
           } else {
-            $crash = "$env:USERPROFILE\duoflow-crash.txt"
-            if (Test-Path $crash) {
-              Write-Host "== CRASH LOG =="
-              Get-Content $crash
-              Copy-Item $crash "$PWD/duoflow-crash.txt" -Force
-            } else {
-              Write-Warning "process died without writing a crash log"
-            }
+            Write-Warning "app process died within 16s — see APP TRACE / CRASH LOG above"
           }
 
       # ---- M0.3 acceptance gate: overlay window properties must all hold ----
@@ -141,5 +151,6 @@ jobs:
             m0-build.binlog
             duoflow-window.png
             duoflow-overlay-smoke.json
+            duoflow-trace.txt
             duoflow-crash.txt
           if-no-files-found: ignore

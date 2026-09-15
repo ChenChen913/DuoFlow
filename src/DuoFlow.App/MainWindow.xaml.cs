@@ -10,8 +10,9 @@ namespace DuoFlow.App;
 /// M0.3 control console: lives bottom-left, always on top of the overlay,
 /// and live-renders the verification matrix (fullscreen / topmost /
 /// click-through / no-activate / tool-window / DWM transparency /
-/// multi-monitor enum / capture FPS). In smoke mode it also writes
-/// duoflow-overlay-smoke.json for the CI acceptance gate.
+/// multi-monitor enum / capture FPS). In smoke mode it writes
+/// duoflow-overlay-smoke.json — once immediately after load, then refreshed
+/// every second — so the CI gate reads the freshest report possible.
 /// </summary>
 public sealed partial class MainWindow : Window
 {
@@ -22,7 +23,7 @@ public sealed partial class MainWindow : Window
     private long _lastFrames;
     private double _lastFps;
     private int _ticks;
-    private bool _written;
+    private OverlayReport? _lastReport;
 
     public MainWindow(OverlayWindow? overlay, bool smoke)
     {
@@ -34,6 +35,8 @@ public sealed partial class MainWindow : Window
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        Trace.Log("console: loaded");
+
         try
         {
             // Bottom-left control panel, always on top of the overlay.
@@ -46,9 +49,11 @@ public sealed partial class MainWindow : Window
             {
                 presenter.IsAlwaysOnTop = true;
             }
+            Trace.Log("console: positioned OK");
         }
         catch (Exception ex)
         {
+            Trace.Log($"console: positioning FAILED: {ex.Message}");
             Report.Text = $"[console] window positioning failed: {ex.Message}";
         }
 
@@ -56,6 +61,12 @@ public sealed partial class MainWindow : Window
         _timer.Interval = TimeSpan.FromSeconds(1);
         _timer.Tick += (_, _) => Refresh();
         _timer.Start();
+        Trace.Log("console: timer started");
+
+        if (_smoke)
+        {
+            WriteSmoke(); // earliest possible report, even if ticks never fire
+        }
     }
 
     private void Refresh()
@@ -69,27 +80,36 @@ public sealed partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            Trace.Log($"console: probe FAILED at tick {_ticks}: {ex.GetType().Name}: {ex.Message}");
             Report.Text = $"[probe] 收集失败：{ex.GetType().Name}: {ex.Message}";
             return;
         }
 
+        _lastReport = report;
         _lastFps = report.CaptureFrames - _lastFrames;
         _lastFrames = report.CaptureFrames;
         report.CaptureFps = _lastFps;
 
         Report.Text = Format(report);
+        Trace.Log($"console: tick {_ticks} frames={report.CaptureFrames} fps={_lastFps:0}");
 
-        if (_smoke && !_written && _ticks >= 10)
+        if (_smoke)
         {
-            try
-            {
-                OverlayProbe.WriteSmokeJson(report);
-                _written = true;
-            }
-            catch (Exception ex)
-            {
-                Report.Text = Format(report) + $"\n[smoke] JSON 写入失败：{ex.Message}";
-            }
+            WriteSmoke();
+        }
+    }
+
+    private void WriteSmoke()
+    {
+        try
+        {
+            OverlayReport snapshot = _lastReport ?? OverlayProbe.Collect(_overlay);
+            OverlayProbe.WriteSmokeJson(snapshot);
+            Trace.Log("console: smoke json written");
+        }
+        catch (Exception ex)
+        {
+            Trace.Log($"console: smoke write FAILED: {ex.Message}");
         }
     }
 

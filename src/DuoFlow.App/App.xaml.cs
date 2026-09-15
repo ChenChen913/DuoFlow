@@ -40,6 +40,7 @@ public partial class App : Application
         {
             // Never let the logger itself crash the app.
         }
+        Trace.Log($"UI.Unhandled: {e.Message}");
 
         // Keep the app alive so the console can still produce the smoke JSON;
         // bail out (crash loudly) after 50 swallowed exceptions.
@@ -58,10 +59,13 @@ public partial class App : Application
         catch
         {
         }
+        Trace.Log($"Domain.Unhandled: {e.ExceptionObject}");
     }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        Trace.Log("launch begin");
+
         bool smoke = false;
         foreach (string arg in Environment.GetCommandLineArgs())
         {
@@ -70,26 +74,37 @@ public partial class App : Application
                 smoke = true;
             }
         }
+        Trace.Log($"smoke={smoke}");
 
         try
         {
+            Trace.Log("overlay: constructing...");
             _overlay = new OverlayWindow();
+            Trace.Log("overlay: constructed OK");
             _overlay.Activate();
+            Trace.Log("overlay: activated OK");
         }
         catch (Exception ex)
         {
+            Trace.Log($"overlay: ctor/activate FAILED: {ex.Message}");
             try { File.AppendAllText(CrashLog, $"[Overlay ctor] {ex}\n\n"); } catch { }
             _overlay = null; // console reports OverlayCreated=false
         }
 
         try
         {
+            Trace.Log("console: constructing...");
             _console = new MainWindow(_overlay, smoke);
+            Trace.Log("console: constructed OK");
             _console.Activate();
+            Trace.Log("console: activated OK");
         }
         catch (Exception ex)
         {
+            Trace.Log($"console: ctor/activate FAILED: {ex.Message}");
             try { File.AppendAllText(CrashLog, $"[Console ctor] {ex}\n\n"); } catch { }
         }
+
+        Trace.Log("launch end");
     }
 }

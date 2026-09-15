@@ -36,6 +36,7 @@ public sealed partial class OverlayWindow : Window
 
     public OverlayWindow()
     {
+        Trace.Log("overlay: ctor begin");
         InitializeComponent();
 
         IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
@@ -55,10 +56,12 @@ public sealed partial class OverlayWindow : Window
 
             RectInt32 screen = DisplayArea.Primary.OuterBounds;
             appWindow.MoveAndResize(screen);
+            Trace.Log($"overlay: fullscreen OK {screen.X},{screen.Y} {screen.Width}×{screen.Height}");
         }
         catch (Exception ex)
         {
             Warnings.Add($"presenter/fullscreen: {ex.Message}");
+            Trace.Log($"overlay: presenter/fullscreen FAILED: {ex.Message}");
         }
 
         // 2. Click-through + never steal focus + hidden from Alt+Tab.
@@ -71,10 +74,12 @@ public sealed partial class OverlayWindow : Window
                     | OverlayNative.WS_EX_NOACTIVATE
                     | OverlayNative.WS_EX_TOOLWINDOW);
             OverlayNative.ForceTopmost(hwnd);
+            Trace.Log("overlay: exstyle OK");
         }
         catch (Exception ex)
         {
             Warnings.Add($"exstyle: {ex.Message}");
+            Trace.Log($"overlay: exstyle FAILED: {ex.Message}");
         }
 
         // 3. Fully transparent client area (DWM glass frame over everything).
@@ -85,18 +90,22 @@ public sealed partial class OverlayWindow : Window
             {
                 Warnings.Add("dwm: ExtendFrameIntoClientArea failed");
             }
+            Trace.Log($"overlay: dwm extended={DwmExtended}");
         }
         catch (Exception ex)
         {
             Warnings.Add($"dwm: {ex.Message}");
+            Trace.Log($"overlay: dwm FAILED: {ex.Message}");
         }
 
         ((FrameworkElement)Content).Loaded += OnLoaded;
         Closed += (_, _) => Cleanup();
+        Trace.Log("overlay: ctor done");
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        Trace.Log("overlay: loaded");
         try
         {
             _capture = new DesktopCapture();
@@ -109,11 +118,13 @@ public sealed partial class OverlayWindow : Window
             OverlayCaption.Text =
                 $"overlay · {_capture.MonitorDescription} · {size.Width}×{size.Height} · GPU→GPU";
             CaptureState = "running";
+            Trace.Log("overlay: capture running");
         }
         catch (Exception ex)
         {
             CaptureState = $"failed: {ex.GetType().Name}: {ex.Message}";
             OverlayCaption.Text = "capture failed (see console)";
+            Trace.Log($"overlay: capture FAILED: {CaptureState}");
         }
     }
 
