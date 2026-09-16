@@ -338,7 +338,7 @@ public static class OverlayProbe
             //    lum=0 (blocked UI thread starves re-composition, DD-037);
             //    Task.Delay lets the island pump messages and DWM composite
             //    while we wait.
-            int uiThread = OverlayNative.GetCurrentThreadId();
+            int uiThread = (int)OverlayNative.GetCurrentThreadId();
             Trace.Log($"probe: waiting 450ms via await Task.Delay (UI thread {uiThread} stays free)");
             await Task.Delay(450);
             Trace.Log($"probe: wait done (thread now {OverlayNative.GetCurrentThreadId()})");
