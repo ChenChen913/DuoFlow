@@ -97,11 +97,12 @@ internal sealed class TransparentBackdrop : SystemBackdrop
 }
 
 /// <summary>
-/// Win32 message subclass for the overlay top-level window (P0-1 Win32
-/// layer, castorix recipe):
-///   - WM_ERASEBKGND: fill black and report handled. With the alpha-0
-///     backdrop + empty blur region this black is composited as fully
-///     transparent (premultiplied alpha), never visible on screen.
+/// Win32 message subclass for the overlay top-level window (P0-1 GDI layer):
+///   - WM_ERASEBKGND: fill the window surface in the COLOR KEY (magenta) and
+///     report handled. DWM punches every key-colored pixel out (layered
+///     color-key), so the GDI surface under the transparent XAML root is
+///     fully see-through. The XAML island's DComp content (decorations,
+///     capture preview) composites on top and is never erased by GDI.
 ///   - WM_DWMCOMPOSITIONCHANGED: re-apply the DWM transparency state (frame
 ///     extension + blur-behind), because DWM resets it when composition
 ///     toggles (e.g. RDP sessions, GPU driver resets).
@@ -110,12 +111,10 @@ internal static class OverlayWin32Subclass
 {
     private const uint WM_ERASEBKGND = 0x000F;
     private const uint WM_DWMCOMPOSITIONCHANGED = 0x031E;
-    private const int BLACK_BRUSH = 4; // GetStockObject index
 
     // Keep the delegate rooted for the window's lifetime (GC must not
     // collect the callback while the native subclass is installed).
     private static OverlayNative.SubclassProc? _proc;
-    private static IntPtr _blackBrush = IntPtr.Zero;
 
     /// <summary>Unique subclass id for DuoFlow's overlay window.</summary>
     private const uint SubclassId = 0x4D4630; // "DF0"
@@ -129,7 +128,7 @@ internal static class OverlayWin32Subclass
         }
         else
         {
-            Trace.Log("subclass: installed (WM_ERASEBKGND / WM_DWMCOMPOSITIONCHANGED)");
+            Trace.Log("subclass: installed (WM_ERASEBKGND colorkey / WM_DWMCOMPOSITIONCHANGED)");
         }
     }
 
@@ -138,13 +137,8 @@ internal static class OverlayWin32Subclass
     {
         if (msg == WM_ERASEBKGND)
         {
-            if (_blackBrush == IntPtr.Zero)
-            {
-                _blackBrush = OverlayNative.GetStockObject(BLACK_BRUSH);
-            }
-
             if (OverlayNative.GetClientRect(hwnd, out OverlayNative.RECT rc)
-                && OverlayNative.FillRect(wParam, ref rc, _blackBrush) != 0)
+                && OverlayNative.FillRect(wParam, ref rc, OverlayNative.KeyBrush) != 0)
             {
                 return new IntPtr(1); // background erased (handled)
             }

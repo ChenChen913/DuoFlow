@@ -23,6 +23,7 @@ public static class OverlayNative
     public const long WS_EX_LAYERED = 0x00080000;
 
     public const uint LWA_ALPHA = 0x00000002;
+    public const uint LWA_COLORKEY = 0x00000001;
 
     private static readonly IntPtr HWND_TOPMOST = new(-1);
     private const uint SWP_NOSIZE = 0x0001;
@@ -143,17 +144,45 @@ public static class OverlayNative
 
     /// <summary>
     /// P0-2: add WS_EX_LAYERED on top of the existing WS_EX_TRANSPARENT and
-    /// initialize the layered attributes once (a layered window whose
-    /// attributes were never set is not composited at all), then force a
-    /// frame change so the new ex-style takes effect immediately.
+    /// initialize layered attributes with a COLOR KEY (see
+    /// <see cref="OverlayKeyColor"/>), then force a frame change so the new
+    /// ex-style takes effect immediately.
     /// </summary>
     public static void EnableLayeredClickThrough(IntPtr hwnd)
     {
         long ex = GetExStyle(hwnd);
         SetExStyle(hwnd, ex | WS_EX_LAYERED);
-        _ = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
+        // Color-key transparency (castorix's real recipe, verified in his
+        // repo - NOT the commented-out TransparentBackdrop): every pixel of
+        // the GDI surface painted in OverlayKeyColor becomes see-through,
+        // while the XAML island's DComp content (decorations, capture
+        // preview) composites normally on top.
+        _ = SetLayeredWindowAttributes(hwnd, OverlayKeyColor, 255, LWA_COLORKEY | LWA_ALPHA);
         ForceTopmost(hwnd); // includes SWP_FRAMECHANGED
     }
+
+    /// <summary>Maroon-free magenta key color (COLORREF 0x00BBGGRR):
+    /// RGB(255,0,255). Real desktop content essentially never contains a
+    /// solid pure-magenta area, so the key cannot punch holes in content.</summary>
+    public const uint OverlayKeyColor = 0x00FF00FF;
+
+    private static IntPtr _keyBrush = IntPtr.Zero;
+
+    /// <summary>Solid brush in the overlay key color (created once).</summary>
+    public static IntPtr KeyBrush
+    {
+        get
+        {
+            if (_keyBrush == IntPtr.Zero)
+            {
+                _keyBrush = CreateSolidBrush(OverlayKeyColor);
+            }
+            return _keyBrush;
+        }
+    }
+
+    [DllImport("gdi32.dll")]
+    private static extern IntPtr CreateSolidBrush(uint crColor);
 
     // ---- Real-effect verification helpers (anti-false-positive work,
     //      2026-09-16): screen sampling + hit-test chain queries ----

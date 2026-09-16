@@ -84,26 +84,21 @@ public sealed partial class OverlayWindow : Window
         // 2. Click-through + never steal focus + hidden from Alt+Tab.
         //    P0-2: WS_EX_LAYERED is mandatory for real hit-test exclusion
         //    (content island); TRANSPARENT alone was proven insufficient on
-        //    the real machine (WindowFromPoint still returned the
-        //    DesktopChildSiteBridge and real clicks were swallowed).
+        //    the real machine. Layered attributes use a COLOR KEY (magenta):
+        //    the GDI surface under the transparent XAML root is painted in
+        //    the key color and DWM punches it out - the actual recipe the
+        //    layered-overlay reference repo uses (its TransparentBackdrop
+        //    is commented out; colorkey is the live path).
         try
         {
-            long exStyle = OverlayNative.GetExStyle(hwnd);
-            OverlayNative.SetExStyle(hwnd,
-                exStyle
-                    | OverlayNative.WS_EX_TRANSPARENT
-                    | OverlayNative.WS_EX_NOACTIVATE
-                    | OverlayNative.WS_EX_TOOLWINDOW
-                    | OverlayNative.WS_EX_LAYERED);
-            OverlayNative.SetLayeredWindowAttributes(hwnd, 0, 255, OverlayNative.LWA_ALPHA);
-            OverlayNative.ForceTopmost(hwnd); // SWP_FRAMECHANGED makes the new style stick
+            OverlayNative.EnableLayeredClickThrough(hwnd);
 
             LayeredApplied = (OverlayNative.GetExStyle(hwnd) & OverlayNative.WS_EX_LAYERED) != 0;
             if (!LayeredApplied)
             {
                 Warnings.Add("exstyle: WS_EX_LAYERED could not be applied (P0-2)");
             }
-            Trace.Log($"overlay: exstyle OK layered={LayeredApplied}");
+            Trace.Log($"overlay: exstyle OK layered={LayeredApplied} colorkey=0x{OverlayNative.OverlayKeyColor:X6}");
         }
         catch (Exception ex)
         {
