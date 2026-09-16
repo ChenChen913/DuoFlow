@@ -1121,14 +1121,26 @@ M0.3 的 overlay 验收曾全绿，但 2026-09-16 真机首跑两项全不成立
 排除「参考窗未绘制」「采样代码路径有 bug」两条假设（原生不泵消息的白窗 450ms 后实测
 rgb(255,255,255)；逐字复刻探针 GDI 序列在红窗位置读到 85 = 255/3，BitBlt 全部成功）。
 
-**2. 领先假设（未证实，已按可证伪方式整改）**：旧版探针在 `ForceTopmost` 改 z 序后
-立即在 UI 线程 `Thread.Sleep(450)`，改 z 序后的重合成被自身阻塞 → DWM 把这一帧合成
-窗口背景色（黑）→ BitBlt 读到 0。与「恒 0.0」「任何环境恒 0」「独立采样器读不到黑」
-三个事实吻合。已整改：等待改 `await Task.Delay`（UI 线程可泵消息）、采样前显式
-InvalidateRect+UpdateWindow 重绘一帧、GDI 每步写 trace 与
-`TransparencyProbe.Diagnostics`（GetDC/CreateDIBSection/BitBlt 返回值 + DIB 前 8 字节
-+ 采样矩形 + 主屏/虚拟桌面几何 + DPI），并同次运行加两路对照（后台线程 BitBlt、
-GetPixel 点采样）——若 UI 线程采样仍 0 而后台线程正常，即锁定线程阻塞机制。
+**2. 假设的提出与裁决（两次云端运行定案，不靠猜）。** 旧同步流程的两个可疑点各立一个假设：
+
+* **假设 A（UI 线程阻塞，已被证伪）**：旧版探针在 `ForceTopmost` 改 z 序后立即在 UI 线程
+  `Thread.Sleep(450)`，重合成被自身阻塞 → DWM 把这一帧合成窗口背景色（黑）→ BitBlt 读 0。
+  整改：等待改 `await Task.Delay`（UI 线程可泵消息）+ 采样前 `InvalidateRect+UpdateWindow`
+  显式重绘一帧。**裁决（run 35086444842）**：后台线程 BitBlt（`Task.Run`，同矩形同刻）
+  **同样读 0** → 与线程无关，假设 A 证伪。
+* **新事实（run 35086444842，同进程同矩形同刻）**：UI 线程 BitBlt=0、后台线程 BitBlt=0、
+  BitBlt 返回 TRUE 且 DIB 前 8 字节全 0（「成功」地读到黑）；**GetPixel 三点全部读到
+  255,255,255（白参考窗透过覆盖层）**；采样矩形/主屏与虚拟桌面几何/DPI（manifest
+  PerMonitorV2）全部正常——排除 API 失败与坐标换算。
+* **假设 B（当前领先，未证实）**：**BitBlt-from-screen-DC 在覆盖层区域读到黑是进程内捕获
+  伪影**——BitBlt 走的 GDI 表面把 per-pixel-alpha layered 窗口（疑似限自属窗口）区域呈现为
+  黑，而 GetPixel 走的是最终合成帧。与真机旧观察吻合：独立进程（不拥有覆盖层窗口）的
+  BitBlt 读到真实内容（红窗位 85、桌面 55.6），App 进程恒 0；且本机 CAPTUREBLT 无关。
+* **GetPixel 暂不升为门禁**：参考窗本身是普通 GDI 窗口，若某捕获路径整体排除 layered
+  窗口内容，则覆盖层即使不透明也会读到白（假阳性）。待真机用「控制台点对照」标定
+  （GetPixel 打在被 WinUI 控制台窗口覆盖、无参考窗的位置，看能否读到控制台内容）
+  后再决定是否升级。本轮探针已新增 `GetPixelPass`（窗内三点最小通道 ≥240，仅信息性）
+  与窗外对照点 `GetPixelOutsideRgb`（下次真机运行即可拿到标定数据）。
 
 **3. 探针定位为如实描述**：进程内自采样，信息性记录，不作为 CI 门禁；透明实证权威
 保持「真机采样对比」不变。本文「决定 3」与「原因」两处旧表述已按此修正（保留

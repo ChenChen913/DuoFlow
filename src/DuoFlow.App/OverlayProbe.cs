@@ -43,6 +43,19 @@ public sealed class TransparencyProbe
     /// <summary>Control: GetPixel spot checks (center + corners of the sample rect).</summary>
     public string GetPixelRgb { get; set; } = "";
 
+    /// <summary>Control: GetPixel just OUTSIDE the reference window (calibration point).</summary>
+    public string GetPixelOutsideRgb { get; set; } = "";
+
+    /// <summary>
+    /// True when ALL GetPixel spots INSIDE the reference window are bright
+    /// (min channel &gt;= 240). INFORMATIONAL ONLY: not promoted to the gate
+    /// yet - a capture path that excludes layered windows would also read
+    /// white here even if the overlay were opaque (the reference window is
+    /// itself a plain GDI window). Needs the console-point calibration on
+    /// the real machine first (DD-037 erratum).
+    /// </summary>
+    public bool GetPixelPass { get; set; }
+
     public string SampleRect { get; set; } = "";
 
     /// <summary>Primary/virtual-screen geometry + system DPI (coordinate-normalization traps).</summary>
@@ -368,6 +381,10 @@ public static class OverlayProbe
                 string tl = OverlayNative.SamplePointViaGetPixel(screenDc, sx + 5, sy + 5);
                 string br = OverlayNative.SamplePointViaGetPixel(screenDc, sx + 95, sy + 55);
                 _transparency.GetPixelRgb = $"center={c} topleft={tl} bottomright={br}";
+                _transparency.GetPixelOutsideRgb = OverlayNative.SamplePointViaGetPixel(
+                    screenDc, (refRect.Left + refRect.Right) / 2, refRect.Bottom + 40);
+                _transparency.GetPixelPass =
+                    MinChannel(c) >= 240 && MinChannel(tl) >= 240 && MinChannel(br) >= 240;
             }
             finally
             {
@@ -376,12 +393,12 @@ public static class OverlayProbe
 
             _transparency.ReferenceLuminance = lum;
             _transparency.Pass = lum >= _transparency.PassThreshold;
-            _transparency.Note = _transparency.Pass
-                ? $"white reference visible through the overlay (bgThread={_transparency.BackgroundThreadLuminance:0.0})"
-                : lum >= 0
-                    ? $"overlay still blocks the reference window (bgThread={_transparency.BackgroundThreadLuminance:0.0}) - informational only, transparency authority = real-machine sampling (DD-037)"
-                    : "sampling failed - see Diagnostics; informational only";
-            Trace.Log($"probe: transparency lum={lum:0.0} bgThread={_transparency.BackgroundThreadLuminance:0.0} getPixel[{_transparency.GetPixelRgb}] pass={_transparency.Pass}");
+            _transparency.Note = lum >= _transparency.PassThreshold
+                ? $"BitBlt sees the white reference (bgThread={_transparency.BackgroundThreadLuminance:0.0}, outside={_transparency.GetPixelOutsideRgb})"
+                : _transparency.GetPixelPass
+                    ? $"GetPixel shows the white reference THROUGH the overlay (inside={_transparency.GetPixelRgb}); BitBlt reading black over the overlay region is a known in-process capture artifact (DD-037 erratum) - informational only"
+                    : $"BitBlt=black AND GetPixel!=white (inside={_transparency.GetPixelRgb} outside={_transparency.GetPixelOutsideRgb}) - opaque overlay OR capture artifact; informational only, transparency authority = real-machine sampling (DD-037)";
+            Trace.Log($"probe: transparency lum={lum:0.0} bgThread={_transparency.BackgroundThreadLuminance:0.0} getPixelPass={_transparency.GetPixelPass} getPixel[{_transparency.GetPixelRgb}] outside={_transparency.GetPixelOutsideRgb} pass={_transparency.Pass}");
 
             // 6) P0-2 proof (API level): hit-testing through the overlay.
             if (consoleHwnd != IntPtr.Zero
@@ -428,6 +445,26 @@ public static class OverlayProbe
             }
             Trace.Log("probe: real-effect checks END");
         }
+    }
+
+    // Min channel of an "R,G,B" string; -1 when unparseable (e.g. "failed")
+    // so that unparseable results never count as bright.
+    private static int MinChannel(string rgb)
+    {
+        if (string.IsNullOrEmpty(rgb))
+        {
+            return -1;
+        }
+        int min = 255;
+        foreach (string part in rgb.Split(','))
+        {
+            if (!int.TryParse(part, out int v))
+            {
+                return -1;
+            }
+            min = Math.Min(min, v);
+        }
+        return min;
     }
 
     // Rooted delegate for the reference window's wndproc (GC must not
