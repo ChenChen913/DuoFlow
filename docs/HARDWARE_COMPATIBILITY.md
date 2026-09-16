@@ -557,11 +557,16 @@ Sensor / HID / Camera Detection / D3D Capture / Performance
   不是"没渲染"，是"背景不透明"。
 * **根因**：WinUI 3 窗口背景两层——Win32 窗口背景 + `DesktopWindowXamlSource` 的
   Composition Visual 背景。前者由 DWM 玻璃框扩展处理，后者必须用
-  `ICompositionSupportsSystemBackdrop` 设一个 **alpha=0 画刷**（自定义 `SystemBackdrop`
-  子类）框架才会移除黑底。WinAppSDK 1.8 的 winmd 里**不存在** `TransparentBackdrop`
-  内置类（只有 SystemBackdrop/MicaBackdrop/DesktopAcrylicBackdrop），必须自己写
-  （实现见 `src/DuoFlow.App/OverlayBackdrop.cs`，配方来自 castorix/WinUI3_SwapChainPanel_Layered）。
-* **修复状态**：已实现（DD-037），云端 CI 已实证（亮度探针），真机复验待做。
+  `ICompositionSupportsSystemBackdrop` 设一个 **alpha=0 画刷**框架才会移除黑底。
+  WinAppSDK 1.8 的 winmd 里**不存在** `TransparentBackdrop` 内置类（只有
+  SystemBackdrop/MicaBackdrop/DesktopAcrylicBackdrop），必须自己实现
+  （最终实现见 `src/DuoFlow.App/OverlayBackdrop.cs`——cnbluefire/WinUI3TransparentBackground
+  生产配方：直接接口赋值，非 SystemBackdrop 子类；子类机制被 CI 证伪，见修复状态与 DD-037）。
+* **修复状态**：已实现（DD-037，cnbluefire 生产配方：直接 window.As<> 接口赋 alpha-0 画刷
+  + 官方 CoreMessaging helper 建 OS Compositor；自定义 SystemBackdrop 子类与 colorkey 两条
+  路均被 CI 证伪后废弃）。**注意：GitHub runner 桌面为 RDP 类会话，DWM 不按物理控制台
+  处理 per-pixel alpha**——画刷连接成功后云上亮度探针仍为 0，因此透明实证权威 = 真机
+  （截图采样：覆盖层置顶 vs 移出，同区域亮度应基本一致）。
 
 ### P0-2：WS_EX_TRANSPARENT 单独不足以让 WinUI 3 内容岛穿透鼠标
 
@@ -572,7 +577,11 @@ Sensor / HID / Camera Detection / D3D Capture / Performance
   **最小修复 = 顶层一个 WS_EX_LAYERED**。改完 exstyle 必须 `SetWindowPos(SWP_FRAMECHANGED)`
   才生效。单独给子窗口加 TRANSPARENT（不加 LAYERED）无效。
 * **修复状态**：已实现（DD-037，含 `SetLayeredWindowAttributes(LWA_ALPHA,255)` 初始化——
-  从未设置属性的 layered 窗口根本不会被合成），真机复验待做。
+  从未设置属性的 layered 窗口根本不会被合成），**云端 CI 实证穿透恢复**（WindowFromPoint
+  不再命中覆盖层 bridge，run 35079881457 pass）；真实输入（SendInput 点击/拖动）待真机复验。
+* **额外发现的坑（CI 实证）**：backdrop brush 连接会令 WinUI 重写 GWL_EXSTYLE——我们的
+  ClickThrough/NoActivate/ToolWindow/LAYERED 全部丢失（35079479453）→ 赋值后必须重新
+  断言全部 style bits（幂等 EnableLayeredClickThrough），否则穿透连带失效。
 
 ### 组合风险：layered + SwapChainPanel + 透明（microsoft/microsoft-ui-xaml#1247）
 

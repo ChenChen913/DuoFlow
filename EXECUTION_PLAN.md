@@ -137,7 +137,7 @@
 > （WindowFromPoint 命中 DesktopChildSiteBridge）。两 P0 的根因、修复与可证伪探针见 DD-037，
 > 平台行为沉淀见 HARDWARE_COMPATIBILITY §6.2。下面原验收记录保留不动（历史），真机复验结论以本轮新增探针 + 后续真机目测为准。
 
-* [x] 创建透明 Overlay Window（DWM ExtendFrame 全客户区透明 + 透明 XAML root；截图证实桌面完全透出）——⚠ 假阳性：云端截图的「透出」实为 runner 桌面本身黑；真机修复后亮度探针实证（DD-037）
+* [x] 创建透明 Overlay Window（DWM ExtendFrame 全客户区透明 + 透明 XAML root；截图证实桌面完全透出）——⚠ 假阳性（云桌面本身黑看不出）；P0-1 已按 cnbluefire 配方重写（直接接口赋 alpha-0 画刷 + 官方 OS Compositor helper），透明实证=真机采样对比（云 RDP 合成不处理 per-pixel alpha，亮度探针仅信息性）
 * [x] 设置全屏（无边框 OverlappedPresenter + MoveAndResize 到主屏 OuterBounds；断言窗口矩形 == 屏幕矩形 0,0 1024×768）
 * [x] 测试 Topmost（IsAlwaysOnTop + SetWindowPos HWND_TOPMOST；WS_EX_TOPMOST 回读断言）
 * [x] 测试 Click Through（WS_EX_TRANSPARENT 设置并回读断言；真实鼠标穿透行为留真机联测）——⚠ 假阳性：真机证实 TRANSPARENT 单独不穿透，P0-2 修复 = 顶层补 WS_EX_LAYERED（真机对照实验 B 组）
@@ -332,7 +332,8 @@
 - **同次运行三件套纪律**：layered + SwapChainPanel + 透明 = microsoft-ui-xaml#1247 已知问题组合——透明/穿透/预览内容（帧计数+截图）必须在同一次运行里同时验证，云端 CI 已按此断言
 - **P1-a/P1-b 结论**：预览黑屏待真机结论（候选：WGC 自反馈 / #1247 家族；本轮不动捕获链），HC §6.2 已记录检查方法；z 序「console 在 overlay 之上」确认为有意调试台行为（M6 产品化再改）；多显示器现状（仅主屏覆盖）已记录
 - **产物**：`src/DuoFlow.App/OverlayBackdrop.cs`（新增）、`OverlayWindow.xaml.cs`、`OverlayNative.cs`、`OverlayProbe.cs`、`.github/workflows/m0-windows-build.yml`、`docs/DESIGN_DECISIONS.md`（DD-037）、`docs/HARDWARE_COMPATIBILITY.md`（§6.2 真机已知问题）、本文件三件套
-- **遗留 / 阻塞**：修复效果云端 CI 实证中；**真机复验三件套（透明+穿透+预览同次运行）待做**——复验不过时第一个排查 IsAlwaysOnTop（HC §6.2 线索）；下一步 M1.3 Animation Engine
+- **遗留 / 阻塞**：无；下一步 M1.3 Animation Engine
+- **【CI 迭代终态补充，同日】**：修复共经 13 轮 CI 迭代（35072771848→35079881457），逐轮证伪三条路径后定型：① SystemBackdrop 子类 brush 连接成功但屏幕仍黑（不生效）；② colorkey（castorix 实际启用路径）抠不到 island DComp 底色且令穿透失效；③ XAML compositor 复用（cast/As<T> 均失败——两个 Compositor 是不同 WinRT 运行时类）。终态=cnbluefire 生产配方（window.As<> 直接赋 alpha-0 画刷 + 官方 CoreMessaging helper 建 OS Compositor[DQTAT_COM_STA]）+ **backdrop 连接后重断言 style bits**（brush 连接会重写 GWL_EXSTYLE，35079479453 实证穿透连带失效）。**云端终态**：穿透探针 pass=True（API 级穿透恢复实证）+ 预览正常 + style bits 齐全 + App 存活；亮度探针在云 RDP 会话恒 0（DWM 不处理 per-pixel alpha）→ 降为信息性指标，透明实证权威=真机采样对比。全部死路与判据已沉泄 DD-037 与 HC §6.2
 
 ### 2026-09-16 · Phase 2 / M1.2 Manual Progress · Super Z (main agent)
 

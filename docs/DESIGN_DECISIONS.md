@@ -1033,35 +1033,55 @@ M0.3 的 overlay 验收曾全绿，但 2026-09-16 真机首跑两项全不成立
 
 ## 决定
 
-1. **透明 = 双层处理**（缺一即黑屏）：
-   * XAML 岛层：`Window.SystemBackdrop = new TransparentBackdrop()`——自定义
-     `SystemBackdrop` 子类，在 `OnTargetConnected` 里对 `ICompositionSupportsSystemBackdrop`
-     设 **alpha=0 画刷**。WinAppSDK 1.8 无内置 TransparentBackdrop（已查 winmd），必须自写；
-   * Win32 层：`DwmExtendFrameIntoClientArea(MARGINS(0))`（**0，不是 -1**）+
-     `DwmEnableBlurBehindWindow(DWM_BB_ENABLE|DWM_BB_BLURREGION, 空区域 CreateRectRgn(-2,-2,-1,-1))`，
-     并用 `SetWindowSubclass` 处理 `WM_ERASEBKGND`（填黑 + return 1；配合 alpha-0 backdrop
-     该黑以 premultiplied alpha 合成为全透明）与 `WM_DWMCOMPOSITIONCHANGED`（重应用，
-     防 RDP/驱动重置后失效）。
+1. **透明 = 双层处理**（缺一即黑屏）——实现方式经 CI 逐轮证伪后定为 cnbluefire 生产配方：
+   * XAML 岛层：**绕过 SystemBackdrop 子类机制**，直接把窗口对象 cast 到 OS 接口赋
+     alpha-0 画刷：`window.As<Windows.UI.Composition.ICompositionSupportsSystemBackdrop>()
+     .SystemBackdrop = compositor.CreateColorBrush(ARGB(0,255,255,255))`。曾改用自定义
+     SystemBackdrop 子类（castorix 的 TransparentBackdrop.cs 同款），brush 连接成功但屏幕
+     仍黑（run 35077212761）——不生效；
+   * 画刷的 Compositor 必须是 **新建的 Windows.UI.Composition.Compositor**（OS 类），且
+     构造前必须用官方 CoreMessaging helper（`CreateDispatcherQueueController`，
+     **DQTAT_COM_STA=2**）确保 Windows.System.DispatcherQueue——XAML 线程自带的
+     Microsoft.UI.Dispatching 队列不被 OS 工厂认可（Access is denied，35074034434/
+     35074411095），DQTAT_COM_NONE=0 建的 queue 同样被拒（35075183532），桌面投影无
+     托管 CreateOnCurrentThread（CS0117，35074837054）；Microsoft.UI.Composition.Compositor
+     与 OS Compositor 是**不同 WinRT 运行时类**，直接 cast 与 CsWinRT As<T> 重包装均失败
+     （35075895577/35076653477）；
+   * **backdrop brush 连接会令 WinUI 重写 GWL_EXSTYLE**（35079479453 实证
+     ClickThrough/NoActivate/ToolWindow/LAYERED 全丢）——赋值后必须重新断言全部 style
+     bits（幂等 EnableLayeredClickThrough）。
+   * ~~colorkey 方案~~（35077849717 实证后回退）：island 的 DComp 底色不经 GDI 表面，
+     WM_ERASEBKGND 填魔色 + LWA_COLORKEY 抠不到它，且 colorkey 组合令穿透失效；
+   * Win32 层：`DwmExtendFrameIntoClientArea(MARGINS(0))` + `DwmEnableBlurBehindWindow
+     (DWM_BB_ENABLE|DWM_BB_BLURREGION, 空区域 CreateRectRgn(-2,-2,-1,-1))`；
+     WM_PAINT 子类填黑在非 layered 窗口有效（cnbluefire 原样），但 layered 窗口上与
+     穿透回退相关（35079027989）——已移除，保留 WM_DWMCOMPOSITIONCHANGED 重应用。
 2. **穿透 = 顶层补 `WS_EX_LAYERED`**（最小改动，真机对照实验 B 组实证）：
    同时必须 `SetLayeredWindowAttributes(LWA_ALPHA, 255)` 初始化（从未设置属性的 layered
    窗口不会被合成）+ `SetWindowPos(SWP_FRAMECHANGED)` 使 exstyle 生效。子窗口不动。
-3. **验收必须可证伪**（堵 M0.3 假阳性的坑，进 CI 门禁）：
-   * 透明：进程内创建白色参考窗口（非 TOPMOST，天然在覆盖层之下）→ 覆盖层提到 TOPMOST
-     最前 → BitBlt 采样该区域亮度 ≥ 80 判过（修复失败 ≈ 0）；
-   * 穿透（API 级）：覆盖层置顶时 `WindowFromPoint(控制台中心)` 的 root 不得是覆盖层窗口；
-     真实输入（SendInput 点击/拖动）在真机复验；
-   * 两者与捕获预览（帧计数 + 截图）**同一次运行一起看**——layered + SwapChainPanel + 透明
+3. **验收可证伪（堵 M0.3 假阳性的坑）**：
+   * 穿透（CI 门禁，API 级）：覆盖层置顶时 `WindowFromPoint(控制台中心)` 的 root 不得是
+     覆盖层窗口——云端已实证 pass（修复前命中 DesktopChildSiteBridge）；真实输入
+     （SendInput 点击/拖动）在真机复验；
+   * 透明（信息性探针）：进程内创建白色参考窗口 → 覆盖层提到 TOPMOST 最前 → BitBlt
+     采样亮度——**GitHub runner 桌面为 RDP 类会话，DWM 不按物理控制台处理 per-pixel
+     alpha**（所有有效配方 brush 连接成功后 lum 仍 0，35077212761→35079881457 连续
+     10+ 轮），因此亮度不进 CI 门禁，**透明实证权威 = 真机**（截图采样，覆盖层置顶 vs
+     移出对比）；
+   * 穿透与预览（帧计数 + 截图）**同一次运行一起看**——layered + SwapChainPanel + 透明
      是 microsoft-ui-xaml#1247 的已知问题组合，修好一个可能弄坏另一个。
 
 ## 原因
 
-* 两层背景是 WinUI 3 内容岛架构的固有结构，社区方案
-  （castorix/WinUI3_SwapChainPanel_Layered、cnbluefire/WinUI3TransparentBackground、
-  Microsoft Q&A 1418063）一致收敛到上述配方，非本项目独创路径；
+* 两层背景是 WinUI 3 内容岛架构的固有结构，社区两条已验证路径——cnbluefire 的
+  **直接接口赋值**（本项目采用，其生产实现即此方案）与 castorix 的 colorkey
+  （其 repo 中 TransparentBackdrop 实际被注释，启用的是 LWA_COLORKEY）——先取后者后经
+  CI 证伪回退到前者；
 * LAYERED 是 Win32 命中测试排除 layered+transparent 窗口的标准开关，内容岛只是让它
   从"可选"变成"必需"；
-* 亮度采样 + 命中链检查让"看起来绿了"变成"行为可证伪"——云端 CI 直接断言行为，
-  真机只需复验观感。
+* 命中链检查让穿透在云端直接断言行为；透明亮度在云 RDP 会话无法合成 per-pixel alpha
+  （探针实测 lum 恒 0），故降为信息性指标并在真机用同一采样法目测——诚实标注能力边界，
+  不在假环境里凑绿灯。
 
 ## 替代方案
 
