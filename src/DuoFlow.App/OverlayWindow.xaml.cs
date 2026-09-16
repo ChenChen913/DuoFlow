@@ -107,22 +107,28 @@ public sealed partial class OverlayWindow : Window
         }
 
         // 3. Fully transparent client area - both layers (P0-1).
-        //    a) XAML island layer (the one that was opaque black on real HW):
+        //    a) XAML island layer: alpha-0 brush assigned DIRECTLY on the
+        //       window's OS backdrop interface (cnbluefire recipe) - a
+        //       SystemBackdrop subclass connected an identical brush but the
+        //       screen stayed black (run 35077212761); the direct path is the
+        //       one the reference implementation ships.
         try
         {
-            SystemBackdrop = new TransparentBackdrop();
-            BackdropApplied = true;
-            Trace.Log("overlay: TransparentBackdrop assigned");
+            BackdropApplied = OverlayTransparency.Apply(this);
+            if (!BackdropApplied)
+            {
+                Warnings.Add("transparency: island backdrop brush failed");
+            }
         }
         catch (Exception ex)
         {
-            Warnings.Add($"backdrop: {ex.Message}");
-            Trace.Log($"overlay: TransparentBackdrop FAILED: {ex.Message}");
+            BackdropApplied = false;
+            Warnings.Add($"transparency: {ex.Message}");
+            Trace.Log($"overlay: island transparency FAILED: {ex.Message}");
         }
 
-        //    b) Win32 layer: MARGINS(0) frame extension + empty blur region,
-        //       plus the message subclass that answers WM_ERASEBKGND and
-        //       re-applies DWM state on WM_DWMCOMPOSITIONCHANGED.
+        //    b) Win32 surface layer: WM_PAINT subclass fills black; the
+        //       empty-region blur-behind makes DWM treat it as per-pixel alpha.
         try
         {
             DwmExtended = OverlayNative.ApplyTransparentWin32Layer(hwnd) == 0;

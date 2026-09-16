@@ -25,6 +25,27 @@ public static class OverlayNative
     public const uint LWA_ALPHA = 0x00000002;
     public const uint LWA_COLORKEY = 0x00000001;
 
+    public const uint WM_PAINT = 0x000F;
+    public const uint WM_ERASEBKGND = 0x0014;
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PAINTSTRUCT
+    {
+        public IntPtr hdc;
+        public bool fErase;
+        public RECT rcPaint;
+        public bool fRestore;
+        public bool fIncUpdate;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        public byte[] rgbReserved;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr BeginPaint(IntPtr hwnd, out PAINTSTRUCT lpPaint);
+
+    [DllImport("user32.dll")]
+    public static extern bool EndPaint(IntPtr hWnd, in PAINTSTRUCT lpPaint);
+
     private static readonly IntPtr HWND_TOPMOST = new(-1);
     private const uint SWP_NOSIZE = 0x0001;
     private const uint SWP_NOMOVE = 0x0002;
@@ -144,45 +165,19 @@ public static class OverlayNative
 
     /// <summary>
     /// P0-2: add WS_EX_LAYERED on top of the existing WS_EX_TRANSPARENT and
-    /// initialize layered attributes with a COLOR KEY (see
-    /// <see cref="OverlayKeyColor"/>), then force a frame change so the new
-    /// ex-style takes effect immediately.
+    /// initialize the layered attributes (LWA_ALPHA 255 - a layered window
+    /// whose attributes were never set is not composited at all). NOTE:
+    /// LWA_COLORKEY was tried and REJECTED by CI (run 35077849717): the
+    /// color-keyed combo also killed click-through, and the key color never
+    /// showed because the island's DComp base is not the GDI surface.
     /// </summary>
     public static void EnableLayeredClickThrough(IntPtr hwnd)
     {
         long ex = GetExStyle(hwnd);
         SetExStyle(hwnd, ex | WS_EX_LAYERED);
-        // Color-key transparency (castorix's real recipe, verified in his
-        // repo - NOT the commented-out TransparentBackdrop): every pixel of
-        // the GDI surface painted in OverlayKeyColor becomes see-through,
-        // while the XAML island's DComp content (decorations, capture
-        // preview) composites normally on top.
-        _ = SetLayeredWindowAttributes(hwnd, OverlayKeyColor, 255, LWA_COLORKEY | LWA_ALPHA);
+        _ = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
         ForceTopmost(hwnd); // includes SWP_FRAMECHANGED
     }
-
-    /// <summary>Maroon-free magenta key color (COLORREF 0x00BBGGRR):
-    /// RGB(255,0,255). Real desktop content essentially never contains a
-    /// solid pure-magenta area, so the key cannot punch holes in content.</summary>
-    public const uint OverlayKeyColor = 0x00FF00FF;
-
-    private static IntPtr _keyBrush = IntPtr.Zero;
-
-    /// <summary>Solid brush in the overlay key color (created once).</summary>
-    public static IntPtr KeyBrush
-    {
-        get
-        {
-            if (_keyBrush == IntPtr.Zero)
-            {
-                _keyBrush = CreateSolidBrush(OverlayKeyColor);
-            }
-            return _keyBrush;
-        }
-    }
-
-    [DllImport("gdi32.dll")]
-    private static extern IntPtr CreateSolidBrush(uint crColor);
 
     // ---- Real-effect verification helpers (anti-false-positive work,
     //      2026-09-16): screen sampling + hit-test chain queries ----

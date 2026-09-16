@@ -5,116 +5,108 @@ using Microsoft.UI.Xaml.Media;
 namespace DuoFlow.App;
 
 /// <summary>
-/// P0-1 fix (real-machine finding, 2026-09-16): a WinUI 3 window has TWO
-/// background layers - the Win32 window background and the
-/// DesktopWindowXamlSource Visual background. DwmExtendFrameIntoClientArea
-/// only handles the first one; without a fully transparent system-backdrop
-/// brush the Visual layer stays opaque black, so the "transparent" overlay
-/// hid the entire desktop (sampled luminance 0.0~3.5 under the topmost
-/// overlay vs 254.7 with the overlay moved away).
+/// P0-1: removes the opaque base of the XAML island (the second of the two
+/// background layers of a WinUI 3 window; DwmExtendFrameIntoClientArea only
+/// handles the Win32 one).
 ///
-/// Setting an alpha=0 brush on ICompositionSupportsSystemBackdrop is what
-/// actually removes the black base. There is NO built-in
-/// "TransparentBackdrop" class in WinAppSDK 1.8 (verified against
-/// Microsoft.UI.Xaml.winmd: only SystemBackdrop / MicaBackdrop /
-/// DesktopAcrylicBackdrop exist), so this subclasses SystemBackdrop
-/// directly - same recipe as castorix/WinUI3_SwapChainPanel_Layered.
+/// Implementation follows cnbluefire/WinUI3TransparentBackground verbatim
+/// (fetched 2026-09-16) - do NOT "simplify" it back:
+///   1. DwmEnableBlurBehindWindow with an empty region (-2,-2)-(-1,-1)
+///      marks the window for DWM alpha compositing;
+///   2. the WINDOW OBJECT ITSELF is cast to the OS interface
+///      (WinRT CastExtensions.As&lt;Windows.UI.Composition.
+///      ICompositionSupportsSystemBackdrop&gt;) and an alpha-0 brush is
+///      assigned directly. This BYPASSES the Microsoft.UI.Xaml.Media.
+///      SystemBackdrop subclass mechanism: a custom SystemBackdrop subclass
+///      got its OnTargetConnected and connected an identical alpha-0 brush
+///      (CI run 35077212761) yet the screen stayed black, while the direct
+///      interface path is the one actually shipped in production by the
+///      reference implementation;
+///   3. the compositor MUST be a fresh Windows.UI.Composition.Compositor
+///      built after ensuring a WINDOWS.SYSTEM DispatcherQueue
+///      (EnsureWindowsSystemDispatcherQueueController, official helper with
+///      DQTAT_COM_STA). Microsoft.UI.Composition.* (XAML's own compositor)
+///      is a DIFFERENT WinRT runtime class - casts and CsWinRT As&lt;T&gt;
+///      re-wraps of its objects fail (runs 35075895577/35076653477);
+///   4. WM_PAINT is subclassed to fill the Win32 surface black and skip
+///      default painting (the empty-region blur-behind turns the DWM state
+///      into per-pixel alpha over the desktop).
 ///
-/// ⚠ Known sharp edge (microsoft-ui-xaml#1247): "layered + SwapChainPanel +
-/// transparent" has a long-standing black/white-base issue since 1.1. The
-/// overlay is exactly that combination, so transparency, click-through AND
-/// the capture preview must be re-verified TOGETHER (CI luminance/hit-test
-/// probes + real-machine visual pass).
-///
-/// Projection traps found along the way (all CI-verified):
-///  - the OnTargetConnected override signature uses
-///    Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop (CS0115
-///    with the Windows.UI.Composition one, run 35073292924);
-///  - the SystemBackdrop PROPERTY on that interface is typed as
-///    Windows.UI.Composition.CompositionBrush (CS0029, same run);
-///  - "new Windows.UI.Composition.Compositor()" requires an OS-level
-///    (Windows.System) DispatcherQueue - the WinUI 3 UI thread only has the
-///    Microsoft.UI.Dispatching one (Access is denied, runs 35074034434 /
-///    35074411095); the managed CreateOnCurrentThread does not exist in the
-///    desktop projection (CS0117, run 35074837054) so the native CoreMessaging
-///    export is used as fallback.
+/// Known sharp edge (microsoft-ui-xaml#1247): layered + SwapChainPanel +
+/// transparent is a long-standing problem combination - transparency,
+/// click-through and the capture preview must be re-verified TOGETHER.
 /// </summary>
-internal sealed class TransparentBackdrop : SystemBackdrop
+internal static class OverlayTransparency
 {
-    protected override void OnTargetConnected(
-        Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
-    {
-        base.OnTargetConnected(connectedTarget, xamlRoot);
+    private static Windows.UI.Composition.Compositor? _compositor;
 
+    /// <summary>
+    /// Applies the full island-layer transparency recipe to the overlay
+    /// window. Returns true when the alpha-0 backdrop brush is connected.
+    /// </summary>
+    public static unsafe bool Apply(Window window)
+    {
+        IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
+
+        // 1. DWM per-pixel alpha enablement (empty blur region).
+        int hr = OverlayNative.ApplyTransparentWin32Layer(hwnd);
+        Trace.Log($"transparency: blur-behind applied (hr={hr})");
+
+        // 2. Alpha-0 brush on the window's OS backdrop interface.
         try
         {
-            Windows.UI.Composition.CompositionBrush brush = CreateAlphaZeroBrush(xamlRoot);
-            connectedTarget.SystemBackdrop = brush;
-            Trace.Log("backdrop: alpha-0 system backdrop brush connected");
+            Windows.UI.Composition.Compositor compositor = EnsureCompositor();
+            var brushHolder = WinRT.CastExtensions.As<Windows.UI.Composition.ICompositionSupportsSystemBackdrop>(window);
+            brushHolder.SystemBackdrop =
+                compositor.CreateColorBrush(Windows.UI.Color.FromArgb(0, 255, 255, 255));
+            Trace.Log("transparency: alpha-0 backdrop brush connected via window.As<>");
+            return true;
         }
         catch (Exception ex)
         {
-            Trace.Log($"backdrop: OnTargetConnected FAILED: {ex.GetType().Name}: {ex.Message}");
-            throw;
+            Trace.Log($"transparency: backdrop brush FAILED: {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
-    }
-
-    protected override void OnTargetDisconnected(
-        Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop disconnectedTarget)
-    {
-        disconnectedTarget.SystemBackdrop = null;
-        base.OnTargetDisconnected(disconnectedTarget);
     }
 
     /// <summary>
-    /// Builds the alpha-0 brush in the WINDOWS.UI.Composition namespace (the
-    /// ICompositionSupportsSystemBackdrop.SystemBackdrop property type) via
-    /// the OFFICIAL recipe (Windows App SDK system-backdrop docs + castorix's
-    /// TransparentBackdrop.cs, fetched verbatim 2026-09-16):
-    ///   EnsureWindowsSystemDispatcherQueueController() -> new
-    ///   Windows.UI.Composition.Compositor().CreateColorBrush(0,255,0,255).
-    ///
-    /// Dead ends already CI-proven (kept here to prevent re-walking them):
-    ///   - Reusing the XAML compositor: Microsoft.UI.Composition.Compositor and
-    ///     Windows.UI.Composition.Compositor are DIFFERENT WinRT runtime
-    ///     classes - direct cast (35075895577) and CsWinRT As<T> re-wrap
-    ///     (35076653477, IInspectable cast failure) both fail;
-    ///   - DispatcherQueueOptions.apartmentType = DQTAT_COM_NONE (0): the queue
-    ///     is created (hr=0) but Compositor still throws Access is denied
-    ///     (35075183532) - it MUST be DQTAT_COM_STA (2).
+    /// The OS compositor requires an OS-level (Windows.System)
+    /// DispatcherQueue on the calling thread; the WinUI 3 UI thread only has
+    /// the Microsoft.UI.Dispatching one (CI-verified), so the official
+    /// CoreMessaging helper runs first.
     /// </summary>
-    private static Windows.UI.Composition.CompositionBrush CreateAlphaZeroBrush(XamlRoot xamlRoot)
+    private static Windows.UI.Composition.Compositor EnsureCompositor()
     {
-        if (!OverlayNative.EnsureWindowsSystemDispatcherQueueController())
+        if (_compositor == null)
         {
-            throw new InvalidOperationException(
-                "Could not ensure a Windows.System DispatcherQueue for Windows.UI.Composition.Compositor.");
+            if (!OverlayNative.EnsureWindowsSystemDispatcherQueueController())
+            {
+                throw new InvalidOperationException(
+                    "Could not ensure a Windows.System DispatcherQueue for Windows.UI.Composition.Compositor.");
+            }
+            _compositor = new Windows.UI.Composition.Compositor();
         }
-        Trace.Log("backdrop: OS DispatcherQueue present, constructing Compositor");
-        return new Windows.UI.Composition.Compositor()
-            .CreateColorBrush(Windows.UI.Color.FromArgb(0, 255, 0, 255));
+        return _compositor;
     }
 }
 
 /// <summary>
-/// Win32 message subclass for the overlay top-level window (P0-1 GDI layer):
-///   - WM_ERASEBKGND: fill the window surface in the COLOR KEY (magenta) and
-///     report handled. DWM punches every key-colored pixel out (layered
-///     color-key), so the GDI surface under the transparent XAML root is
-///     fully see-through. The XAML island's DComp content (decorations,
-///     capture preview) composites on top and is never erased by GDI.
-///   - WM_DWMCOMPOSITIONCHANGED: re-apply the DWM transparency state (frame
-///     extension + blur-behind), because DWM resets it when composition
-///     toggles (e.g. RDP sessions, GPU driver resets).
+/// Win32 message subclass for the overlay top-level window:
+///   - WM_PAINT: fill the Win32 surface black and skip default painting.
+///     With the empty-region blur-behind the DWM treats the window as
+///     per-pixel alpha; the island's transparent regions then show the
+///     desktop. (cnbluefire's WndProc does exactly this.)
+///   - WM_DWMCOMPOSITIONCHANGED: re-apply the DWM transparency state,
+///     because DWM resets it when composition toggles (RDP, driver reset).
+///   (Note: WM_PAINT is 0x000F - an earlier draft mislabeled it as
+///   WM_ERASEBKGND, which is 0x0014.)
 /// </summary>
 internal static class OverlayWin32Subclass
 {
-    private const uint WM_ERASEBKGND = 0x000F;
-    private const uint WM_DWMCOMPOSITIONCHANGED = 0x031E;
-
     // Keep the delegate rooted for the window's lifetime (GC must not
     // collect the callback while the native subclass is installed).
     private static OverlayNative.SubclassProc? _proc;
+    private static IntPtr _blackBrush = IntPtr.Zero;
 
     /// <summary>Unique subclass id for DuoFlow's overlay window.</summary>
     private const uint SubclassId = 0x4D4630; // "DF0"
@@ -128,25 +120,28 @@ internal static class OverlayWin32Subclass
         }
         else
         {
-            Trace.Log("subclass: installed (WM_ERASEBKGND colorkey / WM_DWMCOMPOSITIONCHANGED)");
+            Trace.Log("subclass: installed (WM_PAINT black / WM_DWMCOMPOSITIONCHANGED)");
         }
     }
 
     private static IntPtr Handler(
         IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, uint uIdSubclass, IntPtr dwRefData)
     {
-        if (msg == WM_ERASEBKGND)
+        if (msg == OverlayNative.WM_PAINT)
         {
-            if (OverlayNative.GetClientRect(hwnd, out OverlayNative.RECT rc)
-                && OverlayNative.FillRect(wParam, ref rc, OverlayNative.KeyBrush) != 0)
+            if (OverlayNative.BeginPaint(hwnd, out OverlayNative.PAINTSTRUCT ps).ToInt64() != 0)
             {
-                return new IntPtr(1); // background erased (handled)
+                if (_blackBrush == IntPtr.Zero)
+                {
+                    _blackBrush = OverlayNative.GetStockObject(4 /* BLACK_BRUSH */);
+                }
+                OverlayNative.FillRect(ps.hdc, ref ps.rcPaint, _blackBrush);
+                OverlayNative.EndPaint(hwnd, in ps);
             }
-
-            return new IntPtr(1); // still report handled: default erase would paint the class brush
+            return new IntPtr(1); // skip default painting
         }
 
-        if (msg == WM_DWMCOMPOSITIONCHANGED)
+        if (msg == 0x031E) // WM_DWMCOMPOSITIONCHANGED
         {
             int hr = OverlayNative.ApplyTransparentWin32Layer(hwnd);
             OverlayNative.InvalidateRect(hwnd, IntPtr.Zero, true);
