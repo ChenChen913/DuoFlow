@@ -41,6 +41,13 @@ param(
 
 $ErrorActionPreference = "Continue"   # sections are isolated, keep going
 
+# $env:COMPUTERNAME can be EMPTY in non-interactive hosts (scheduled tasks,
+# CI-like sandboxes - actually observed on the real machine 2026-09-16 while
+# [Environment]::MachineName still works). Fall back so meta.computer is
+# never null in the JSON report.
+$probeComputer = $env:COMPUTERNAME
+if (-not $probeComputer) { $probeComputer = [Environment]::MachineName }
+
 function Write-Step($msg) { Write-Host "`n==> $msg" -ForegroundColor Cyan }
 function Write-Ok($msg)   { Write-Host "    [FOUND] $msg"   -ForegroundColor Green }
 function Write-No($msg)   { Write-Host "    [NOT FOUND] $msg" -ForegroundColor Yellow }
@@ -50,7 +57,7 @@ $script:Result = [ordered]@{
     meta = [ordered]@{
         script    = "hardware-probe.ps1"
         runAt     = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss K")
-        computer  = $env:COMPUTERNAME
+        computer  = $probeComputer
         psEdition = $PSVersionTable.PSEdition
         psVersion = $PSVersionTable.PSVersion.ToString()
         isAdmin   = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -312,8 +319,19 @@ try {
     # PNP0C0D = lid device, PNP0C0E = sleep button (classic ACPI hardware IDs)
     $lid = @($acpiDevices | Where-Object { $_.InstanceId -match "ACPI\\PNP0C0D" })
     $slp = @($acpiDevices | Where-Object { $_.InstanceId -match "ACPI\\PNP0C0E" })
+
+    # WHY TWO BRANCHES (verified on real hardware, Legion R7000 APH9, 2026-09-16):
+    #   Branch 1 "ACPI\VEN_<id>\..."  -> newer firmware exposes a VEN_ prefix.
+    #   Branch 2 "ACPI\<bare prefix>" -> AMD platform devices use a BARE
+    #      prefix with NO VEN_ part, e.g. "ACPI\AMDI0030\0" (AMD GPIO),
+    #      "ACPI\AMDI0009\1" (Micro PEP). AMDI in branch 2 is required:
+    #      without it the array comes back EMPTY on AMD laptops and
+    #      contradicts docs/HARDWARE_COMPATIBILITY.md 5.1 table C. Do NOT
+    #      remove AMDI from branch 2.
+    # NOTE: matched AMD devices are platform controllers (GPIO/PEP/I2C/PPM),
+    #       NOT vendor event devices - they carry no lid/hinge signal.
     $vendorAcpi = @($acpiDevices | Where-Object {
-        $_.InstanceId -match "ACPI\\VEN_(LNO|LEN|AMDI|HPQ|ASUS)" -or $_.InstanceId -match "ACPI\\(LEN|LNO|ATK|HPQ|ASUS)" })
+        $_.InstanceId -match "ACPI\\VEN_(LNO|LEN|AMDI|HPQ|ASUS)" -or $_.InstanceId -match "ACPI\\(LEN|LNO|AMDI|ATK|HPQ|ASUS)" })
 
     # Inline scriptblocks, NOT variables - see "WHY INLINE" in Section 2
     # (Bug 2: PS 5.1 ForEach-Object $var produces all-empty objects).

@@ -470,7 +470,7 @@ Sensor / HID / Camera Detection / D3D Capture / Performance
 | --- | --- | --- | --- |
 | ACPI 盖设备 PNP0C0D | `acpi.lidDevice[]` | BIOS 有盖设备 → 存在硬件盖事件，可探索监听（Windows 不一定对应用暴露） | **Supported**（FriendlyName "ACPI 盖子" · `ACPI\PNP0C0D\2&DABA3FF&1` · Status OK → M4/M5 盖事件监听的价值目标） |
 | ACPI 睡眠按钮 PNP0C0E | `acpi.sleepButtonDevice[]` | 电源事件联动（M5 预研） | **Not found** |
-| 厂商 ACPI 设备 | `acpi.vendorAcpiDevices[]` | Lenovo ATK 等事件设备，可能携带开合/坞接信号 | **Supported**（4 个 AMD 设备，均 Status OK：AMDI0030 GPIO Controller · AMDI0009 Micro PEP · AMDI0010 I2C Controller · AMDI0052 PPM Provisioning File） |
+| 厂商 ACPI 设备 | `acpi.vendorAcpiDevices[]` | 厂商**事件**设备（Lenovo ATK 等）才可能携带开合/坞接信号；AMD 平台设备（`ACPI\AMDIxxxx` 裸前缀）只是平台基础控制器，**不携带开合信号，不能作为 M4 信号源** | **Supported**（4 个 AMD 平台设备，均 Status OK：AMDI0030 GPIO Controller · AMDI0009 Micro PEP · AMDI0010 I2C Controller · AMDI0052 PPM Provisioning File）——**性质说明**：这 4 个是 AMD 平台基础控制器（GPIO/PEP/I2C/PPM），不是 Lenovo/ATK 类厂商事件设备；本机未发现任何携带开合信号的厂商 ACPI 事件设备。注：初版探针正则漏匹配 `ACPI\AMDIxxxx` 裸前缀（无 VEN_），2026-09-16 验收轮已修正，数组与脚本输出一致 |
 | ACPI 设备总数 | `acpi.acpiDeviceCount` | 基线参考 | 50（基线计数，非判定项） |
 
 ### D. 厂商接口层（探针 Section 4）
