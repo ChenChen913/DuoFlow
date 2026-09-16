@@ -54,11 +54,14 @@ public sealed partial class MainWindow : Window
         _manualProvider.StateChanged += OnManualStateChanged;
         _ = _manualProvider.StartAsync();
 
-        Closed += OnWindowClosed;
+        // Type-inferred lambda on purpose: WindowClosedEventArgs is not
+        // referenceable from C# in the WinAppSDK projection (CS0246, same
+        // pitfall as OverlayWindow.Closed since M0.2).
+        Closed += (_, _) => DetachManualProvider();
         ((FrameworkElement)Content).Loaded += OnLoaded;
     }
 
-    private void OnWindowClosed(object sender, WindowClosedEventArgs args)
+    private void DetachManualProvider()
     {
         // Nothing may outlive the window: detach the handler and stop the
         // provider (it only flips its lifecycle flag - no async work).

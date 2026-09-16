@@ -189,6 +189,7 @@
 **验收（代码层）**：App 引用 Core（net8.0-windows → net8.0 单向引用）✅；Slider → ManualProvider.SetProgress → StateChanged → 显示 链路实现，防回环守卫（值差异 + 回声旗标）就位 ✅；Core 单测 14/14 通过（本地 .NET 8.0.425 + CI core-tests）✅；CI build-winui 连带构建 Core ✅。
 **验收（视觉层，待真机）**：拖动 Slider 连续变化 / Home、End 免焦点即时响应 / 数值显示刷新 —— **需真机环境（先跑 scripts/setup-windows.ps1 装 .NET 8 SDK + VS Build Tools）后目测验收，本轮明确标注为待完成项，不计入已完成验收**。
 **产物**：`src/DuoFlow.App`（MainWindow.xaml/.cs M1.2 区块 + csproj 引用）、`src/DuoFlow.Core.Tests`（+3 用例 = 14）、新决策 DD-036（驱动链/键盘方案/防回环/单一事实源/显示格式/依赖方向）。
+**踩坑记录**：`WindowClosedEventArgs` 在 WinAppSDK 1.8 的 C# 投影中无法以显式类型引用（CI 实证 CS0246，run 35052712786）——与 M0.2 起 OverlayWindow 的处理一致，改用**类型推断 lambda**（`Closed += (_, _) => Cleanup();`）绕过；处理器内逻辑不变（退订 + StopAsync）。
 
 #### M1.3 Animation Engine
 
