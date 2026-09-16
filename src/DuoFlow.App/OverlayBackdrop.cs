@@ -39,8 +39,9 @@ internal sealed class TransparentBackdrop : SystemBackdrop
 {
     private Windows.UI.Composition.Compositor? _compositor;
 
-    // Rooted controller for the DispatcherQueue created on-demand below.
-    private Microsoft.UI.Dispatching.DispatcherQueueController? _dqController;
+    // Rooted controller for the OS-level (Windows.System) DispatcherQueue
+    // created on-demand below - it must outlive the compositor.
+    private Windows.System.DispatcherQueueController? _osDqController;
 
     protected override void OnTargetConnected(
         ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
@@ -72,15 +73,22 @@ internal sealed class TransparentBackdrop : SystemBackdrop
 
     private Windows.UI.Composition.Compositor CreateCompositorWithDispatcherQueue()
     {
+        // IMPORTANT: the OS composition factory checks the WINDOWS.SYSTEM
+        // DispatcherQueue, NOT the Microsoft.UI.Dispatching one that WinUI 3
+        // registers on its UI thread (CI-verified twice: with the MSFT queue
+        // present, "new Compositor()" still throws Access is denied -
+        // run 35074411095). Probe and create the OS-level queue.
         try
         {
-            _ = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+            _ = Windows.System.DispatcherQueue.GetForCurrentThread();
         }
         catch
         {
-            // No queue on this thread yet - create one (castorix helper).
-            _dqController = Microsoft.UI.Dispatching.DispatcherQueueController.CreateOnCurrentThread();
-            Trace.Log("backdrop: DispatcherQueueController created on current thread");
+            // No OS-level queue on this thread yet - create one (the managed
+            // equivalent of castorix's CoreMessaging
+            // CreateDispatcherQueueController helper).
+            _osDqController = Windows.System.DispatcherQueueController.CreateOnCurrentThread();
+            Trace.Log("backdrop: OS DispatcherQueueController created on current thread");
         }
 
         return new Windows.UI.Composition.Compositor();
