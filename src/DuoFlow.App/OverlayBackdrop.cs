@@ -37,6 +37,11 @@ namespace DuoFlow.App;
 /// </summary>
 internal sealed class TransparentBackdrop : SystemBackdrop
 {
+    private Windows.UI.Composition.Compositor? _compositor;
+
+    // Rooted controller for the DispatcherQueue created on-demand below.
+    private Microsoft.UI.Dispatching.DispatcherQueueController? _dqController;
+
     protected override void OnTargetConnected(
         ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
     {
@@ -44,15 +49,18 @@ internal sealed class TransparentBackdrop : SystemBackdrop
 
         try
         {
-            // The XAML UI thread always has a DispatcherQueue, so a plain
-            // "new Compositor()" works (no manual CoreMessaging
-            // DispatcherQueueController needed in this context). The brush
-            // MUST come from a Windows.UI.Composition.Compositor because the
-            // ICompositionSupportsSystemBackdrop.SystemBackdrop property is
-            // typed in that namespace (CI-verified CS0029, run 35073292924).
-            var compositor = new Windows.UI.Composition.Compositor();
+            // CI-verified (run 35074034434): "new Compositor()" fails with
+            // "Access is denied. The caller must initialize DispatcherQueue
+            // on this thread before this operation." - the WinRT composition
+            // factory requires a DispatcherQueue even on the XAML UI thread
+            // (it is not automatically registered for it this early in
+            // window construction). Ensure one exists first, then build the
+            // compositor. The brush MUST come from a Windows.UI.Composition
+            // Compositor because ICompositionSupportsSystemBackdrop.
+            // SystemBackdrop is typed in that namespace (run 35073292924).
+            _compositor ??= CreateCompositorWithDispatcherQueue();
             connectedTarget.SystemBackdrop =
-                compositor.CreateColorBrush(Windows.UI.Color.FromArgb(0, 255, 0, 255));
+                _compositor.CreateColorBrush(Windows.UI.Color.FromArgb(0, 255, 0, 255));
             Trace.Log("backdrop: alpha-0 system backdrop brush connected");
         }
         catch (Exception ex)
@@ -60,6 +68,22 @@ internal sealed class TransparentBackdrop : SystemBackdrop
             Trace.Log($"backdrop: OnTargetConnected FAILED: {ex.Message}");
             throw;
         }
+    }
+
+    private Windows.UI.Composition.Compositor CreateCompositorWithDispatcherQueue()
+    {
+        try
+        {
+            _ = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+        }
+        catch
+        {
+            // No queue on this thread yet - create one (castorix helper).
+            _dqController = Microsoft.UI.Dispatching.DispatcherQueueController.CreateOnCurrentThread();
+            Trace.Log("backdrop: DispatcherQueueController created on current thread");
+        }
+
+        return new Windows.UI.Composition.Compositor();
     }
 
     protected override void OnTargetDisconnected(ICompositionSupportsSystemBackdrop disconnectedTarget)
