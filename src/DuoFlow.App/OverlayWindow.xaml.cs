@@ -98,7 +98,7 @@ public sealed partial class OverlayWindow : Window
             {
                 Warnings.Add("exstyle: WS_EX_LAYERED could not be applied (P0-2)");
             }
-            Trace.Log($"overlay: exstyle OK layered={LayeredApplied} colorkey=0x{OverlayNative.OverlayKeyColor:X6}");
+            Trace.Log($"overlay: exstyle OK layered={LayeredApplied} (LWA_ALPHA colorkey rejected by CI)");
         }
         catch (Exception ex)
         {
