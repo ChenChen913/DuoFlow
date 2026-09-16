@@ -60,13 +60,18 @@ internal static class OverlayTransparency
             brushHolder.SystemBackdrop =
                 compositor.CreateColorBrush(Windows.UI.Color.FromArgb(0, 255, 255, 255));
             Trace.Log("transparency: alpha-0 backdrop brush connected via window.As<>");
-            return true;
         }
         catch (Exception ex)
         {
             Trace.Log($"transparency: backdrop brush FAILED: {ex.GetType().Name}: {ex.Message}");
             return false;
         }
+
+        // 3. Re-assert our extended styles: connecting the backdrop makes
+        // WinUI rewrite GWL_EXSTYLE and our click-through/no-activate/
+        // tool-window/layered bits vanish (CI-verified, run 35079479453).
+        OverlayNative.EnableLayeredClickThrough(hwnd);
+        return true;
     }
 
     /// <summary>

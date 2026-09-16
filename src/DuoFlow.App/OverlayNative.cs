@@ -164,17 +164,22 @@ public static class OverlayNative
     }
 
     /// <summary>
-    /// P0-2: add WS_EX_LAYERED on top of the existing WS_EX_TRANSPARENT and
-    /// initialize the layered attributes (LWA_ALPHA 255 - a layered window
-    /// whose attributes were never set is not composited at all). NOTE:
-    /// LWA_COLORKEY was tried and REJECTED by CI (run 35077849717): the
-    /// color-keyed combo also killed click-through, and the key color never
-    /// showed because the island's DComp base is not the GDI surface.
+    /// P0-2: add WS_EX_LAYERED on top of the existing WS_EX_TRANSPARENT /
+    /// WS_EX_NOACTIVATE / WS_EX_TOOLWINDOW and initialize the layered
+    /// attributes (LWA_ALPHA 255 - a layered window whose attributes were
+    /// never set is not composited at all). Idempotent: safe to call again
+    /// after operations that may make WinUI rewrite GWL_EXSTYLE (CI-verified:
+    /// connecting the backdrop brush resets our style bits,
+    /// run 35079479453 - ClickThrough/NoActivate/ToolWindow all went false).
     /// </summary>
     public static void EnableLayeredClickThrough(IntPtr hwnd)
     {
         long ex = GetExStyle(hwnd);
-        SetExStyle(hwnd, ex | WS_EX_LAYERED);
+        SetExStyle(hwnd, ex
+            | WS_EX_TRANSPARENT
+            | WS_EX_NOACTIVATE
+            | WS_EX_TOOLWINDOW
+            | WS_EX_LAYERED);
         _ = SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA);
         ForceTopmost(hwnd); // includes SWP_FRAMECHANGED
     }
