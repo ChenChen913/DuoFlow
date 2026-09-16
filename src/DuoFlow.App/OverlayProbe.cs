@@ -327,14 +327,15 @@ public static class OverlayProbe
     {
         rect = default;
 
-        ushort atom = OverlayNative.RegisterClassW(new OverlayNative.WNDCLASSW
+        var wndClass = new OverlayNative.WNDCLASSW
         {
             style = OverlayNative.CS_HREDRAW | OverlayNative.CS_VREDRAW,
             lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_refWndProc),
             hInstance = OverlayNative.GetModuleHandleW(null),
             hbrBackground = OverlayNative.GetStockObject(0 /* WHITEBRUSH */),
             lpszClassName = RefWindowClassName,
-        });
+        };
+        ushort atom = OverlayNative.RegisterClassW(ref wndClass);
         if (atom == 0)
         {
             Trace.Log("probe: RegisterClassW(DuoFlowLumaRef) failed (maybe registered already)");
