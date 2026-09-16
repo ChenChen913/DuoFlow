@@ -273,58 +273,65 @@ public static class OverlayNative
     public static extern IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     // ---- OS-level DispatcherQueue (CoreMessaging) for Windows.UI.Composition.
-    //      The WinUI 3 UI thread only has a Microsoft.UI.Dispatching queue;
-    //      the OS composition factory requires a WINDOWS.SYSTEM queue
-    //      (CI-verified: new Compositor() throws Access is denied otherwise).
-    //      Managed CreateOnCurrentThread does not exist in the desktop
-    //      projection (CS0117), so P/Invoke the native export - the same
-    //      helper castorix's layered-window recipe uses. ----
+    //      Verbatim-port of the official WindowsSystemDispatcherQueueHelper
+    //      (Windows App SDK system-backdrop docs + castorix recipe). Critical
+    //      details that broke earlier attempts (CI-verified):
+    //      apartmentType MUST be DQTAT_COM_STA (2) - DQTAT_COM_NONE (0)
+    //      creates a queue that Windows.UI.Composition.Compositor still
+    //      rejects with Access is denied (runs 35075183532/35075895577) -;
+    //      the controller out-param marshals as IUnknown object; and
+    //      GetForCurrentThread() returns null (not throw) when absent. ----
 
-    private static IntPtr _osDispatcherQueueController; // rooted for process lifetime
+    private static object? _osDispatcherQueueController; // rooted for process lifetime
 
     [StructLayout(LayoutKind.Sequential)]
     private struct DispatcherQueueOptions
     {
         public int dwSize;
-        public int dwThreadType;    // DQTYPE_THREAD_CURRENT = 2
-        public int dwApartmentType; // DQTAT_COM_NONE = 0 (thread apartment already set)
+        public int threadType;
+        public int apartmentType;
     }
 
-    [DllImport("coremessaging.dll", EntryPoint = "CreateDispatcherQueueController", SetLastError = true)]
+    [DllImport("CoreMessaging.dll")]
     private static extern int CreateDispatcherQueueController(
-        DispatcherQueueOptions options, out IntPtr dispatcherQueueController);
+        [In] DispatcherQueueOptions options,
+        [In, Out, MarshalAs(UnmanagedType.IUnknown)] ref object dispatcherQueueController);
 
     /// <summary>
     /// Ensures an OS-level (Windows.System) DispatcherQueue exists on the
     /// calling thread so Windows.UI.Composition.Compositor can be constructed.
-    /// Returns true when a queue is present afterwards.
     /// </summary>
-    public static bool EnsureOsDispatcherQueue()
+    public static bool EnsureWindowsSystemDispatcherQueueController()
     {
         try
         {
-            _ = Windows.System.DispatcherQueue.GetForCurrentThread();
-            return true; // already there
+            if (Windows.System.DispatcherQueue.GetForCurrentThread() != null)
+            {
+                return true; // one already exists, so we'll just use it
+            }
         }
         catch
         {
-            // fall through to native creation
+            // projection may throw instead of returning null - fall through
         }
 
-        var options = new DispatcherQueueOptions
+        if (_osDispatcherQueueController == null)
         {
-            dwSize = Marshal.SizeOf<DispatcherQueueOptions>(),
-            dwThreadType = 2, // DQTYPE_THREAD_CURRENT
-            dwApartmentType = 0, // DQTAT_COM_NONE
-        };
-        int hr = CreateDispatcherQueueController(options, out IntPtr controller);
-        if (hr != 0 || controller == IntPtr.Zero)
-        {
-            Trace.Log($"EnsureOsDispatcherQueue: CreateDispatcherQueueController hr=0x{hr:X8}");
-            return false;
+            var options = new DispatcherQueueOptions
+            {
+                dwSize = Marshal.SizeOf<DispatcherQueueOptions>(),
+                threadType = 2,    // DQTYPE_THREAD_CURRENT
+                apartmentType = 2, // DQTAT_COM_STA
+            };
+            object controller = _osDispatcherQueueController!;
+            int hr = CreateDispatcherQueueController(options, ref controller);
+            if (hr != 0)
+            {
+                Trace.Log($"EnsureWindowsSystemDispatcherQueueController: hr=0x{hr:X8}");
+                return false;
+            }
+            _osDispatcherQueueController = controller; // keep alive
         }
-
-        _osDispatcherQueueController = controller; // keep alive
         return true;
     }
 

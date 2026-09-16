@@ -1,6 +1,5 @@
 using System;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Hosting;  // ElementCompositionPreview (NOT .Media - CS0103)
 using Microsoft.UI.Xaml.Media;
 
 namespace DuoFlow.App;
@@ -69,49 +68,31 @@ internal sealed class TransparentBackdrop : SystemBackdrop
 
     /// <summary>
     /// Builds the alpha-0 brush in the WINDOWS.UI.Composition namespace (the
-    /// ICompositionSupportsSystemBackdrop.SystemBackdrop property type).
-    /// Path 1 (preferred): reuse the XAML visual's own compositor - it is the
-    /// one that paints the island, and if Microsoft.UI.Composition.* is a
-    /// re-projection of the same WinRT runtime classes the runtime cast to
-    /// Windows.UI.Composition.Compositor succeeds.
-    /// Path 2 (fallback): ensure an OS-level DispatcherQueue via the native
-    /// CoreMessaging export, then construct a fresh Windows.UI.Composition
-    /// Compositor (castorix recipe).
-    /// Every step is logged so a CI run pinpoints the failing path.
+    /// ICompositionSupportsSystemBackdrop.SystemBackdrop property type) via
+    /// the OFFICIAL recipe (Windows App SDK system-backdrop docs + castorix's
+    /// TransparentBackdrop.cs, fetched verbatim 2026-09-16):
+    ///   EnsureWindowsSystemDispatcherQueueController() -> new
+    ///   Windows.UI.Composition.Compositor().CreateColorBrush(0,255,0,255).
+    ///
+    /// Dead ends already CI-proven (kept here to prevent re-walking them):
+    ///   - Reusing the XAML compositor: Microsoft.UI.Composition.Compositor and
+    ///     Windows.UI.Composition.Compositor are DIFFERENT WinRT runtime
+    ///     classes - direct cast (35075895577) and CsWinRT As<T> re-wrap
+    ///     (35076653477, IInspectable cast failure) both fail;
+    ///   - DispatcherQueueOptions.apartmentType = DQTAT_COM_NONE (0): the queue
+    ///     is created (hr=0) but Compositor still throws Access is denied
+    ///     (35075183532) - it MUST be DQTAT_COM_STA (2).
     /// </summary>
     private static Windows.UI.Composition.CompositionBrush CreateAlphaZeroBrush(XamlRoot xamlRoot)
     {
-        var alphaZero = Windows.UI.Color.FromArgb(0, 255, 0, 255);
-
-        // ---- Path 1: XAML's own compositor, re-wrapped into the OS projection.
-        // A direct C# cast fails (InvalidCastException, run 35075895577):
-        // Microsoft.UI.Composition.Compositor and Windows.UI.Composition.Compositor
-        // are distinct .NET projection types even when they wrap the same native
-        // WinRT object. CsWinRT's As<T>() re-queries the interfaces and wraps the
-        // SAME native object in the requested projection.
-        try
-        {
-            Microsoft.UI.Composition.Visual visual =
-                ElementCompositionPreview.GetElementVisual((UIElement)xamlRoot.Content);
-            // WinRT.MarshalExtensions is internal (CS0122); CastExtensions.As<T>
-            // is the public CsWinRT re-wrap entry.
-            var osCompositor = WinRT.CastExtensions.As<Windows.UI.Composition.Compositor>(visual.Compositor);
-            Trace.Log("backdrop: path1 OK - XAML compositor re-wrapped as Windows.UI.Composition.Compositor");
-            return osCompositor.CreateColorBrush(alphaZero);
-        }
-        catch (Exception ex)
-        {
-            Trace.Log($"backdrop: path1 (XAML compositor rewrap) failed: {ex.GetType().Name}: {ex.Message}");
-        }
-
-        // ---- Path 2: OS DispatcherQueue (native CoreMessaging) + new Compositor.
-        if (!OverlayNative.EnsureOsDispatcherQueue())
+        if (!OverlayNative.EnsureWindowsSystemDispatcherQueueController())
         {
             throw new InvalidOperationException(
-                "Could not ensure an OS DispatcherQueue for Windows.UI.Composition.Compositor.");
+                "Could not ensure a Windows.System DispatcherQueue for Windows.UI.Composition.Compositor.");
         }
-        Trace.Log("backdrop: path2 OS DispatcherQueue present, constructing Compositor");
-        return new Windows.UI.Composition.Compositor().CreateColorBrush(alphaZero);
+        Trace.Log("backdrop: OS DispatcherQueue present, constructing Compositor");
+        return new Windows.UI.Composition.Compositor()
+            .CreateColorBrush(Windows.UI.Color.FromArgb(0, 255, 0, 255));
     }
 }
 
