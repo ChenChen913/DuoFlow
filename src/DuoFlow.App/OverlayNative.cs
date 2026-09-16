@@ -100,13 +100,13 @@ public static class OverlayNative
     public static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint crKey, byte bAlpha, uint dwFlags);
 
     [DllImport("gdi32.dll")]
-    private static extern IntPtr GetStockObject(int fnObject);
+    public static extern IntPtr GetStockObject(int fnObject);
 
     [DllImport("user32.dll")]
-    private static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hBrush);
+    public static extern int FillRect(IntPtr hDC, ref RECT lprc, IntPtr hBrush);
 
     [DllImport("user32.dll")]
-    private static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
+    public static extern bool GetClientRect(IntPtr hWnd, out RECT lpRect);
 
     [DllImport("user32.dll")]
     public static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
@@ -266,6 +266,8 @@ public static class OverlayNative
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     public static extern IntPtr GetModuleHandleW(string? lpModuleName);
+
+    public delegate IntPtr WndProcDelegate(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
     public static extern IntPtr DefWindowProcW(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);

@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅） |
-| 当前小任务 | **M1.3 Animation Engine**（创建 Animation Engine + smoothing / velocity + 防止 Progress 跳变 + 单测——纯 C#，云端可完成；放 DuoFlow.Core） |
-| 下一步行动 | M1.3 Animation Engine（纯 C# 逻辑 + 单测，云端可完成）→ M1.4 Perspective Warp 需真机（D3D11 GPU / HLSL / Warp 调优）；**真机复验队列**：① M0.3 两 P0 修复后「透明 + 穿透 + 预览内容」三件套目测（DD-037，#1247 组合必须同次运行一起验）；② M1.2 Slider/键盘/显示（真机首跑已过 ✅）；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual |
-| 阻塞项 | **M0.3 两 P0 已修复（DD-037），待真机复验三件套**：透明（亮度采样对比）+ 穿透（真实鼠标点击/拖动）+ 预览内容正常（#1247 已知组合，修好一个可能弄坏另一个）；P1-a 预览黑屏待真机结论（本轮不改捕获链）；IsAlwaysOnTop 可能干扰穿透——复验不过第一个查它；M1.4 起 D3D11 GPU 确认与视觉调优需真机 |
-| 最后更新 | 2026-09-16 · M0.3 真机 P0 修复（透明双层配方 + LAYERED 穿透 + 可证伪探针进 CI 门禁 + DD-037 + HC §6.2）· Super Z |
+| 当前小任务 | **M1.4 Perspective Warp**（DuoWarp.hlsl + 基础 Perspective Warp 绑定 Progress + 曲线调整 + 0↔1 双向测试——**需真机 D3D11 GPU**，云端可先备代码与构建验证） |
+| 下一步行动 | M1.4 需真机（D3D11 / HLSL / Warp 调优；云端可先写 shader 框架 + CI 构建验证）→ M1.5 Hinge Mask；**真机复验队列**：① M0.3 两 P0 修复后「透明 + 穿透 + 预览内容」三件套同次运行目测（DD-037，#1247 组合）；② M1.2 已过 ✅；③ D3D11 GPU 确认（M0.1 遗留）随 M1.4 一起 |
+| 阻塞项 | **M0.3 两 P0 已修复（DD-037），待真机复验三件套**：透明（亮度采样）+ 穿透（真实鼠标）+ 预览正常（#1247 已知组合）；P1-a 预览黑屏待真机结论（M1.4 时一并排查）；IsAlwaysOnTop 干扰穿透时第一个查它；M1.4 起 D3D11 GPU 确认与视觉调优需真机（双 GPU 已确认：RTX 4060 Laptop + Radeon 780M） |
+| 最后更新 | 2026-09-16 · M1.3 Animation Engine 完成（限速指数逼近 + Velocity 真实值 + 可注入时间源 + 28/28 单测 + DD-038）· Super Z |
 
 ---
 
@@ -197,12 +197,16 @@
 **产物**：`src/DuoFlow.App`（MainWindow.xaml/.cs M1.2 区块 + csproj 引用）、`src/DuoFlow.Core.Tests`（+3 用例 = 14）、新决策 DD-036（驱动链/键盘方案/防回环/单一事实源/显示格式/依赖方向）。
 **踩坑记录**：`WindowClosedEventArgs` 在 WinAppSDK 1.8 的 C# 投影中无法以显式类型引用（CI 实证 CS0246，run 35052712786）——与 M0.2 起 OverlayWindow 的处理一致，改用**类型推断 lambda**（`Closed += (_, _) => Cleanup();`）绕过；处理器内逻辑不变（退订 + StopAsync）。
 
-#### M1.3 Animation Engine
+#### M1.3 Animation Engine ✅（2026-09-16 云端完成：纯 C# + 单测 28/28；渲染接线留 M1.4）
 
-* [ ] 创建 Animation Engine
-* [ ] 实现 smoothing 与 velocity
-* [ ] 防止 Progress 跳变
-* [ ] 添加单元测试
+* [x] 创建 Animation Engine（`DuoFlow.Core/AnimationEngine`：Provider 原始 LidState → 平滑 LidState 的中间层，零渲染概念——DD-002；位置/理由同 M1.1：Core 纯 C#，云端可测）
+* [x] 实现 smoothing（限速指数逼近：v=(target−current)/τ 钓 ±maxV，默认 τ=0.10s / 2.0 全程每秒；DD-038）
+* [x] 实现 velocity（有符号斜率，单位 = Progress/秒，正值=关闭方向；到位即 0——M1.1 恒为 0 的字段开始有真实值）
+* [x] 防止 Progress 跳变（速率上限硬保证：任何输入含键盘 Home/End 跳变均不瞬变；dt 钳 [0, 0.25s] 防暂停恢复瞬移；首次输入对齐语义见 DD-038）
+* [x] 添加单元测试（14 新用例：首次对齐/单调收敛/突变限速/往返反向/极值钓制/NaN 忽略/不规则 dt/大间隙钓制/速度真实值/速度符号翻转/Angle 重建自洽/元数据透传/混沌序列不越界；时间源 ManualTimeSource 注入，无墙钟依赖；合计 28/28 本地+CI 全绿）
+
+**验收**：Core 单测 28/28（本地 .NET 8.0.425 + CI core-tests）✅；引擎不含任何 WinUI/D3D 概念 ✅；ManualProvider（DD-035）语义零改动——引擎在 Provider 下游 ✅；**渲染接线（Update/Tick → Warp uniform）属 M1.4**，本轮不接 UI/渲染（不扩范围）✅。
+**产物**：`src/DuoFlow.Core`（AnimationEngine / AnimationEngineOptions / ITimeSource + Stopwatch/Manual 时间源）、`src/DuoFlow.Core.Tests/AnimationEngineTests.cs`（14 用例）、新决策 DD-038（限速指数逼近/Velocity 单位符号/可注入时间源/首帧对齐/输出重建/双驱动入口）。
 
 #### M1.4 Perspective Warp
 
@@ -306,6 +310,18 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-16 · Phase 2 / M1.3 Animation Engine · Super Z (main agent)
+
+- **完成**：`DuoFlow.Core/AnimationEngine`（+ Options + ITimeSource，纯 C# 零渲染概念）——Provider 原始 LidState → 平滑 LidState 的中间层。算法=**限速指数逼近**（v=(target−current)/τ 钓 ±maxV，默认 τ=0.10s / 2.0·全程每秒）：远离目标时段速稳定、接近目标时指数收敛、中途反向符号自动翻转；越过目标即到位（ε 内速度置 0，无渐近爬行/无超调抖动）
+- **Velocity 真实值**：有符号斜率、单位 Progress/秒（正值=关闭方向）——M1.1 恒为 0 的字段自本里程碑起有真实语义（DD-038）
+- **防跳变三重保证**：① 速率上限硬保证（键盘 Home/End 跳变也不瞬变，0→1 ≥ 0.5s）；② dt 钳 [0, 0.25s]（暂停恢复/渲染卡死不瞬移，最坏单步位移 ≤ maxV×maxDt=0.5）；③ 首次输入对齐语义（新建引擎采采纳现状，防跳变只作用于观察到过的变化）
+- **时间源可注入**：ITimeSource（Stopwatch 生产 / ManualTimeSource 单测），禁止 DateTime.Now——全部 28 用例确定性通过，无墙钟不稳定
+- **输出重建**：Progress/Velocity=平滑值；Angle 用 §6 示意映射从平滑 Progress 重建（显示连续，延续 DD-035 占位语义）；Source/Confidence 原样透传；NaN 输入整帧忽略
+- **单测 14 新用例**：首次对齐/单调收敛/突变限速/往返反向/极值钓制/NaN 忽略/不规则 dt/大间隙钓制/速度真实值与符号翻转/Angle 自洽/元数据透传/混沌序列（固定种子）不越界；**合计 28/28** 本地（.NET 8.0.425）+ CI core-tests 全绿；修了 2 个初版测试自身未考虑 dt 钳制语义的误断（实现行为正确）
+- **产物**：`src/DuoFlow.Core`（3 文件）、`src/DuoFlow.Core.Tests/AnimationEngineTests.cs`、DD-038 登记、本文件三件套；注：引擎代码文件随 M0.3 CS0115 修复 commit（6f44605）一并入库（add -A 时已在工作树，不重写已推历史），本 commit 为 M1.3 文档与验证收尾
+- **边界**：引擎不接 UI/渲染（M1.4 以 Update/Tick/Current 接口接 Warp uniform）；ManualProvider（DD-035）零改动；不扩范围
+- **遗留 / 阻塞**：无；M1.4 Perspective Warp 需真机 D3D11（可先云端备 shader 框架 + 构建验证）；M0.3 P0 修复真机复验待做（透明+穿透+预览同次运行）
 
 ### 2026-09-16 · Phase 1 / M0.3 P0 修复（真机首跑发现的两个假阳性） · Super Z (main agent)
 

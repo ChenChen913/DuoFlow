@@ -1,8 +1,13 @@
 using System;
 using Microsoft.UI.Composition;   // NOT Windows.UI.Composition: since WinAppSDK
-                                  // 1.1 the XAML-interop composition types
-                                  // (SystemBackdrop signatures, Visual, Compositor)
-                                  // live in Microsoft.UI.Composition.
+                                  // 1.1 the SystemBackdrop override signature
+                                  // (ICompositionSupportsSystemBackdrop) lives in
+                                  // Microsoft.UI.Composition. BUT the
+                                  // SystemBackdrop PROPERTY on that interface is
+                                  // typed as Windows.UI.Composition.CompositionBrush
+                                  // (cross-projected), so the brush must be created
+                                  // by a Windows.UI.Composition.Compositor -
+                                  // exactly the castorix recipe.
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
 
@@ -39,13 +44,13 @@ internal sealed class TransparentBackdrop : SystemBackdrop
 
         try
         {
-            // OnTargetConnected runs on the XAML UI thread, which always has
-            // a DispatcherQueue here - no manual CoreMessaging
-            // DispatcherQueueController needed. Grab the compositor from the
-            // root visual and hand the framework an alpha=0 brush.
-            Compositor compositor = ElementCompositionPreview
-                .GetElementVisual((UIElement)xamlRoot.Content)
-                .Compositor;
+            // The XAML UI thread always has a DispatcherQueue, so a plain
+            // "new Compositor()" works (no manual CoreMessaging
+            // DispatcherQueueController needed in this context). The brush
+            // MUST come from a Windows.UI.Composition.Compositor because the
+            // ICompositionSupportsSystemBackdrop.SystemBackdrop property is
+            // typed in that namespace (CI-verified CS0029, run 35073292924).
+            var compositor = new Windows.UI.Composition.Compositor();
             connectedTarget.SystemBackdrop =
                 compositor.CreateColorBrush(Windows.UI.Color.FromArgb(0, 255, 0, 255));
             Trace.Log("backdrop: alpha-0 system backdrop brush connected");

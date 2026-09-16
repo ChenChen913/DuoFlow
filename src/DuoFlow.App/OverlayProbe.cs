@@ -318,6 +318,11 @@ public static class OverlayProbe
         }
     }
 
+    // Rooted delegate for the reference window's wndproc (GC must not
+    // collect it while the window class is alive).
+    private static readonly OverlayNative.WndProcDelegate _refWndProc =
+        (hwnd, msg, wParam, lParam) => OverlayNative.DefWindowProcW(hwnd, msg, wParam, lParam);
+
     private static IntPtr CreateLumaReferenceWindow(IntPtr overlayHwnd, out OverlayNative.RECT rect)
     {
         rect = default;
@@ -325,7 +330,7 @@ public static class OverlayProbe
         ushort atom = OverlayNative.RegisterClassW(new OverlayNative.WNDCLASSW
         {
             style = OverlayNative.CS_HREDRAW | OverlayNative.CS_VREDRAW,
-            lpfnWndProc = OverlayNative.DefWindowProcW,
+            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_refWndProc),
             hInstance = OverlayNative.GetModuleHandleW(null),
             hbrBackground = OverlayNative.GetStockObject(0 /* WHITEBRUSH */),
             lpszClassName = RefWindowClassName,
