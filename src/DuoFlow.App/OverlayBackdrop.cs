@@ -44,7 +44,7 @@ internal static class OverlayTransparency
     /// Applies the full island-layer transparency recipe to the overlay
     /// window. Returns true when the alpha-0 backdrop brush is connected.
     /// </summary>
-    public static unsafe bool Apply(Window window)
+    public static bool Apply(Window window)
     {
         IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(window);
 
