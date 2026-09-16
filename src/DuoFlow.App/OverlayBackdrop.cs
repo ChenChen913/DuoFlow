@@ -1,10 +1,7 @@
 using System;
-using Microsoft.UI.Composition;   // SystemBackdrop override signature lives here
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Hosting;  // ElementCompositionPreview (NOT .Media - CS0103)
 using Microsoft.UI.Xaml.Media;
-using Windows.UI.Composition;     // ICompositionSupportsSystemBackdrop.SystemBackdrop
-                                  // property type + Compositor for the alpha-0 brush
 
 namespace DuoFlow.App;
 
@@ -46,13 +43,13 @@ namespace DuoFlow.App;
 internal sealed class TransparentBackdrop : SystemBackdrop
 {
     protected override void OnTargetConnected(
-        ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
+        Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
     {
         base.OnTargetConnected(connectedTarget, xamlRoot);
 
         try
         {
-            CompositionBrush brush = CreateAlphaZeroBrush(xamlRoot);
+            Windows.UI.Composition.CompositionBrush brush = CreateAlphaZeroBrush(xamlRoot);
             connectedTarget.SystemBackdrop = brush;
             Trace.Log("backdrop: alpha-0 system backdrop brush connected");
         }
@@ -63,7 +60,8 @@ internal sealed class TransparentBackdrop : SystemBackdrop
         }
     }
 
-    protected override void OnTargetDisconnected(ICompositionSupportsSystemBackdrop disconnectedTarget)
+    protected override void OnTargetDisconnected(
+        Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop disconnectedTarget)
     {
         disconnectedTarget.SystemBackdrop = null;
         base.OnTargetDisconnected(disconnectedTarget);
@@ -81,7 +79,7 @@ internal sealed class TransparentBackdrop : SystemBackdrop
     /// Compositor (castorix recipe).
     /// Every step is logged so a CI run pinpoints the failing path.
     /// </summary>
-    private static CompositionBrush CreateAlphaZeroBrush(XamlRoot xamlRoot)
+    private static Windows.UI.Composition.CompositionBrush CreateAlphaZeroBrush(XamlRoot xamlRoot)
     {
         var alphaZero = Windows.UI.Color.FromArgb(0, 255, 0, 255);
 
