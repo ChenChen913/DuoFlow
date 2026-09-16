@@ -92,21 +92,18 @@ internal static class OverlayTransparency
 
 /// <summary>
 /// Win32 message subclass for the overlay top-level window:
-///   - WM_PAINT: fill the Win32 surface black and skip default painting.
-///     With the empty-region blur-behind the DWM treats the window as
-///     per-pixel alpha; the island's transparent regions then show the
-///     desktop. (cnbluefire's WndProc does exactly this.)
 ///   - WM_DWMCOMPOSITIONCHANGED: re-apply the DWM transparency state,
 ///     because DWM resets it when composition toggles (RDP, driver reset).
-///   (Note: WM_PAINT is 0x000F - an earlier draft mislabeled it as
-///   WM_ERASEBKGND, which is 0x0014.)
+///   - WM_PAINT fill was TRIED AND REVERTED (cnbluefire fills WM_PAINT on a
+///     non-layered window; on our layered window returning 1 from WM_PAINT
+///     correlated with hit-test regression in CI run 35079027989) - default
+///     painting is left in place.
 /// </summary>
 internal static class OverlayWin32Subclass
 {
     // Keep the delegate rooted for the window's lifetime (GC must not
     // collect the callback while the native subclass is installed).
     private static OverlayNative.SubclassProc? _proc;
-    private static IntPtr _blackBrush = IntPtr.Zero;
 
     /// <summary>Unique subclass id for DuoFlow's overlay window.</summary>
     private const uint SubclassId = 0x4D4630; // "DF0"
@@ -120,27 +117,13 @@ internal static class OverlayWin32Subclass
         }
         else
         {
-            Trace.Log("subclass: installed (WM_PAINT black / WM_DWMCOMPOSITIONCHANGED)");
+            Trace.Log("subclass: installed (WM_DWMCOMPOSITIONCHANGED only)");
         }
     }
 
     private static IntPtr Handler(
         IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam, uint uIdSubclass, IntPtr dwRefData)
     {
-        if (msg == OverlayNative.WM_PAINT)
-        {
-            if (OverlayNative.BeginPaint(hwnd, out OverlayNative.PAINTSTRUCT ps).ToInt64() != 0)
-            {
-                if (_blackBrush == IntPtr.Zero)
-                {
-                    _blackBrush = OverlayNative.GetStockObject(4 /* BLACK_BRUSH */);
-                }
-                OverlayNative.FillRect(ps.hdc, ref ps.rcPaint, _blackBrush);
-                OverlayNative.EndPaint(hwnd, in ps);
-            }
-            return new IntPtr(1); // skip default painting
-        }
-
         if (msg == 0x031E) // WM_DWMCOMPOSITIONCHANGED
         {
             int hr = OverlayNative.ApplyTransparentWin32Layer(hwnd);
