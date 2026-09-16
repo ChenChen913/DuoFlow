@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅） |
-| 当前小任务 | M1.1 LidState（创建 LidState / LidStateSource / ILidStateProvider / ManualProvider —— 无硬件依赖，可立即开始） |
-| 下一步行动 | 按 §4 Phase 2 清单推进 M1.1→M1.3（纯 C# 逻辑 + 单元测试，云端可完成）；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual；M1.4 起需真机做 D3D11/Warp 调优 |
+| 当前小任务 | M1.2 Manual Progress（Progress Slider 0~1 + 键盘控制 + 显示当前 Progress——UI 侧接 M1.1 的 ManualProvider.SetProgress） |
+| 下一步行动 | 按 §4 Phase 2 清单推进 M1.2 Slider（驱动 ManualProvider）→ M1.3 Animation Engine（纯 C# 逻辑 + 单测，云端可完成）；M1.4 起需真机做 D3D11/Warp 调优；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual |
 | 阻塞项 | M1.4 起 D3D11 GPU 确认与视觉调优需真机（真机双 GPU 已确认：RTX 4060 Laptop + Radeon 780M，1920x1080@144Hz）；Overlay 真实鼠标穿透/多屏/高DPI 联测仍待真机；ACPI 盖事件监听可行性待 M4/M5 预研 |
-| 最后更新 | 2026-09-16 · M0.4 真机验收通过（修复版探针 errors=0、两修复确认有效）+ vendorAcpiDevices 正则勘误（AMDI 裸前缀）+ §5.1 C 表勘误 · Super Z |
+| 最后更新 | 2026-09-16 · M1.1 LidState 完成（新建 src/DuoFlow.Core 四类型 + 11 单测全绿 + CI core-tests job + DD-035 登记）· Super Z |
 
 ---
 
@@ -166,12 +166,16 @@
 
 > 进入本阶段时，按实际情况在本节细化任务；以下为基线清单。
 
-#### M1.1 LidState
+#### M1.1 LidState ✅（2026-09-16 云端完成）
 
-* [ ] 创建 `LidState`
-* [ ] 创建 `LidStateSource`
-* [ ] 创建 `ILidStateProvider`
-* [ ] 创建 `ManualProvider`
+* [x] 创建 `LidState`（sealed record，签名逐字 PROJECT_SPEC §5；XML 注释写明 Progress 语义 0=全开 / 1=接近全关）
+* [x] 创建 `LidStateSource`（enum，Manual/Camera/Sensor/Unknown 顺序与规格一致；单测锁定成员顺序防重排）
+* [x] 创建 `ILidStateProvider`（接口签名逐字 §18：IsAvailable / StartAsync / StopAsync / StateChanged）
+* [x] 创建 `ManualProvider`（DD-035 语义：SetProgress clamp 0~1 + 同步 StateChanged，Source=Manual、Confidence=1.0、Velocity=0；Angle 用 §6 示意线性映射占位，校准后续替换）
+
+**验收**：四类型签名与 PROJECT_SPEC §5/§18 逐字一致 ✅；DuoFlow.Core 纯 C#（net8.0，零 WinUI/D3D/Windows App SDK 依赖）✅；单元测试 11/11 通过（本地 .NET 8.0.425 + CI core-tests job）✅。
+**产物**：`src/DuoFlow.Core`（4 类型）、`src/DuoFlow.Core.Tests`（xunit，11 用例）、CI workflow 新增 `core-tests` job（WinUI 构建/探针两 job 不受影响）；新决策 DD-035（ManualProvider 驱动语义与 LidState 手动路径取值）。
+**放置理由**：类型放 `DuoFlow.Core` 而非 App——项目结构规划里 Core 就是 LidState / AnimationEngine 的家；纯 C# 不依赖 WinUI/D3D/Windows App SDK，云端单测与后续重构成本最低（渲染侧只消费 Progress 的 DD-002 铁律从 M1.1 起守住：Core 不含任何渲染概念）。
 
 #### M1.2 Manual Progress
 
@@ -288,6 +292,15 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-16 · Phase 2 / M1.1 LidState · Super Z (main agent)
+
+- **完成**：新建 `src/DuoFlow.Core`（纯 C#，net8.0，零 WinUI/D3D/Windows App SDK 依赖）——`LidState`（sealed record，签名逐字 PROJECT_SPEC §5）、`LidStateSource`（枚举成员与顺序同规格）、`ILidStateProvider`（签名逐字 §18）、`ManualProvider`（UI 直接驱动：SetProgress clamp 0~1 → 同步 StateChanged，Source=Manual / Confidence=1.0 / Velocity=0，Angle 用 §6 示意映射占位）。`src/DuoFlow.Core.Tests`（xunit）11 用例：record 值相等、枚举顺序锁定、clamp、NaN 抛异常、同值重发、多订阅者、退订、Start 基线事件、Angle 单调性等，本地与 CI 全绿
+- **放置理由**：Core 独立于 App——DD-002 铁律（渲染只消费 Progress）从 M1.1 起守住，Core 不含任何渲染概念；纯 net8.0 让单测在任何 OS/CI 都能跑（dotnet CLI 即可，只有 WinUI App 需要 VS MSBuild）；M1.3/M4 直接复用
+- **新决策 DD-035**：ManualProvider 驱动语义（SetProgress 唯一 UI 入口、同步触发、Stop 不拦截）+ 手动路径取值（Confidence=1.0 引 HC §4.3、Velocity=0 留给 M1.3、Angle=§6 示意映射占位非硬件声明）+ 线程约束（M1.1 不加锁，M4 统一接管）
+- **CI**：workflow 新增 `core-tests` job（setup-dotnet 固定 8.0.x → build → test），显示名改 "DuoFlow Windows CI"；既有 build-winui / hardware-probe 两 job 未动（M0 产物零改动）
+- **产物**：`src/DuoFlow.Core`（5 文件）、`src/DuoFlow.Core.Tests`（2 文件）、`.github/workflows/m0-windows-build.yml`、`docs/DESIGN_DECISIONS.md`（DD-035）、本文件三件套
+- **遗留 / 阻塞**：无；下一步 M1.2 Manual Progress（Slider 接 ManualProvider.SetProgress，App 需引用 Core）
 
 ### 2026-09-16 · Phase 1 / M0.4 验收收尾（真机验收 + vendorAcpiDevices 正则勘误） · Super Z (main agent)
 

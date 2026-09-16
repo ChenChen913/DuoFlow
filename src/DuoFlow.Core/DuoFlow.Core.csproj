@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    DuoFlow.Core - pure C# domain model + provider contracts (M1.1).
+
+    Deliberately NO WinUI / D3D / Windows App SDK / windows TFM dependency:
+      - LidState + providers are consumed by rendering (App), animation (M1.3)
+        and Provider Manager (M4) alike (DD-002: inputs -> LidState -> render).
+      - Pure net8.0 keeps unit tests runnable on any OS, including cloud CI
+        (dotnet CLI is enough here; only the WinUI App needs VS MSBuild).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>DuoFlow.Core</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <DefaultLanguage>en-US</DefaultLanguage>
+  </PropertyGroup>
+
+</Project>

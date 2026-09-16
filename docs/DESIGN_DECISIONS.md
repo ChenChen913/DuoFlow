@@ -870,6 +870,74 @@ Windows 电源安全
 
 ---
 
+# DD-035：ManualProvider 驱动语义与 LidState 手动路径取值
+
+**Status:** Accepted（M1.1 实现时提出，项目负责人于本轮任务指令中确认登记）
+
+## 背景
+
+M1.1 落地 `LidState` / `ILidStateProvider` / `ManualProvider`（`src/DuoFlow.Core`）时，
+必须明确三件规格未定死的事，否则 M1.2（Slider）、M1.3（Animation Engine）、M4（Provider
+Manager）会各自发明语义：
+
+1. UI 如何驱动 ManualProvider；
+2. 手动路径下 `Velocity` / `Confidence` / `Angle` 的取值；
+3. 事件的触发时机与线程约束。
+
+## 决定
+
+1. **驱动方式**：`ManualProvider.SetProgress(double progress)` 是唯一 UI 入口（M1.2 的
+   Slider 接它）。入参 clamp 到 0~1（NaN 抛 `ArgumentOutOfRangeException`），设置后**在
+   调用线程同步**触发 `StateChanged`；重复设置同值也再次触发（手动输入是权威输入，下游
+   必须保持同步）。`StartAsync` 额外发一次当前状态作为基线；`Start/Stop` 只管生命周期
+   标记，不拦截 `SetProgress`。
+2. **取值语义**：手动路径固定 `Source = Manual`、`Confidence = 1.0`（HARDWARE_COMPATIBILITY
+   §4.3：Manual = 1.00，用户主动控制）、`Velocity = 0`（速度计算是 M1.3 Animation Engine
+   的职责，见 PROJECT_SPEC §7 管线，Provider 不做）。
+3. **Angle 占位映射**：手动路径用 PROJECT_SPEC §6 的示意线性映射作为默认
+   （0.0 → 180°，1.0 → 30°，即 `Angle = 180 − 150 × Progress`）。这只是示意默认值，
+   **不构成任何硬件声明**；设备校准 Profile（M3.5 / M4）落地后由校准替换。
+4. **字段纪律**：`LidState` 的 Velocity / Confidence 字段即使当前只填 0 / 1 也必须保留
+   并向后传递（M1.3 / M4 依赖）；渲染层只消费 Progress（DD-002），LidState 不得直接流进
+   渲染层。
+5. **线程约束**：M1.1 不做加锁（UI 线程使用）；M4 Provider Manager 接入时统一负责序列化
+   Provider 访问。
+
+## 原因
+
+* M1 阶段的目标是"Slider → Progress → Shader 直接验证视觉效果"（DD-004），同步直发是
+  最短路径，行为可预测、可测试；
+* Velocity 属于平滑/防跳变管线（§7），提前在 Provider 里算会和 M1.3 职责重叠；
+* Angle 若硬编码为某机型真实角度，违反 DD-003 与 §6 "不得假设所有笔记本机械结构相同"，
+  用规格自带的示意映射既保字段完整又不引入硬件断言。
+
+## 替代方案
+
+* Provider 内做平滑/速度估计 → 与 M1.3 Animation Engine 职责冲突，放弃；
+* Angle 填 NaN 表示"无角度" → 下游要处处防 NaN，可读性差，放弃；
+* 事件改异步队列 → M1 阶段无并发需求，徒增复杂度，留待 M4 按需加固；
+* `SetProgress` 在 Stop 后拒发事件 → 会让 M1.2 在未调用 Start 时"静默失效"，违背
+  "设置后立即触发"的直观语义，放弃。
+
+## 影响
+
+* `src/DuoFlow.Core`（本决策的直接实现）；
+* M1.2 Slider（只管调 `SetProgress`，不需要自己 clamp）；
+* M1.3 Animation Engine（收到 Velocity=0 的原始输入是预期行为）；
+* M4 Provider Manager（接管线程安全与生命周期）。
+
+## 迁移方案
+
+不适用（新增决策，无旧实现需要迁移）。
+
+## 相关决策
+
+- DD-002（输入与渲染解耦）
+- DD-003（Progress 统一 0~1）
+- DD-004（第一阶段必须支持 Manual Provider）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。

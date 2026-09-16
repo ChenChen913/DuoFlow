@@ -1,7 +1,7 @@
 # =====================================================================
-# DuoFlow — M0 Windows cloud build (runs on GitHub's hosted Windows VM)
+# DuoFlow - Windows CI (GitHub hosted Windows VM)
 # =====================================================================
-# Purpose (EXECUTION_PLAN.md Phase 1 / M0):
+# Purpose (EXECUTION_PLAN.md):
 #   job 1  build-winui      : verify the .NET 8 + WinUI 3 toolchain by
 #                             building src/DuoFlow.App on a real Windows
 #                             environment in the cloud (M0.1), launch the
@@ -14,12 +14,15 @@
 #                             results are expected — what we verify here is
 #                             that every code path executes without crashing
 #                             and produces hardware-probe-result.json.
+#   job 3  core-tests       : build src/DuoFlow.Core (pure C# domain model,
+#                             M1.1) and run its unit tests. No WinUI/D3D/
+#                             windows TFM involved - plain dotnet CLI.
 #
 # Runs automatically on every push touching src/, scripts/hardware-probe.ps1
 # or this workflow, and can be triggered manually (workflow_dispatch).
 # =====================================================================
 
-name: M0 Windows Build
+name: DuoFlow Windows CI
 
 on:
   push:
@@ -209,3 +212,33 @@ jobs:
           name: hardware-probe-result
           path: hardware-probe-result.json
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------
+  # M1.1: DuoFlow.Core is pure C# (no WinUI / D3D / windows TFM), so the
+  # plain dotnet CLI builds it and runs its unit tests. Kept on
+  # windows-latest for one consistent CI surface with the jobs above.
+  # ---------------------------------------------------------------------
+  core-tests:
+    name: DuoFlow.Core unit tests (M1.1)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Core targets net8.0; pin the matching SDK so build+test never
+      # depend on which newer SDK the runner image happens to preinstall.
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build DuoFlow.Core + tests
+        shell: pwsh
+        run: |
+          dotnet --list-sdks
+          dotnet build src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj -c Release --nologo -v:m
+
+      - name: Run unit tests
+        shell: pwsh
+        run: dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj -c Release --no-build --nologo
