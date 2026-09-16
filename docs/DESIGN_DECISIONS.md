@@ -938,6 +938,84 @@ Manager）会各自发明语义：
 
 ---
 
+# DD-036：M1.2 Manual Progress UI 接线（驱动链、键盘方案、防回环与单一事实源）
+
+**Status:** Accepted（M1.2 实现时提出，随本轮任务指令确认登记）
+
+## 背景
+
+DD-004/DD-035 冻结了 ManualProvider 的语义，但 M1.2 把它接进 UI 时仍有五件规格未定的事，
+各实现路径行为差异明显，需要一次定死：
+
+1. Slider 参数（范围 / 步进 / 初值）；
+2. 键盘 Home/End 在 WinUI 3 的实现方案（`Window` 类**没有** `KeyDown` 事件，与 WPF 不同）；
+3. 显示值与 Slider、Provider 三者的同步规则（单一事实源）；
+4. `StateChanged` 回写 Slider 的防回环约束；
+5. 显示文本格式。
+
+## 决定
+
+1. **驱动链（不变式）**：`Slider.ValueChanged` 与键盘加速键两条输入统一汇聚到
+   `ManualProvider.SetProgress`（唯一 UI 入口，DD-035），事件再驱动显示。
+   **Slider 的值不得直接喂渲染层**（DD-002 铁律自 M1.2 UI 起继续守住）；到 M1.4 Warp 的
+   链路只能经由 Provider / LidState。
+2. **Slider 参数**：`Minimum=0 / Maximum=1 / StepFrequency=0.01 / 初始 Value=0`。
+   0.01 步进为肉眼细调与后续校准调试留分辨率；初值 0 与 DD-035 基线（0 = 全开）一致。
+3. **键盘方案**：`Home → 0`、`End → 1` 用**根元素 KeyboardAccelerator**（挂在窗口根
+   `ScrollViewer` 上，`ScopeOwner` 不设 = 全局 scope）——WinUI 3 的 `Window` 没有
+   `KeyDown` 事件；`KeyboardAccelerator` 全局生效，不依赖焦点，避免了"让 Slider 抢焦点"
+   的脆弱方案。键盘路径统一走 `DriveProgress`：先同步 Slider 可视值（回声被守卫吞掉），
+   再显式调 `SetProgress`——保证同值重复按键时 DD-035 的"同值重发"语义不丢失。
+4. **单一事实源**：显示文本只从 `ManualProvider.CurrentState` 拉取，UI 不另存状态副本；
+   事件参数虽等价，拉取式让"显示 = Provider 状态"在处理顺序变化时依然成立。
+5. **防回环守卫**：`StateChanged` → 回写 `Slider.Value` 必须同时满足两条——
+   ① 新值与 Slider 当前值差异 > 0.0005（浮点 epsilon，避开 StepFrequency 舍入噪声）；
+   ② 回写包在 `_syncingSlider` 守卫旗标内，吞掉回写引发的 `ValueChanged` 回声。
+   违反任一条都会 `SetProgress → StateChanged → Slider → ValueChanged → SetProgress` 打转。
+6. **显示格式**：`Progress 0.00 · Angle ≈ 180.0°（§6 示意映射）`——Progress 两位小数
+   （0.01 步进无损显示），Angle 一位小数（便于肉眼核对 §6 示意端点 180°/30°）。
+7. **依赖方向**：`DuoFlow.App` → `DuoFlow.Core` 单向引用；Core 永不反向依赖 App / WinUI
+   / D3D / Windows App SDK（配合 DD-002，Core 侧保持纯 C# 可测）。
+
+## 原因
+
+* 键盘选择 KeyboardAccelerator：官方推荐路径，行为由框架保证（含菜单/无焦点场景），
+  自研焦点管理是 M1 阶段最不需要的复杂度；
+* 拉取式显示：M1.3 Animation Engine 接入后 Provider 状态会自主演进（平滑追赶），
+  拉取式显示天然适配"UI 跟随状态"而非"UI 记账"；
+* 同值重发保留：手动输入是权威输入（DD-035），键盘重复触发不应被 UI 层吞掉。
+
+## 替代方案
+
+* 根元素 `KeyDown` + `IsTabStop` + `Focus` 抢焦点 → 依赖焦点状态、与 Slider/按钮焦点
+  逻辑互相干扰，放弃；
+* `Microsoft.UI.Input.InputKeyboardSource` 低层键盘监听 → 需要自管焦点拓扑，过重，放弃；
+* Slider ↔ ViewModel 双向绑定（MVVM）→ M1 阶段无 VM 基建（M6 参数面板再议），放弃；
+* `StateChanged` 里无条件回写 Slider.Value → 触发 `ValueChanged` 回声，轻则多余事件、
+  重则与 StepFrequency 舍入互相追逐，放弃；
+* 显示值直接用事件参数（不拉取）→ 当前等价，但失去"显示永远等于 Provider 现值"的
+  结构保证，放弃。
+
+## 影响
+
+* `src/DuoFlow.App/MainWindow.xaml(.cs)`（本决策的直接实现）；
+* `src/DuoFlow.App/DuoFlow.App.csproj`（新增对 Core 的单向引用）；
+* M1.3 Animation Engine（拉取式显示适配平滑追赶；键盘跳变会经同一条链路）；
+* M4 Provider Manager（若未来多 Provider 切换，显示层无需改动——只认 `CurrentState`）。
+
+## 迁移方案
+
+不适用（新增决策，无旧实现需要迁移）。
+
+## 相关决策
+
+- DD-002（输入与渲染解耦）
+- DD-003（Progress 统一 0~1）
+- DD-004（第一阶段必须支持 Manual Provider）
+- DD-035（ManualProvider 驱动语义与手动路径取值）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。

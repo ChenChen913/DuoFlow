@@ -30,6 +30,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DuoFlow.Capture\DuoFlow.Capture.csproj" />
+    <!-- M1.2: the console window drives ManualProvider (Slider -> SetProgress
+         -> StateChanged -> display). Core is pure net8.0 (no WinUI/D3D/WinAppSDK),
+         so referencing it from the net8.0-windows App pulls nothing heavy in. -->
+    <ProjectReference Include="..\DuoFlow.Core\DuoFlow.Core.csproj" />
   </ItemGroup>
 
 </Project>

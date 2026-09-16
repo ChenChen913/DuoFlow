@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅） |
-| 当前小任务 | M1.2 Manual Progress（Progress Slider 0~1 + 键盘控制 + 显示当前 Progress——UI 侧接 M1.1 的 ManualProvider.SetProgress） |
-| 下一步行动 | 按 §4 Phase 2 清单推进 M1.2 Slider（驱动 ManualProvider）→ M1.3 Animation Engine（纯 C# 逻辑 + 单测，云端可完成）；M1.4 起需真机做 D3D11/Warp 调优；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual |
-| 阻塞项 | M1.4 起 D3D11 GPU 确认与视觉调优需真机（真机双 GPU 已确认：RTX 4060 Laptop + Radeon 780M，1920x1080@144Hz）；Overlay 真实鼠标穿透/多屏/高DPI 联测仍待真机；ACPI 盖事件监听可行性待 M4/M5 预研 |
-| 最后更新 | 2026-09-16 · M1.1 LidState 完成（新建 src/DuoFlow.Core 四类型 + 11 单测全绿 + CI core-tests job + DD-035 登记）· Super Z |
+| 当前小任务 | **M1.3 Animation Engine**（创建 Animation Engine + smoothing / velocity + 防止 Progress 跳变 + 单测——纯 C#，云端可完成；放 DuoFlow.Core） |
+| 下一步行动 | M1.3 Animation Engine（纯 C# 逻辑 + 单测，云端可完成）→ M1.4 Perspective Warp 需真机（D3D11 GPU / HLSL / Warp 调优）；**M1.2 UI 视觉验收挂起待真机**：先跑 scripts/setup-windows.ps1（约 30~60 分钟）再目测 Slider / Home / End / 显示；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual |
+| 阻塞项 | **M1.2 视觉验收待真机环境**（开发机无 .NET SDK，需 setup-windows.ps1；非代码阻塞——代码层已 CI 全绿）；M1.4 起 D3D11 GPU 确认与视觉调优需真机（真机双 GPU 已确认：RTX 4060 Laptop + Radeon 780M，1920x1080@144Hz）；Overlay 真实鼠标穿透/多屏/高DPI 联测仍待真机；ACPI 盖事件监听可行性待 M4/M5 预研 |
+| 最后更新 | 2026-09-16 · M1.2 Manual Progress 完成（App 引 Core + Slider/键盘/显示接线 + 防回环 + 14 单测全绿 + DD-036；视觉验收待真机）· Super Z |
 
 ---
 
@@ -177,11 +177,18 @@
 **产物**：`src/DuoFlow.Core`（4 类型）、`src/DuoFlow.Core.Tests`（xunit，11 用例）、CI workflow 新增 `core-tests` job（WinUI 构建/探针两 job 不受影响）；新决策 DD-035（ManualProvider 驱动语义与 LidState 手动路径取值）。
 **放置理由**：类型放 `DuoFlow.Core` 而非 App——项目结构规划里 Core 就是 LidState / AnimationEngine 的家；纯 C# 不依赖 WinUI/D3D/Windows App SDK，云端单测与后续重构成本最低（渲染侧只消费 Progress 的 DD-002 铁律从 M1.1 起守住：Core 不含任何渲染概念）。
 
-#### M1.2 Manual Progress
+#### M1.2 Manual Progress ✅（2026-09-16 云端完成：代码实现 + CI 构建验证；**UI 视觉验收待真机环境**）
 
-* [ ] 创建 Progress Slider（范围 0~1）
-* [ ] 支持键盘控制：Home → 0，End → 1
-* [ ] 显示当前 Progress
+* [x] 创建 Progress Slider（范围 0~1）（StepFrequency 0.01 / 初值 0；挂在 M0.3 控制台窗口内，M0.3 报告区未动 —— 视觉验收待真机）
+* [x] 支持 0~1（Slider 全量连续可拖；0/1 边界与 0.01 步进值经 14 用例中的新用例锁定 —— 视觉验收待真机）
+* [x] 支持键盘控制：Home → 0，End → 1（根元素 KeyboardAccelerator 全局 scope，无需焦点；WinUI 3 的 Window 无 KeyDown 事件，方案理由与替代方案见 DD-036 —— 视觉验收待真机）
+* [x] Home → 0（边界精确性单测：Progress=0 / Angle=180° §6 端点锁定）
+* [x] End → 1（边界精确性单测：Progress=1 / Angle=30° §6 端点锁定）
+* [x] 显示当前 Progress（`Progress 0.00 · Angle ≈ 180.0°`，拉取式读 ManualProvider.CurrentState —— 单一事实源；格式与防回环守卫见 DD-036 —— 视觉验收待真机）
+
+**验收（代码层）**：App 引用 Core（net8.0-windows → net8.0 单向引用）✅；Slider → ManualProvider.SetProgress → StateChanged → 显示 链路实现，防回环守卫（值差异 + 回声旗标）就位 ✅；Core 单测 14/14 通过（本地 .NET 8.0.425 + CI core-tests）✅；CI build-winui 连带构建 Core ✅。
+**验收（视觉层，待真机）**：拖动 Slider 连续变化 / Home、End 免焦点即时响应 / 数值显示刷新 —— **需真机环境（先跑 scripts/setup-windows.ps1 装 .NET 8 SDK + VS Build Tools）后目测验收，本轮明确标注为待完成项，不计入已完成验收**。
+**产物**：`src/DuoFlow.App`（MainWindow.xaml/.cs M1.2 区块 + csproj 引用）、`src/DuoFlow.Core.Tests`（+3 用例 = 14）、新决策 DD-036（驱动链/键盘方案/防回环/单一事实源/显示格式/依赖方向）。
 
 #### M1.3 Animation Engine
 
@@ -292,6 +299,17 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-16 · Phase 2 / M1.2 Manual Progress · Super Z (main agent)
+
+- **完成（代码层）**：Manual 这条路推进到 UI 层 —— ① `DuoFlow.App.csproj` 引用 `DuoFlow.Core`（net8.0-windows → net8.0 单向，零障碍）；② `MainWindow.xaml` 在 M0.3 控制台内新增 M1.2 区块（M0.3 报告区零改动）：Slider（Minimum=0 / Maximum=1 / StepFrequency=0.01 / 初值 0）+ `ProgressText` 显示（Progress 两位小数 + Angle 一位小数，便于肉眼核对 §6 示意端点 180°/30°）+ 根元素 `KeyboardAccelerator`（Home/End）；③ `MainWindow.xaml.cs` 接线：Slider.ValueChanged → ManualProvider.SetProgress → StateChanged → 更新显示；窗口 Closed 时退订 + StopAsync，ManualProvider 生命周期跟随窗口
+- **键盘方案**：WinUI 3 的 Window 类没有 KeyDown 事件（与 WPF 不同），Home→0 / End→1 用根元素 KeyboardAccelerator 全局 scope 实现——无需焦点即响应，避免 Slider 抢焦点方案；键盘路径统一 DriveProgress（先同步 Slider 可视值，再显式 SetProgress），同值重复按键也保留 DD-035 的同值重发语义
+- **防回环 + 单一事实源**：显示值只从 ManualProvider.CurrentState 拉取（UI 不存状态副本）；StateChanged 回写 Slider.Value 双重守卫——值差异 > 0.0005（浮点 epsilon 避开 StepFrequency 舍入噪声）+ _syncingSlider 旗标吞回声；Slider 值不直接喂渲染层（DD-002 铁律从 M1.2 UI 起守住）
+- **单测**：Core.Tests 新增 ManualProviderDrivingTests 3 用例（Home/End 边界精确性落在 §6 端点 180°/30°、0.01 步进 101 档值保持=「显示=CurrentState」契约背书、Home×2 同值重发稳定显示），14/14 通过（本地 .NET 8.0.425 + CI core-tests job）；键盘映射/格式化属 UI 层 1~2 行薄逻辑，按「不为测试把 UI 代码写别扭」原则未抽取，行为已由上述契约用例背书
+- **⚠ 视觉验收待真机环境（明确标注，不计入已完成）**：开发机无 .NET SDK（仅 .NET 7 runtime），本地构建不了 App、跑不了 UI——Slider 拖动连续变化 / Home、End 免焦点响应 / 数值实时刷新三项目测验收挂起，待真机执行 scripts/setup-windows.ps1（装 .NET 8 SDK + VS 2022 Build Tools，估 30~60 分钟）后进行；代码层已由 CI build-winui 构建验证 + App 可启动性由 overlay-smoke job 守护
+- **新决策 DD-036**（按变更模板登记，Accepted）：M1.2 UI 接线六件套——驱动链不变式（两输入汇于 SetProgress，Slider 不直喂渲染层）、Slider 参数（0.01 步进/初值 0）、键盘方案（根 KeyboardAccelerator + 全局 scope + DriveProgress 保同值重发）、单一事实源（拉取式 CurrentState）、防回环守卫（epsilon + 旗标）、显示格式与依赖方向（App→Core 单向）
+- **产物**：`src/DuoFlow.App/DuoFlow.App.csproj`、`MainWindow.xaml`、`MainWindow.xaml.cs`（M1.2 驱动链 + 防回环 + 生命周期清理）、`src/DuoFlow.Core.Tests/ManualProviderTests.cs`（+3 用例）、`docs/DESIGN_DECISIONS.md`（DD-036）、本文件三件套
+- **遗留 / 阻塞**：M1.2 视觉验收待真机（非代码阻塞，CI 已绿）；下一步 M1.3 Animation Engine（纯 C#，云端可完成）
 
 ### 2026-09-16 · Phase 2 / M1.1 LidState · Super Z (main agent)
 

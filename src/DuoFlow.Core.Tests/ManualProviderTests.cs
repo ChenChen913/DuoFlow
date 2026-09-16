@@ -174,3 +174,64 @@ public class ManualProviderTests
         Assert.Equal(1.0, provider.CurrentState.Confidence);
     }
 }
+
+/// <summary>
+/// M1.2 UI-driving contracts: the slider (0~1, StepFrequency 0.01) and the
+/// Home/End accelerators both funnel through SetProgress, and the UI display
+/// pulls from CurrentState (single source of truth). These tests pin the
+/// provider-side half of that chain - no WinUI involved.
+/// </summary>
+public class ManualProviderDrivingTests
+{
+    [Fact]
+    public void SetProgress_HomeEndBoundaries_AreExact_OnSpecEndpoints()
+    {
+        // Keyboard shortcuts Home -> 0 and End -> 1 (M1.2) route through
+        // SetProgress; both boundaries must survive untouched (no clamp
+        // drift) so Angle lands exactly on the §6 endpoints 180° / 30°.
+        var provider = new ManualProvider();
+
+        provider.SetProgress(0.0);   // Home
+        Assert.Equal(0.0, provider.CurrentState.Progress);
+        Assert.Equal(ManualProvider.DefaultOpenAngleDegrees, provider.CurrentState.Angle, 9);
+
+        provider.SetProgress(1.0);   // End
+        Assert.Equal(1.0, provider.CurrentState.Progress);
+        Assert.Equal(ManualProvider.DefaultNearClosedAngleDegrees, provider.CurrentState.Angle, 9);
+    }
+
+    [Fact]
+    public void SetProgress_SliderStepValues_ArePreserved()
+    {
+        // The M1.2 slider moves in 0.01 steps; every step the user can
+        // produce must come back out of CurrentState unchanged (display
+        // equals provider state), within float tolerance of the slider's
+        // own step arithmetic.
+        var provider = new ManualProvider();
+        for (int step = 0; step <= 100; step++)
+        {
+            double sliderValue = Math.Round(step * 0.01, 2);
+            provider.SetProgress(sliderValue);
+            Assert.InRange(provider.CurrentState.Progress, sliderValue - 1e-9, sliderValue + 1e-9);
+        }
+    }
+
+    [Fact]
+    public void SetProgress_StepZero_HomeTwice_ReraisesWithStableDisplay()
+    {
+        // Pressing Home twice: same value re-raises (DD-035), and the state
+        // the display pulls stays stable (0.00 / 180°) - no drift, no NaN.
+        var provider = new ManualProvider();
+        var seen = new List<double>();
+        provider.StateChanged += (_, s) => seen.Add(s.Progress);
+
+        provider.SetProgress(0.35);
+        provider.SetProgress(0.0);   // Home
+        provider.SetProgress(0.0);   // Home again
+
+        double[] expected = [0.35, 0.0, 0.0];
+        Assert.Equal(expected, seen);
+        Assert.Equal(0.0, provider.CurrentState.Progress);
+        Assert.Equal(180.0, provider.CurrentState.Angle, 9);
+    }
+}
