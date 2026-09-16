@@ -86,7 +86,7 @@ M5  Windows Integration      — 电源事件 / 开机自启
 M6+ Productization           — 设置界面 / 安装包 / 完整测试
 ```
 
-当前状态：**M0 进行中 —— M0.1 环境 ✅ / M0.2 屏幕捕获 ✅（31FPS GPU→GPU）/ M0.3 透明 Overlay ✅（穿透/置顶/不抢焦点，捕获已迁入），均已云端验证；M0.4 硬件调研：云端准备完成（一键探针脚本 + 真机检查清单），待真机跑探针回填。执行进度见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)。**
+当前状态：**M0 全部完成 ✅（M0.4 真机实测：Legion R7000 APH9 传感器全线缺位 → 主路线 = ACPI 盖事件 + 摄像头视觉；硬件探针数据已回填）→ 已进入 M1 Rendering MVP。执行进度见 [EXECUTION_PLAN.md](EXECUTION_PLAN.md)。**
 
 ## 项目结构（规划）
 

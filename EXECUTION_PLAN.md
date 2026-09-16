@@ -9,8 +9,8 @@
 | --- | --- |
 | 文档版本 | v1.0 |
 | 创建日期 | 2026-09-15 |
-| 最后更新 | 2026-09-15 |
-| 当前阶段 | Phase 1 — M0 Research & Feasibility（未正式开始，见 §2） |
+| 最后更新 | 2026-09-16 |
+| 当前阶段 | Phase 2 — M1 Rendering MVP（Phase 1 / M0 已全部完成，见 §2） |
 | 维护者 | 执行当前阶段的 Agent（随阶段交接） |
 
 ---
@@ -57,11 +57,11 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前 Phase | **Phase 1 — M0 Research & Feasibility** |
-| 当前小任务 | M0.4 Hardware Research——云端准备已完成（一键探针脚本 ✅ + 真机检查清单 ✅，run 35036286869 全绿）；余下 6 项需真机实测 |
-| 下一步行动 | ① 在 Windows 11 真机跑 `scripts/hardware-probe.ps1`（执行方法：docs/SETUP_WINDOWS.md 第七节，30 秒只读）→ ② 把 `hardware-probe-result.json` 交回 Agent → ③ 回填 HARDWARE_COMPATIBILITY §5.1/§5 并打勾 M0.4；Manual Provider / Animation Engine 等无硬件依赖项可与真机测试并行提前（M1.1） |
-| 阻塞项 | M0.4 打勾需要真机探针数据；真机需求全清单：M0.4 硬件实测、M1.4 前 D3D11 GPU 确认、M1/M2 视觉目测调优、Overlay 真实鼠标穿透/多屏/高DPI 联测 |
-| 最后更新 | 2026-09-15 · M0.4 云端准备完成（探针 3 轮迭代全绿，发现并记录 Server SKU 投影裁剪假象）· Super Z |
+| 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅） |
+| 当前小任务 | M1.1 LidState（创建 LidState / LidStateSource / ILidStateProvider / ManualProvider —— 无硬件依赖，可立即开始） |
+| 下一步行动 | 按 §4 Phase 2 清单推进 M1.1→M1.3（纯 C# 逻辑 + 单元测试，云端可完成）；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual；M1.4 起需真机做 D3D11/Warp 调优 |
+| 阻塞项 | M1.4 起 D3D11 GPU 确认与视觉调优需真机（真机双 GPU 已确认：RTX 4060 Laptop + Radeon 780M，1920x1080@144Hz）；Overlay 真实鼠标穿透/多屏/高DPI 联测仍待真机；ACPI 盖事件监听可行性待 M4/M5 预研 |
+| 最后更新 | 2026-09-16 · M0.4 真机数据回填完成（探针两 bug 修复 + §5/§5.1 回填 + 归因勘误），Phase 1 / M0 全部关闭 · Super Z |
 
 ---
 
@@ -70,8 +70,8 @@
 | Phase | 对应 Milestone | 内容 | 状态 |
 | --- | --- | --- | --- |
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
-| Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ⏳ 进行中（M0.1 ✅ M0.2 ✅ M0.3 ✅ 云端完成；M0.4 需真机） |
-| Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ⬜ 未开始 |
+| Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ✅ 已完成（M0.1-M0.3 云端；M0.4 真机实测 2026-09-16 回填） |
+| Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ⏳ 进行中 |
 | Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | ⬜ |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
 | Phase 5 | M4 | Sensor Provider：传感器接入 / Provider Manager | ⬜ |
@@ -142,19 +142,25 @@
 **验收**：Overlay 窗口机制云端全量验证通过 —— smoke JSON 7 属性全 true + Warnings 空（run 34997516255）；捕获渲染已迁入 overlay 实时运行（357 帧 / 25 FPS，GPU→GPU）。"不影响正常鼠标键盘操作"的最终确认属真机项（M0.4 起联测）。
 **踩坑记录**：① `DisplayArea.FindAll()` 在 WinAppSDK 1.8 投影下抛 InvalidCastException —— 改用经典 Win32 `EnumDisplayMonitors`/`GetMonitorInfo`；② 无头 CI 排障靠**文件追踪**：App 全链路 Trace 落盘 %USERPROFILE%\duoflow-trace.txt + 未处理异常落盘 duoflow-crash.txt + CI 打印，可秒级定位崩溃点；③ 云 runner 真实分辨率为 1024×768（勿假设 1920×1080）；④ console 控制台窗口需在 overlay 之后创建并 IsAlwaysOnTop，才能浮在 overlay 之上。
 
-#### M0.4 Hardware Research
+#### M0.4 Hardware Research ✅（2026-09-16 完成：云端准备 + 真机实测回填）
 
-> **云端准备（2026-09-15 完成）**：一键探针脚本 + 检查清单已就绪并通过云端 CI 验证；
-> 以下前 6 项的 Supported/Not found 结论只能来自真机探针数据（禁止凭网络资料下结论）。
+> 探针脚本 `scripts/hardware-probe.ps1`（2026-09-15 云端就绪）→ 2026-09-16 真机（Legion R7000 APH9）实测，
+> 期间修复探针两个真 bug（见下方踩坑记录），补测 errors=0，数据已回填 `docs/HARDWARE_COMPATIBILITY.md` §5 / §5.1。
 
-* [ ] 检查 Windows Sensor API —— 探针 Section 1 就绪；云端已验证 HingeAngleSensor 全链路调用路径（run 35036286869），结论值待真机
-* [ ] 检查 HID —— 探针 Section 2 就绪，待真机数据
-* [ ] 检查 ACPI —— 探针 Section 3 就绪，待真机数据（重点：盖设备 PNP0C0D）
-* [ ] 检查联想等厂商硬件接口 —— 探针 Section 4 就绪，待真机数据
-* [ ] 记录实际测试结果（禁止凭网络资料下结论）—— 待真机
-* [ ] 更新 `docs/HARDWARE_COMPATIBILITY.md` 实测区 —— §5.1 检查清单（A-E 五层）已建，待回填"实测值"列
-* [x] **（新增·云端完成）** 准备一键实测探针 `scripts/hardware-probe.ps1`：7 段只读检测（系统/WinRT Sensor API/HID/ACPI/厂商接口/摄像头/GPU 基线），分段隔离，PS 5.1/7 双兼容，JSON 报告；CI 新增探针 job（语法门禁 + PS 5.1 真实执行 + JSON 机器可读校验 + artifact），3 轮迭代全绿
-* [x] **（新增·云端完成）** 建立真机实测检查清单（HARDWARE_COMPATIBILITY §5.1，JSON 字段级判读依据 + 待填实测值）与执行指南（SETUP_WINDOWS §7：放哪/工具/命令/预期输出/判读表/排错表）
+* [x] 检查 Windows Sensor API —— 真机实测 6/6 Not found（HingeAngleSensor 的 GetDefaultAsync 正常完成返回 null；其余 5 类 GetDefault() 返回 null —— API 在、硬件不在）
+* [x] 检查 HID —— 真机实测：PnP Sensor 类 0 设备、无 HID 传感器集合 → HID 传感器路线在本机不可行
+* [x] 检查 ACPI —— 真机实测：盖设备 PNP0C0D FOUND（"ACPI 盖子" / ACPI\PNP0C0D\2&DABA3FF&1 / OK）；睡眠按钮无；4 个 AMD ACPI 设备；总数 50
+* [x] 检查联想等厂商硬件接口 —— 真机实测：detectedVendor=LENOVO；root/wmi 下 45 个 LENOVO_* 类（GAMEZONE_*/FAN/CPU/GPU/PANEL/MEMORY_METHOD 等）；三个专属命名空间均不存在
+* [x] 记录实际测试结果 —— §5.1 A-E 五表实测值列 + §5 Device Test Matrix 真机行全部回填（2026-09-16）
+* [x] 更新 `docs/HARDWARE_COMPATIBILITY.md` 实测区 —— §5.1 归因勘误（见踩坑记录 1）+ 本机路线结论已写入
+* [x] 准备一键实测探针 `scripts/hardware-probe.ps1`：7 段只读检测（系统/WinRT Sensor API/HID/ACPI/厂商接口/摄像头/GPU 基线），分段隔离，PS 5.1/7 双兼容，JSON 报告；CI 新增探针 job（语法门禁 + PS 5.1 真实执行 + JSON 机器可读校验 + artifact）
+* [x] 建立真机实测检查清单（HARDWARE_COMPATIBILITY §5.1，JSON 字段级判读依据）与执行指南（SETUP_WINDOWS §7）
+
+**验收**：真机（LENOVO Legion R7000 APH9 / 83EG，Win11 家庭中文版 build 26200，PS 5.1）探针数据齐全，补测 errors=0，lidDevice[] / camera[] 字段完整（"ACPI 盖子" / Integrated Camera）；§5 / §5.1 已回填。
+
+**踩坑记录**：
+1. **WinRT 静态工厂方法名不同类不同名**：6 个传感器只有 HingeAngleSensor 是 `GetDefaultAsync()`（异步，返回 IAsyncOperation）；其余 5 类是 `GetDefault()`（同步，直接返回传感器对象或 null）。初版探针全部调 GetDefaultAsync，5 类报 "does not contain a method named 'GetDefaultAsync'"，曾被**误归因**为 "Windows Server SKU 投影裁剪"——真机与 CI 表现一致恰好证明与 SKU 无关（方法本来就不存在）。真机反射实证后已修复；判读规则写入 HARDWARE_COMPATIBILITY §5.1 与 SETUP_WINDOWS §7.5。
+2. **PS 5.1 的 `ForEach-Object $变量scriptblock` 静默产出全空对象**（scriptblock 内含 param($d)，$d 不绑定）：控制台打印正常、JSON 字段全空；必须内联 scriptblock 用 `$_`。云端 CI 抓不到（那些数组在 VM 上为空）——再次证明 "CI 绿 ≠ 真机行为正确"，涉及真机硬件数据的段落必须真机验证。
 
 ### Phase 2 — M1 Rendering MVP
 
@@ -282,6 +288,16 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-16 · Phase 1 / M0.4 收尾（真机实测回填） · Super Z (main agent)
+
+- **真机信息**：LENOVO Legion R7000 APH9（型号 83EG）· BIOS PJCN05WW · AMD Ryzen 7 7840H（16 逻辑核）· Windows 11 家庭中文版 build 26200 · Windows PowerShell 5.1；探针原始产物在用户本地 D:\DuoFlow\probe-output\（仓库外，未污染仓库）
+- **探针结果摘要**：WinRT 传感器 6/6 Not found（API 在、硬件不在）；PnP Sensor 类 0 设备（无传感器集线器，HID 路线不可行）；**ACPI 盖设备 PNP0C0D FOUND**（"ACPI 盖子"，Status OK）；厂商接口：45 个 LENOVO_* 类（root/wmi，GAMEZONE/FAN/CPU/GPU/PANEL/MEMORY_METHOD 等），无专属命名空间；摄像头 Integrated Camera（OK）；双 GPU（RTX 4060 Laptop + Radeon 780M，均 OK）；1920x1080@144Hz
+- **修复探针两 bug（真机实测发现）**：① 5 个传感器的静态工厂方法是 `GetDefault()`（同步）而非 `GetDefaultAsync()`（仅 HingeAngleSensor 是异步）——**并作废 2026-09-15 日志中 "Server SKU 投影裁剪" 的错误归因**（真机与 CI 表现一致 = 方法名不存在，与 SKU 无关）；② `ForEach-Object $变量scriptblock` 在 PS 5.1 静默产出全空对象（控制台正常、JSON 字段空），三处改内联 scriptblock。两处修复均已在脚本内注释防回退
+- **文档回填**：HARDWARE_COMPATIBILITY §5 真机行 + §5.1 A-E 五表实测值 + 方法名勘误段（含反射静态方法清单）；SETUP_WINDOWS §7.4 示例校准 + §7.5 方法名规则/判读更新；本文件 §4 M0.4 全项打勾 + Phase 1 关闭
+- **路线影响**：M4 Sensor Provider 本机只剩 ACPI 盖事件 + 摄像头两条路；M3 摄像头与 M1.4 渲染硬件条件满足（混合双 GPU 架构，M1.4 需注意适配）
+- **产物**：`scripts/hardware-probe.ps1`（修复版）、HARDWARE_COMPATIBILITY / SETUP_WINDOWS / EXECUTION_PLAN 回填；commits `aed21a4`（修脚本）+ 本 commit（回填）
+- **遗留 / 阻塞**：M0 全部关闭，无阻塞；下一步 M1.1 LidState（无硬件依赖，云端可做）；M1.4 起需真机（D3D11 GPU / Warp 调优）
 
 ### 2026-09-15 · Phase 1 / M0.4（云端准备） · Super Z (main agent)
 

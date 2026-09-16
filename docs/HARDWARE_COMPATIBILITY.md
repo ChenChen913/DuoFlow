@@ -428,7 +428,7 @@ Manual      confidence = 1.00（用户主动控制）
 
 | Device | CPU | GPU | Camera | Resolution | Position | Sensor | Camera Detection | D3D Capture | Performance | Result |
 |---|---|---|---|---|---|---|---|---|---|---|
-| （待实测填写） | | | | | | | | | | |
+| LENOVO Legion R7000 APH9（型号 83EG）· Win11 家庭中文版 build 26200 · BIOS PJCN05WW（2026-09-16 实测） | AMD Ryzen 7 7840H（16 逻辑核） | RTX 4060 Laptop（驱动 32.0.15.6094）+ Radeon 780M（32.0.13058.1006），均 Status OK | Integrated Camera（USB\VID_5986&PID_118A&MI_00，Class=Camera，OK） | 1920x1080@144Hz | 待 M3 实测（前置摄像头，位置/FOV 未测） | WinRT 传感器 6/6 Not found（API 在、硬件不在）；PnP Sensor 类 0 设备 → HID 路线不可行；**ACPI 盖设备 PNP0C0D FOUND（“ACPI 盖子”，Status OK）**；root/wmi 45 个 LENOVO_* 类（GAMEZONE/FAN/CPU/GPU/PANEL/MEMORY_METHOD 等） | 待 M3 实测 | 探针确认双 GPU/驱动 OK；D3D11 Capture 真机确认待 M1.4（M0.2 已在云端验证链路） | 待 M1/M8 实测 | 硬件传感器全线缺位 → 本机主路线 = **ACPI 盖事件 + 摄像头视觉**，Manual 兜底；144Hz + 双 GPU 满足渲染条件 |
 
 记录项说明：
 
@@ -449,51 +449,77 @@ Sensor / HID / Camera Detection / D3D Capture / Performance
 
 | 检测项 | 判定依据（JSON 字段） | 对 DuoFlow 的意义 | 实测值 |
 | --- | --- | --- | --- |
-| HingeAngleSensor | `sensorApi.sensors.HingeAngleSensor.supported` | 直接的铰链角度 API；双屏设备才有，普通笔记本预期 Not found | （待真机） |
-| Accelerometer | `sensorApi.sensors.Accelerometer` | 间接角度信号源（屏幕俯仰会影响重力分量），需实测噪声 | （待真机） |
-| Gyrometer | `sensorApi.sensors.Gyrometer` | 角速度信号，可用于动画速度估计 | （待真机） |
-| Inclinometer | `sensorApi.sensors.Inclinometer` | 姿态角（pitch/roll/yaw），最接近"开合角度"的通用传感器 | （待真机） |
-| SimpleOrientationSensor | `sensorApi.sensors.SimpleOrientationSensor` | 粗粒度方向（开合到临界角度可能触发），备用信号 | （待真机） |
-| LightSensor | `sensorApi.sensors.LightSensor` | 合盖遮光检测的潜在旁证（低优先级） | （待真机） |
+| HingeAngleSensor | `sensorApi.sensors.HingeAngleSensor.supported` | 直接的铰链角度 API；双屏设备才有，普通笔记本预期 Not found | **Not found**（GetDefaultAsync() 正常完成并返回 null —— API 在、硬件不在） |
+| Accelerometer | `sensorApi.sensors.Accelerometer` | 间接角度信号源（屏幕俯仰会影响重力分量），需实测噪声 | **Not found**（GetDefault() 返回 null） |
+| Gyrometer | `sensorApi.sensors.Gyrometer` | 角速度信号，可用于动画速度估计 | **Not found**（GetDefault() 返回 null） |
+| Inclinometer | `sensorApi.sensors.Inclinometer` | 姿态角（pitch/roll/yaw），最接近"开合角度"的通用传感器 | **Not found**（GetDefault() 返回 null） |
+| SimpleOrientationSensor | `sensorApi.sensors.SimpleOrientationSensor` | 粗粒度方向（开合到临界角度可能触发），备用信号 | **Not found**（GetDefault() 返回 null） |
+| LightSensor | `sensorApi.sensors.LightSensor` | 合盖遮光检测的潜在旁证（低优先级） | **Not found**（GetDefault() 返回 null） |
 
 ### B. HID / PnP 传感器设备层（探针 Section 2）
 
 | 检测项 | 判定依据 | 对 DuoFlow 的意义 | 实测值 |
 | --- | --- | --- | --- |
-| PnP `Sensor` 类设备数 | `hid.sensorClassDeviceCount` | ≥1 说明有传感器集线器，HID 传感器路线可行性高 | （待真机） |
-| 具体传感器设备清单 | `hid.sensorClassDevices[]` | 记录 FriendlyName / InstanceId，M4 按 InstanceId 接入 | （待真机） |
-| HID 传感器集合设备 | `hid.hidSensorDevices[]` | "HID Sensor Collection" 是 Windows 传感器标准通道 | （待真机） |
+| PnP `Sensor` 类设备数 | `hid.sensorClassDeviceCount` | ≥1 说明有传感器集线器，HID 传感器路线可行性高 | **Not found**（= 0，无传感器集线器 → HID 传感器路线在本机不可行） |
+| 具体传感器设备清单 | `hid.sensorClassDevices[]` | 记录 FriendlyName / InstanceId，M4 按 InstanceId 接入 | **Not found**（空） |
+| HID 传感器集合设备 | `hid.hidSensorDevices[]` | "HID Sensor Collection" 是 Windows 传感器标准通道 | **Not found**（空） |
 
 ### C. ACPI 层（探针 Section 3）
 
 | 检测项 | 判定依据 | 对 DuoFlow 的意义 | 实测值 |
 | --- | --- | --- | --- |
-| ACPI 盖设备 PNP0C0D | `acpi.lidDevice[]` | BIOS 有盖设备 → 存在硬件盖事件，可探索监听（Windows 不一定对应用暴露） | （待真机） |
-| ACPI 睡眠按钮 PNP0C0E | `acpi.sleepButtonDevice[]` | 电源事件联动（M5 预研） | （待真机） |
-| 厂商 ACPI 设备 | `acpi.vendorAcpiDevices[]` | Lenovo ATK 等事件设备，可能携带开合/坞接信号 | （待真机） |
-| ACPI 设备总数 | `acpi.acpiDeviceCount` | 基线参考 | （待真机） |
+| ACPI 盖设备 PNP0C0D | `acpi.lidDevice[]` | BIOS 有盖设备 → 存在硬件盖事件，可探索监听（Windows 不一定对应用暴露） | **Supported**（FriendlyName "ACPI 盖子" · `ACPI\PNP0C0D\2&DABA3FF&1` · Status OK → M4/M5 盖事件监听的价值目标） |
+| ACPI 睡眠按钮 PNP0C0E | `acpi.sleepButtonDevice[]` | 电源事件联动（M5 预研） | **Not found** |
+| 厂商 ACPI 设备 | `acpi.vendorAcpiDevices[]` | Lenovo ATK 等事件设备，可能携带开合/坞接信号 | **Supported**（4 个 AMD 设备，均 Status OK：AMDI0030 GPIO Controller · AMDI0009 Micro PEP · AMDI0010 I2C Controller · AMDI0052 PPM Provisioning File） |
+| ACPI 设备总数 | `acpi.acpiDeviceCount` | 基线参考 | 50（基线计数，非判定项） |
 
 ### D. 厂商接口层（探针 Section 4）
 
 | 检测项 | 判定依据 | 对 DuoFlow 的意义 | 实测值 |
 | --- | --- | --- | --- |
-| 机型厂商识别 | `vendor.detectedVendor` | LENOVO / HP / DELL / ASUS / unknown | （待真机） |
-| root/wmi 厂商类清单 | `vendor.rootWmiVendorClasses[]` | 厂商私有 WMI 方法（如 Lenovo_SetBiosSetting），M4 评估可用接口 | （待真机） |
-| 专属 WMI 命名空间 | `vendor.namespaces` | root/HP/InstrumentedBIOS、root/dcim/sysman、root/Lenovo 存在性 | （待真机） |
+| 机型厂商识别 | `vendor.detectedVendor` | LENOVO / HP / DELL / ASUS / unknown | **LENOVO** |
+| root/wmi 厂商类清单 | `vendor.rootWmiVendorClasses[]` | 厂商私有 WMI 方法（如 Lenovo_SetBiosSetting），M4 评估可用接口 | **Supported**（45 个 LENOVO_* 类：UTILITY_EVENT、LIGHTING_EVENT、GAMEZONE_* 系列、FAN_METHOD、CPU_METHOD、GPU_METHOD、PANEL_METHOD、MEMORY_METHOD 等） |
+| 专属 WMI 命名空间 | `vendor.namespaces` | root/HP/InstrumentedBIOS、root/dcim/sysman、root/Lenovo 存在性 | **Not found**（三个均 false —— LENOVO 类在 root/wmi 下，不在专属命名空间） |
 
 ### E. 摄像头与 GPU 基线（探针 Section 5/6，M3 / M1.4 铺垫）
 
 | 检测项 | 判定依据 | 对 DuoFlow 的意义 | 实测值 |
 | --- | --- | --- | --- |
-| 摄像头清单 | `camera[]` | M3 Camera Provider 的设备基线（名称/类别/状态） | （待真机） |
-| GPU 型号与驱动 | `gpu[].name / driverVer` | M1.4 前确认 D3D11 能力（配合后续 D3D Debug Layer 实测） | （待真机） |
-| 当前显示模式 | `gpu[].currentMode` | 分辨率/刷新率基线（M0.2 捕获已在此环境验证） | （待真机） |
+| 摄像头清单 | `camera[]` | M3 Camera Provider 的设备基线（名称/类别/状态） | **Supported**（Integrated Camera · `USB\VID_5986&PID_118A&MI_00\7&14EC10AA&1&0000` · Class=Camera · Status OK） |
+| GPU 型号与驱动 | `gpu[].name / driverVer` | M1.4 前确认 D3D11 能力（配合后续 D3D Debug Layer 实测） | **Supported**（NVIDIA GeForce RTX 4060 Laptop · 32.0.15.6094 · OK；AMD Radeon 780M Graphics · 32.0.13058.1006 · OK —— 双 GPU，混合输出架构 M1.4 需注意） |
+| 当前显示模式 | `gpu[].currentMode` | 分辨率/刷新率基线（M0.2 捕获已在此环境验证） | **1920x1080@144Hz** |
 
-> **云端已完成的部分（2026-09-15，3 轮迭代，最终 run 35036286869 全绿）**：
-> ① 探针脚本已在云端 Windows 全程执行并产出合法 JSON——HID/ACPI/厂商/摄像头/GPU 各段的"NOT FOUND"与"FOUND"分支均被真实覆盖；
-> ② **HingeAngleSensor 全链路验证通过**：GetDefaultAsync 的操作对象正常返回、await 正常完成、"无默认传感器"路径正是真机普通笔记本最可能的结论（云端 VM 与真机的差别只是结果值，代码路径已覆盖）；
-> ③ **已知云端假象（防误判）**：Accelerometer 等 5 类在云端报"静态方法不存在"——这是 **Windows Server SKU 的传感器投影裁剪**（CI runner = Server 2025），不是 API 结论；桌面 Win11 上同样的类型字面量调用是标准模式。JSON 中已用 `note` 字段标注。真机若也报同样错误，才可判"API 不可用"。
-> **剩下的事**：在真实笔记本上跑探针（`docs/SETUP_WINDOWS.md` §7）→ 回填本清单"实测值"列与 §5 表格行 → 打勾 EXECUTION_PLAN M0.4。
+> **实测状态（2026-09-16 回填完成）**：A-E 五表"实测值"列已由真机数据填毕
+> （LENOVO Legion R7000 APH9 / 83EG · Win11 家庭中文版 build 26200 · Windows PowerShell 5.1）。
+>
+> **方法名勘误（必读，防止再犯）**：初版探针给 6 个传感器全部调用 `::GetDefaultAsync()`，
+> 5 个类型报"does not contain a method named 'GetDefaultAsync'"。当时被**错误归因**为
+> "Windows Server SKU 投影裁剪"（见 EXECUTION_PLAN 2026-09-15 日志，该归因已作废）。
+> **真相（真机反射实证）**：这 6 类的静态工厂方法不同名——只有 HingeAngleSensor 是
+> `GetDefaultAsync()`（异步，返回 IAsyncOperation），其余 5 类（Accelerometer / Gyrometer /
+> Inclinometer / SimpleOrientationSensor / LightSensor）是 `GetDefault()`（同步，直接返回
+> 传感器对象或 null）。反射拿到的静态方法清单：
+>
+> ```text
+> Accelerometer            : FromIdAsync, GetDeviceSelector, GetDefault
+> Gyrometer                : GetDeviceSelector, FromIdAsync, GetDefault
+> Inclinometer             : GetDeviceSelector, FromIdAsync, GetDefault, GetDefaultForRelativeReadings
+> SimpleOrientationSensor  : GetDeviceSelector, FromIdAsync, GetDefault
+> LightSensor              : GetDeviceSelector, FromIdAsync, GetDefault
+> HingeAngleSensor         : GetDeviceSelector, GetDefaultAsync, GetRelatedToAdjacentPanelsAsync, FromIdAsync
+> ```
+>
+> CI（Server 2025）与真机（Win11 家庭版）表现完全一致，恰好证明与 SKU 无关——方法本来就不存在。
+> 探针脚本已按正确方法名修复（真机补测 errors=0）。
+>
+> **PS 5.1 坑（同批修复）**：`ForEach-Object $变量scriptblock`（内含 param($d)）在 PS 5.1
+> 会**静默产出全空对象**（控制台打印正常、JSON 字段全空）；必须内联 scriptblock 用 `$_`。
+> 云端 CI 没抓到是因为那些设备数组在 VM 上本来为空。
+>
+> **对本机路线的结论**：硬件传感器（Hinge/Accelerometer/Inclinometer 等）全线缺位 →
+> M4 Sensor Provider 在本机只剩两条路：**ACPI 盖事件（PNP0C0D 已确认存在且 OK）** 与
+> **摄像头视觉（M3）**；Manual Provider 兜底不变。摄像头与 144Hz 双 GPU 到位 → M3 与
+> M1.4 渲染条件满足（D3D11 Debug Layer 仍待 M1.4 真机确认）。
 
 ---
 

@@ -162,20 +162,20 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
     CPU         : 12th Gen Intel(R) Core(TM) ...
 
 ==> Section 1: Windows Sensor API (WinRT)
-    [NOT FOUND] HingeAngleSensor : GetDefaultAsync() returned null   ← 普通笔记本的预期结果
-    [FOUND] Accelerometer supported | acc=(...) g
+    [NOT FOUND] HingeAngleSensor : API OK, no default sensor present   ← 普通笔记本的预期结果
+    [NOT FOUND] Accelerometer : API OK, no default sensor present
 
 ==> Section 2: HID / PnP sensor devices
     ...
 ==> Section 3: ACPI layer
-    [FOUND] ACPI lid device present: ...        ← 有盖设备很有价值，记下来
+    [FOUND] ACPI lid device present: ACPI 盖子 [ACPI\PNP0C0D\2&DABA3FF&1]   ← 有盖设备很有价值，记下来
     ...
 ==> Section 4: Vendor WMI interfaces
     ...
 ==> Section 5: Camera inventory
     ...
 ==> Section 6: GPU / display
-    [FOUND] GPU: Intel(R) Iris(R) Xe Graphics | 31.0.101.xxxx
+    [FOUND] GPU: NVIDIA GeForce RTX 4060 Laptop GPU | 32.0.15.6094
 ==> Writing result JSON
     [FOUND] JSON written: C:\Dev\DuoFlow\hardware-probe-result.json
 ==> SUMMARY
@@ -183,20 +183,26 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
     NEXT STEP: send hardware-probe-result.json back to the AI Agent.
 ```
 
+> 上面示例中的 HingeAngleSensor 输出（`API OK, no default sensor present`）意思是：API 本身可用，但机器上没有这个传感器 —— **这是普通笔记本的预期结论**，不是错误。
+> **方法名铁律（勿改回）**：6 个传感器类的静态工厂方法不同名 —— 只有 HingeAngleSensor 用 `GetDefaultAsync()`（异步，需 await）；其余 5 类（Accelerometer / Gyrometer / Inclinometer / SimpleOrientationSensor / LightSensor）用 `GetDefault()`（同步，直接返回传感器对象或 null）。真机反射已实证。脚本已按此实现，若报“does not contain a method named ...”先怀疑方法名写错，再用反射查真实静态方法清单。
+
 **成功标志**：最后 SUMMARY 行 `errors: 0`（或只有个别 `[ERROR]`），且仓库根目录出现 `hardware-probe-result.json`。
 
 **做完后**：把 JSON 文件内容（或整段控制台输出截图）发给 AI Agent，它会：① 回填 `docs/HARDWARE_COMPATIBILITY.md` 第 5 节实测行；② 在 `EXECUTION_PLAN.md` 打勾 M0.4；③ 更新快照与日志。
 
 ### 7.5 结果怎么判读？（速查表）
 
+**方法名规则（先看这里）**：HingeAngleSensor 调 `GetDefaultAsync()`（异步，脚本内部 await）；其余 5 类（Accelerometer / Gyrometer / Inclinometer / SimpleOrientationSensor / LightSensor）调 `GetDefault()`（同步）。两类不可混用 —— WinRT 各类的静态工厂方法名不同，混用必报“方法不存在”（真机反射实证，曾误归因为系统差异）。
+
 | 检测项 | 结果 | 含义 |
 | --- | --- | --- |
-| HingeAngleSensor | NOT FOUND | 普通笔记本普遍如此（该 API 主要面向双屏设备）→ 传感器 Provider 走 HID/摄像头路线 |
+| HingeAngleSensor | NOT FOUND（`API OK, no default sensor present`） | 普通笔记本普遍如此（该 API 主要面向双屏设备）→ 传感器 Provider 走 ACPI 盖事件/摄像头路线 |
 | HingeAngleSensor | FOUND | 少见的高价值硬件，记录 DeviceId，M4 直接接入 |
-| Accelerometer / Inclinometer | FOUND | 可作为开合角度的间接信号源（需实测噪声，M4 验证） |
+| 其余 5 类传感器 | FOUND | 可作为开合角度的间接信号源（需实测噪声，M4 验证） |
 | PnP `Sensor` 类设备 | ≥1 | 存在传感器集线器（Sensor Hub），HID 传感器路线可行性高 |
-| ACPI 盖设备 PNP0C0D | FOUND | BIOS 层有盖事件，可探索监听方案（Windows 对普通笔记本不一定暴露） |
-| 厂商 WMI 类（Lenovo 等） | FOUND | 记录类名清单，M4 探索厂商私有接口 |
+| PnP `Sensor` 类设备 | = 0 | 无传感器集线器，HID 传感器路线不可行（Legion R7000 APH9 实测如此） |
+| ACPI 盖设备 PNP0C0D | FOUND | BIOS 层有盖事件，可探索监听方案（Windows 对普通笔记本不一定暴露；Legion R7000 实测存在且 Status OK） |
+| 厂商 WMI 类（Lenovo 等） | FOUND | 记录类名清单，M4 探索厂商私有接口（Legion R7000 实测 45 个 LENOVO_* 类在 root/wmi） |
 
 ### 7.6 常见问题排查
 
@@ -204,5 +210,5 @@ Set-ExecutionPolicy -Scope Process Bypass -Force
 | --- | --- |
 | 提示 "SKIPPED: pwsh 7 ..." | 你用的是 PowerShell 7，换用 Windows PowerShell 5.1 重跑（开始菜单搜 PowerShell，蓝图标） |
 | `Get-PnpDevice` 报红字 | 少数精简系统缺 PnpDevice 模块；用管理员窗口重跑；仍失败则把报错发给 AI Agent |
-| 某段出现 `[ERROR]` 行 | 单段失败不影响其他段，照常把 JSON 发回，AI Agent 会标注该段待重测 |
+| 某段出现 `[ERROR]` 行 | 单段失败不影响其他段，照常把 JSON 发回，AI Agent 会标注该段待重测；若错误是“does not contain a method named ...”，先怀疑 WinRT 方法名写错（见 7.5 方法名规则），不要直接归因于系统差异 |
 | JSON 文件找不到 | 看最后 SUMMARY 上方的 `[FOUND] JSON written: <路径>`，按那个路径找；或确认你在仓库根目录运行的 |
