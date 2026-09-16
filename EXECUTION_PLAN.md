@@ -61,7 +61,7 @@
 | 当前小任务 | M1.1 LidState（创建 LidState / LidStateSource / ILidStateProvider / ManualProvider —— 无硬件依赖，可立即开始） |
 | 下一步行动 | 按 §4 Phase 2 清单推进 M1.1→M1.3（纯 C# 逻辑 + 单元测试，云端可完成）；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual；M1.4 起需真机做 D3D11/Warp 调优 |
 | 阻塞项 | M1.4 起 D3D11 GPU 确认与视觉调优需真机（真机双 GPU 已确认：RTX 4060 Laptop + Radeon 780M，1920x1080@144Hz）；Overlay 真实鼠标穿透/多屏/高DPI 联测仍待真机；ACPI 盖事件监听可行性待 M4/M5 预研 |
-| 最后更新 | 2026-09-16 · M0.4 真机数据回填完成（探针两 bug 修复 + §5/§5.1 回填 + 归因勘误），Phase 1 / M0 全部关闭 · Super Z |
+| 最后更新 | 2026-09-16 · M0.4 真机验收通过（修复版探针 errors=0、两修复确认有效）+ vendorAcpiDevices 正则勘误（AMDI 裸前缀）+ §5.1 C 表勘误 · Super Z |
 
 ---
 
@@ -288,6 +288,14 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-16 · Phase 1 / M0.4 验收收尾（真机验收 + vendorAcpiDevices 正则勘误） · Super Z (main agent)
+
+- **真机验收（修复版探针 aed21a4+cc3b72f 完整跑一遍，2026-09-16）**：LENOVO Legion R7000 APH9（83EG）· Win11 家庭版 build 26200 · Windows PowerShell 5.1（Desktop）——**errors 0**（修复前 5 条）；6 个传感器全部输出 "API available; no default sensor is present"（不再报 GetDefaultAsync 方法不存在）；`acpi.lidDevice[]`（"ACPI 盖子" / ACPI\PNP0C0D\2&DABA3FF&1 / OK）与 `camera[]`（Integrated Camera / USB\VID_5986&PID_118A&MI_00\7&14EC10AA&1&0000 / OK）字段完整；sensorClassDeviceCount=0 · acpiDeviceCount=50 · 45 个 LENOVO_* 类 · RTX 4060 Laptop + Radeon 780M · 1920x1080@144Hz，与 §5/§5.1 回填值一致——**上一轮两处修复确认有效**。产物在 D:\DuoFlow\probe-verified\（仓库外，未污染）
+- **验收顺带发现并修正**：`vendorAcpiDevices` 正则第二分支漏 AMDI——AMD 平台设备 InstanceId 是 `ACPI\AMDIxxxx` **裸前缀**（无 VEN_），原两个分支都匹配不上，仓库脚本跑出的 JSON 里该数组恒为空，与 §5.1 C 表已回填的"4 个 AMD 设备"（数据本身真实，来自真机补测）矛盾。修复：第二分支 `(LEN|LNO|ATK|HPQ|ASUS)` → `(LEN|LNO|AMDI|ATK|HPQ|ASUS)` + 脚本内注释防回退；§5.1 C 表同步勘误——明确这 4 个是 **AMD 平台基础控制器**（GPIO/PEP/I2C/PPM），不是 Lenovo/ATK 类厂商事件设备，不携带开合信号，**防止 M4 误把 AMD GPIO 当盖事件源**
+- **顺带加固**：`meta.computer` 在 `$env:COMPUTERNAME` 为空时兜底 `[Environment]::MachineName`（非交互宿主下该环境变量可能为空 → JSON 变 null；本轮真机验收实测出现过）
+- **验证**：正则新旧对照测试 18 用例全过（真机 4 个 AMD id 新正则 4/4 匹配、旧正则 0/4，盖设备/睡眠按钮/USB 设备无假阳性）；CI hardware-probe job 全绿（PS 5.1 语法门禁 + 真实执行 + JSON 校验）
+- **遗留 / 阻塞**：无——M0.4 关闭结论不变，下一步 M1.1 LidState（云端可做）
 
 ### 2026-09-16 · Phase 1 / M0.4 收尾（真机实测回填） · Super Z (main agent)
 
