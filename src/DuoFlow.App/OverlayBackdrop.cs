@@ -39,10 +39,6 @@ internal sealed class TransparentBackdrop : SystemBackdrop
 {
     private Windows.UI.Composition.Compositor? _compositor;
 
-    // Rooted controller for the OS-level (Windows.System) DispatcherQueue
-    // created on-demand below - it must outlive the compositor.
-    private Windows.System.DispatcherQueueController? _osDqController;
-
     protected override void OnTargetConnected(
         ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
     {
@@ -77,18 +73,13 @@ internal sealed class TransparentBackdrop : SystemBackdrop
         // DispatcherQueue, NOT the Microsoft.UI.Dispatching one that WinUI 3
         // registers on its UI thread (CI-verified twice: with the MSFT queue
         // present, "new Compositor()" still throws Access is denied -
-        // run 35074411095). Probe and create the OS-level queue.
-        try
+        // run 35074411095). The desktop projection has no managed
+        // CreateOnCurrentThread (CS0117, run 35074837054), so the native
+        // CoreMessaging export is used (castorix helper).
+        if (!OverlayNative.EnsureOsDispatcherQueue())
         {
-            _ = Windows.System.DispatcherQueue.GetForCurrentThread();
-        }
-        catch
-        {
-            // No OS-level queue on this thread yet - create one (the managed
-            // equivalent of castorix's CoreMessaging
-            // CreateDispatcherQueueController helper).
-            _osDqController = Windows.System.DispatcherQueueController.CreateOnCurrentThread();
-            Trace.Log("backdrop: OS DispatcherQueueController created on current thread");
+            throw new InvalidOperationException(
+                "Could not ensure an OS DispatcherQueue for Windows.UI.Composition.Compositor.");
         }
 
         return new Windows.UI.Composition.Compositor();
