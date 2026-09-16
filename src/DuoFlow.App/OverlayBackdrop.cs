@@ -1,7 +1,10 @@
 using System;
+using Microsoft.UI.Composition;   // NOT Windows.UI.Composition: since WinAppSDK
+                                  // 1.1 the XAML-interop composition types
+                                  // (SystemBackdrop signatures, Visual, Compositor)
+                                  // live in Microsoft.UI.Composition.
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Media;
-using Windows.UI.Composition;
 
 namespace DuoFlow.App;
 

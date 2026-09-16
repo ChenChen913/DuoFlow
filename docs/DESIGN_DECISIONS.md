@@ -1091,6 +1091,84 @@ M0.3 的 overlay 验收曾全绿，但 2026-09-16 真机首跑两项全不成立
 
 ---
 
+# DD-038：Animation Engine 平滑语义（限速指数逼近、可注入时间源、输出重建）
+
+**Status:** Accepted（M1.3 实现时提出，随任务指令确认登记）
+
+## 背景
+
+PROJECT_SPEC §7 管线中 Provider 输出原始 LidState、Animation Engine 输出平滑状态、渲染只
+消费 Progress（DD-002）。M1.3 实现 `DuoFlow.Core/AnimationEngine` 时有五件规格未定死的事，
+M1.4（渲染接线）/ M3.4（摄像头平滑）/ M4（Provider Manager）会各自发明语义：
+
+1. "防止 Progress 跳变"的具体算法与参数；
+2. Velocity 字段的单位与符号约定（M1.1 恒为 0，从本决策起有真实值）；
+3. 时间源（直接读系统时钟会让单测不稳定）；
+4. 首次输入的对齐语义；
+5. 输出 LidState 的 Angle / Source / Confidence 如何处理。
+
+## 决定
+
+1. **算法：限速指数逼近**。目标斜率 `v = (target − current) / τ`，硬钳在
+   `±MaxProgressPerSecond`；每步 `current += v·dt`，越过目标即到位。默认
+   `τ = 0.10 s`、`MaxProgressPerSecond = 2.0`（0→1 全程 ≥ 0.5 s）、`MaxDeltaTimeSeconds
+   = 0.25`、`ArrivalEpsilon = 1e-6`（`AnimationEngineOptions` 可调，M2.3 视觉调优用）。
+   任何输入（含键盘 Home/End 的 0↔1 跳变）都不可能让 Progress 瞬变——速率上限是硬保证。
+2. **Velocity：有符号斜率，单位 = Progress 单位 / 秒**（1.0 = 每秒完成一次 0→1 全程）；
+   正值 = 关闭方向（Progress 增大）。到位即 0（ε 内同样置 0，防无限渐近爬行）。
+3. **时间源可注入**：`ITimeSource.GetTimestampTicks()`（TimeSpan tick，100 ns）；生产用
+   `StopwatchTimeSource`，单测用 `ManualTimeSource`。引擎**禁止**直接读 DateTime.Now /
+   Environment.TickCount。单步 dt 钳到 `[0, MaxDeltaTimeSeconds]`：负 dt（时钟回拨）不动，
+   超大 dt（进程暂停/渲染卡死恢复）按 0.25 s 计，配合速率上限，任何间隙都不产生瞬移。
+4. **首次输入 = 对齐（snap）**：新建引擎的第一次 `Update` 直接把 current 置为目标——
+   引擎诞生时世界就是现状，不存在"跳变"；防跳变只作用于它**观察到过的变化**。
+5. **输出 LidState 重建**：Progress / Velocity 用平滑值；**Angle 用 §6 示意映射从平滑后
+   的 Progress 重建**（`180 − 150 × Progress`，与 ManualProvider 同一套常量）——显示保持
+   连续，且延续 DD-035 的"示意占位、校准替换"语义；**Source / Confidence 原样透传**
+   （引擎是数据通路，不发明可信度）。NaN 输入整帧忽略（保留上一次目标，仅透传元数据）。
+6. **驱动双入口**：`Update(LidState)`（StateChanged 喂入）+ `Tick()`（渲染帧驱动，无新
+   输入时推进模拟）——没有 Tick 的话，键盘跳变后平滑值会停在中途直到下一次事件；
+   `Current` 为拉取式状态。引擎不含定时器/线程，调度由调用方（M1.4 渲染循环）承担。
+
+## 原因
+
+* 限速 + 指数的组合：远离目标时段速决定观感（稳定可预期），接近目标时指数收敛避免
+  恒速"撞线"抖动；两者叠加让"中途反向"自然（符号随目标翻转）；
+* dt 钳制与速率上限共同保证最坏情况（暂停 5 秒后恢复）单步位移 ≤ maxV × maxDt = 0.5，
+  不会出现"恢复瞬间动画飞完"；
+* Angle 重建而非透传：若透传原始 Angle，键盘跳变后显示角度会与平滑进度脱节，违背
+  "观感的连续性"（§6.4 执行铁律）；重建让 Angle/Progress 恒自洽。
+
+## 替代方案
+
+* 纯指数 EMA（无速率上限）→ 大跳变初始速度 = err/τ 可达 10/s，等效瞬间跳变，违背
+  "防止 Progress 跳变"的任务定义，放弃；
+* 纯恒速斜坡（无指数项）→ 接近目标时硬着陆，且中途反向时速度不衰减，观感差，放弃；
+* 弹簧/临界阻尼二阶系统 → 参数更多、超调难除，M1 阶段复杂度不划算，M2.3 再议，放弃；
+* 引擎内置 DispatcherQueueTimer 自驱动 → 与渲染循环的节拍解耦困难（M1.4 才接渲染），
+  且 Core 引入 UI 调度概念违反 DD-002 定位，放弃；
+* Velocity 用最近两次输入差分 → 事件间隔不均匀时噪声大；用模拟斜率（当前 v）稳定且
+  与位移一致，放弃差分。
+
+## 影响
+
+* `src/DuoFlow.Core/AnimationEngine.cs`、`AnimationEngineOptions.cs`、`ITimeSource.cs`（新增）；
+* M1.4 渲染（以 `Tick()`/`Current` 为接口接入 Warp 的 progress uniform）；
+* M3.4 摄像头平滑（可在同一引擎上叠加输入侧去抖，或替换参数）；
+* M4 Provider Manager（引擎与 Provider 的接线与线程归属）。
+
+## 迁移方案
+
+不适用（新增组件；ManualProvider 的 DD-035 语义不受影响——引擎在 Provider 下游）。
+
+## 相关决策
+
+- DD-002（输入与渲染解耦——引擎输出仍是 0~1 Progress）
+- DD-003（Progress 统一 0~1）
+- DD-035（ManualProvider 驱动语义——Velocity=0 的原始输入是引擎的预期输入）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。
