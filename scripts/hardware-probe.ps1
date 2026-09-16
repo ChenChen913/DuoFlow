@@ -131,37 +131,58 @@ if ($PSVersionTable.PSEdition -eq "Core") {
     }
 
     # Probe one WinRT sensor class.
-    # IMPORTANT (learned on CI, Windows PowerShell 5.1):
-    #   Calling a WinRT static method through a [Type] variable
-    #   ($rtType::GetDefaultAsync()) binds unreliably - it either throws
-    #   "does not contain a method named 'GetDefaultAsync'" or silently
-    #   returns $null. The reliable pattern is the TYPE LITERAL direct
-    #   static call, so both $OpFn and $TypeFn below embed the full
-    #   literal: [Ns.Type, Ns, ContentType = WindowsRuntime]::Method()
+    # --- WHY TWO CALL PATHS (Bug 1, fixed after real-machine reflection) ---
+    # The 6 sensor types do NOT share the same static factory method:
+    #   HingeAngleSensor         : GetDefaultAsync  (ASYNC -> IAsyncOperation, needs Await-WinRt)
+    #   Accelerometer / Gyrometer / Inclinometer /
+    #   SimpleOrientationSensor / LightSensor : GetDefault  (SYNC -> returns the
+    #       sensor object directly, or null when absent; NO IAsyncOperation)
+    # Verified by runtime reflection on the real machine (static method lists).
+    # The first probe version wrongly called ::GetDefaultAsync() on all 6 ->
+    # 5 types threw "does not contain a method named 'GetDefaultAsync'" and
+    # this was MIS-ATTRIBUTED to a "Windows Server SKU projection gap".
+    # Truth: wrong method name. CI (Server 2025) and the real machine (Win11
+    # Home) behaved identically precisely because the method never existed.
+    # --- WHY INLINE CALLS THROUGH [Type] VARIABLES ARE UNRELIABLE ---
+    # Calling a WinRT static method through a [Type] variable
+    # ($rtType::GetDefault()) binds unreliably in PS 5.1; the reliable
+    # pattern is the TYPE LITERAL direct static call, so $OpFn/$DirectFn
+    # embed the full literal: [Ns.Type, Ns, ContentType = WindowsRuntime]::Method()
     function Test-WinRtSensor {
-        param([string]$Key, [scriptblock]$OpFn, [scriptblock]$TypeFn, [scriptblock]$ReadFn, [scriptblock]$DescFn)
+        param([string]$Key,
+              [scriptblock]$OpFn,      # ASYNC path (HingeAngleSensor): returns IAsyncOperation
+              [scriptblock]$DirectFn,  # SYNC path  (the other 5)   : returns the sensor object
+              [scriptblock]$TypeFn,
+              [scriptblock]$ReadFn,
+              [scriptblock]$DescFn)
         try {
             $rtType = & $TypeFn    # literal type (loads the projection)
-            $op = & $OpFn          # literal static call -> IAsyncOperation
-
-            if ($null -eq $op) {
-                # Static call silently returned null: this is a binding
-                # anomaly, NOT proof that the hardware is absent.
-                $script:Result.sensorApi.sensors[$Key] = [ordered]@{
-                    supported = $false
-                    note = "binding anomaly: GetDefaultAsync() returned null op (treat as Unknown)"
-                }
-                Write-No "$Key : null op (binding anomaly, treat as Unknown)"
-                return
-            }
-
             $sensor = $null
-            $sensor = Await-WinRt $op $rtType
+
+            if ($DirectFn) {
+                # SYNC API (GetDefault): returns the sensor object or $null.
+                # No IAsyncOperation is involved -> never use Await-WinRt here.
+                $sensor = & $DirectFn
+            } else {
+                # ASYNC API (GetDefaultAsync): await the IAsyncOperation.
+                $op = & $OpFn
+                if ($null -eq $op) {
+                    # Static call silently returned null: binding anomaly,
+                    # NOT proof that the hardware is absent.
+                    $script:Result.sensorApi.sensors[$Key] = [ordered]@{
+                        supported = $false
+                        note = "binding anomaly: GetDefaultAsync() returned null op (treat as Unknown)"
+                    }
+                    Write-No "$Key : null op (binding anomaly, treat as Unknown)"
+                    return
+                }
+                $sensor = Await-WinRt $op $rtType
+            }
 
             if ($null -eq $sensor) {
                 $script:Result.sensorApi.sensors[$Key] = [ordered]@{
                     supported = $false
-                    note = "API available; GetDefaultAsync() completed but no default sensor is present"
+                    note = "API available; no default sensor is present on this machine"
                 }
                 Write-No "$Key : API OK, no default sensor present"
                 return
@@ -183,12 +204,12 @@ if ($PSVersionTable.PSEdition -eq "Core") {
             $err = $_.Exception.Message
             $note = $null
             if ($err -match "does not contain a method named") {
-                # CI finding: on windows-latest (Windows SERVER 2025) the sensor
-                # projections are incomplete - static methods are missing from
-                # the projected types. On desktop Windows 11 the same literal
-                # call is the standard, community-proven pattern. So on the
-                # real machine this usually means the API is really absent.
-                $note = "static method missing on projected type; on Windows Server this is a known SKU projection gap - on desktop Win11 treat this result as definitive"
+                # Bug 1 lesson: this used to be mis-attributed to a Server SKU
+                # projection gap. It almost always means the WRONG METHOD NAME
+                # for this WinRT type. Before blaming the environment, dump the
+                # real statics via reflection:
+                #   [Ns.Type,Ns,ContentType=WindowsRuntime].GetMethods() | ...
+                $note = "static method not found on projected type - suspect a WRONG METHOD NAME for this WinRT class (verify via reflection before drawing conclusions)"
             }
             $script:Result.sensorApi.sensors[$Key] = [ordered]@{
                 supported = $false
@@ -202,41 +223,45 @@ if ($PSVersionTable.PSEdition -eq "Core") {
     # NOTE: the ", Windows.Devices.Sensors, ContentType = WindowsRuntime"
     # qualifier is PowerShell-specific projection syntax (5.1) and must stay
     # inside the type literals - it is NOT valid for [Type]::GetType().
+    # HingeAngleSensor: the ONLY one of the 6 with GetDefaultAsync() (async).
     Test-WinRtSensor "HingeAngleSensor" `
-        { [Windows.Devices.Sensors.HingeAngleSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
-        { [Windows.Devices.Sensors.HingeAngleSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
-        { param($s) $s.GetCurrentReading() } `
-        { param($r) "angle=$($r.AngleInDegrees) deg" }
+        -OpFn   { [Windows.Devices.Sensors.HingeAngleSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
+        -TypeFn { [Windows.Devices.Sensors.HingeAngleSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
+        -ReadFn { param($s) $s.GetCurrentReading() } `
+        -DescFn { param($r) "angle=$($r.AngleInDegrees) deg" }
 
+    # The other 5: SYNC GetDefault() - verified by real-machine reflection.
+    # Do NOT switch these to GetDefaultAsync(); that method does not exist
+    # on these projected types (see "WHY TWO CALL PATHS" above).
     Test-WinRtSensor "Accelerometer" `
-        { [Windows.Devices.Sensors.Accelerometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
-        { [Windows.Devices.Sensors.Accelerometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
-        { param($s) $s.GetCurrentReading() } `
-        { param($r) "acc=($($r.AccelerationX), $($r.AccelerationY), $($r.AccelerationZ)) g" }
+        -DirectFn { [Windows.Devices.Sensors.Accelerometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefault() } `
+        -TypeFn   { [Windows.Devices.Sensors.Accelerometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
+        -ReadFn   { param($s) $s.GetCurrentReading() } `
+        -DescFn   { param($r) "acc=($($r.AccelerationX), $($r.AccelerationY), $($r.AccelerationZ)) g" }
 
     Test-WinRtSensor "Gyrometer" `
-        { [Windows.Devices.Sensors.Gyrometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
-        { [Windows.Devices.Sensors.Gyrometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
-        { param($s) $s.GetCurrentReading() } `
-        { param($r) "gyro=($($r.AngularVelocityX), $($r.AngularVelocityY), $($r.AngularVelocityZ)) deg/s" }
+        -DirectFn { [Windows.Devices.Sensors.Gyrometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefault() } `
+        -TypeFn   { [Windows.Devices.Sensors.Gyrometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
+        -ReadFn   { param($s) $s.GetCurrentReading() } `
+        -DescFn   { param($r) "gyro=($($r.AngularVelocityX), $($r.AngularVelocityY), $($r.AngularVelocityZ)) deg/s" }
 
     Test-WinRtSensor "Inclinometer" `
-        { [Windows.Devices.Sensors.Inclinometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
-        { [Windows.Devices.Sensors.Inclinometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
-        { param($s) $s.GetCurrentReading() } `
-        { param($r) "pitch=$($r.PitchDegrees), roll=$($r.RollDegrees), yaw=$($r.YawDegrees)" }
+        -DirectFn { [Windows.Devices.Sensors.Inclinometer, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefault() } `
+        -TypeFn   { [Windows.Devices.Sensors.Inclinometer, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
+        -ReadFn   { param($s) $s.GetCurrentReading() } `
+        -DescFn   { param($r) "pitch=$($r.PitchDegrees), roll=$($r.RollDegrees), yaw=$($r.YawDegrees)" }
 
     Test-WinRtSensor "SimpleOrientationSensor" `
-        { [Windows.Devices.Sensors.SimpleOrientationSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
-        { [Windows.Devices.Sensors.SimpleOrientationSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
-        { param($s) $s.GetCurrentOrientation() } `
-        { param($r) "orientation=$($r.Orientation)" }
+        -DirectFn { [Windows.Devices.Sensors.SimpleOrientationSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefault() } `
+        -TypeFn   { [Windows.Devices.Sensors.SimpleOrientationSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
+        -ReadFn   { param($s) $s.GetCurrentOrientation() } `
+        -DescFn   { param($r) "orientation=$($r.Orientation)" }
 
     Test-WinRtSensor "LightSensor" `
-        { [Windows.Devices.Sensors.LightSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefaultAsync() } `
-        { [Windows.Devices.Sensors.LightSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
-        { param($s) $s.GetCurrentReading() } `
-        { param($r) "lux=$($r.IlluminanceInLux)" }
+        -DirectFn { [Windows.Devices.Sensors.LightSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime]::GetDefault() } `
+        -TypeFn   { [Windows.Devices.Sensors.LightSensor, Windows.Devices.Sensors, ContentType = WindowsRuntime] } `
+        -ReadFn   { param($s) $s.GetCurrentReading() } `
+        -DescFn   { param($r) "lux=$($r.IlluminanceInLux)" }
 
     if ($script:Result.sensorApi.sensors.Count -gt 0) {
         $script:Result.sensorApi.available = $true
@@ -252,16 +277,19 @@ try {
     $hidSensor   = @(Get-PnpDevice -PresentOnly -Class HIDClass -ErrorAction SilentlyContinue |
                      Where-Object { $_.FriendlyName -match "sensor|orientation|accel|gyro|incline|hinge" })
 
-    $mapFn = { param($d) [ordered]@{
-        friendlyName = "$($d.FriendlyName)"
-        instanceId   = "$($d.InstanceId)"
-        status       = "$($d.Status)"
-    } }
-
+    # --- WHY INLINE (Bug 2, fixed after real-machine test) ---
+    # PS 5.1 silently produces ALL-EMPTY objects when a scriptblock is
+    # passed to ForEach-Object as a VARIABLE (| ForEach-Object $mapFn with
+    # param($d) inside): $d does not bind, every field becomes "", even
+    # though the same devices print fine to the console elsewhere. Inline
+    # the scriptblock and use $_ so the fields actually bind. The cloud CI
+    # never caught this because those device arrays are empty on the VM.
     $script:Result.hid = [ordered]@{
         sensorClassDeviceCount = $sensorClass.Count
-        sensorClassDevices     = @($sensorClass | ForEach-Object $mapFn)
-        hidSensorDevices       = @($hidSensor   | ForEach-Object $mapFn)
+        sensorClassDevices     = @($sensorClass | ForEach-Object { [ordered]@{
+            friendlyName = "$($_.FriendlyName)"; instanceId = "$($_.InstanceId)"; status = "$($_.Status)" } })
+        hidSensorDevices       = @($hidSensor   | ForEach-Object { [ordered]@{
+            friendlyName = "$($_.FriendlyName)"; instanceId = "$($_.InstanceId)"; status = "$($_.Status)" } })
     }
 
     if ($sensorClass.Count -gt 0) {
@@ -287,17 +315,16 @@ try {
     $vendorAcpi = @($acpiDevices | Where-Object {
         $_.InstanceId -match "ACPI\\VEN_(LNO|LEN|AMDI|HPQ|ASUS)" -or $_.InstanceId -match "ACPI\\(LEN|LNO|ATK|HPQ|ASUS)" })
 
-    $mapFn3 = { param($d) [ordered]@{
-        friendlyName = "$($d.FriendlyName)"
-        instanceId   = "$($d.InstanceId)"
-        status       = "$($d.Status)"
-    } }
-
+    # Inline scriptblocks, NOT variables - see "WHY INLINE" in Section 2
+    # (Bug 2: PS 5.1 ForEach-Object $var produces all-empty objects).
     $script:Result.acpi = [ordered]@{
         acpiDeviceCount   = $acpiDevices.Count
-        lidDevice         = @($lid | ForEach-Object $mapFn3)
-        sleepButtonDevice = @($slp | ForEach-Object $mapFn3)
-        vendorAcpiDevices = @($vendorAcpi | ForEach-Object $mapFn3)
+        lidDevice         = @($lid | ForEach-Object { [ordered]@{
+            friendlyName = "$($_.FriendlyName)"; instanceId = "$($_.InstanceId)"; status = "$($_.Status)" } })
+        sleepButtonDevice = @($slp | ForEach-Object { [ordered]@{
+            friendlyName = "$($_.FriendlyName)"; instanceId = "$($_.InstanceId)"; status = "$($_.Status)" } })
+        vendorAcpiDevices = @($vendorAcpi | ForEach-Object { [ordered]@{
+            friendlyName = "$($_.FriendlyName)"; instanceId = "$($_.InstanceId)"; status = "$($_.Status)" } })
     }
 
     if ($lid.Count -gt 0)    { Write-Ok "ACPI lid device present: $($lid[0].FriendlyName) [$($lid[0].InstanceId)]" }
@@ -359,14 +386,14 @@ try {
     $cams = @(Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue |
               Where-Object { $_.Class -in @("Camera", "Image") })
 
-    $mapFn5 = { param($d) [ordered]@{
-        friendlyName = "$($d.FriendlyName)"
-        class        = "$($d.Class)"
-        instanceId   = "$($d.InstanceId)"
-        status       = "$($d.Status)"
-    } }
-
-    $script:Result.camera = @($cams | ForEach-Object $mapFn5)
+    # Inline scriptblock, NOT a variable - see "WHY INLINE" in Section 2
+    # (Bug 2: PS 5.1 ForEach-Object $var produces all-empty objects).
+    $script:Result.camera = @($cams | ForEach-Object { [ordered]@{
+        friendlyName = "$($_.FriendlyName)"
+        class        = "$($_.Class)"
+        instanceId   = "$($_.InstanceId)"
+        status       = "$($_.Status)"
+    } })
     if ($cams.Count -gt 0) {
         Write-Ok "$($cams.Count) camera/imaging device(s):"
         $cams | ForEach-Object { Write-Host "      - $($_.FriendlyName)  [$($_.Class)]" }
