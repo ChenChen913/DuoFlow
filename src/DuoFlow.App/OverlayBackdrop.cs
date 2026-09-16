@@ -93,7 +93,9 @@ internal sealed class TransparentBackdrop : SystemBackdrop
         {
             Microsoft.UI.Composition.Visual visual =
                 ElementCompositionPreview.GetElementVisual((UIElement)xamlRoot.Content);
-            var osCompositor = WinRT.MarshalExtensions.As<Windows.UI.Composition.Compositor>(visual.Compositor);
+            // WinRT.MarshalExtensions is internal (CS0122); CastExtensions.As<T>
+            // is the public CsWinRT re-wrap entry.
+            var osCompositor = WinRT.CastExtensions.As<Windows.UI.Composition.Compositor>(visual.Compositor);
             Trace.Log("backdrop: path1 OK - XAML compositor re-wrapped as Windows.UI.Composition.Compositor");
             return osCompositor.CreateColorBrush(alphaZero);
         }
