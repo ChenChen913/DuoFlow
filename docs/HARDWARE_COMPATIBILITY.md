@@ -543,6 +543,73 @@ Sensor / HID / Camera Detection / D3D Capture / Performance
 
 ---
 
+## 6.2 真机已知问题（平台行为 · M0.3 真机首跑实测，2026-09-16）
+
+> 本节记录的是**平台行为**（WinUI 3 + WinAppSDK 1.8 的固有特性），不是一次性 bug——
+> 后续任何涉及 overlay 窗口的工作（M1.4 渲染、M5 集成、M6 产品化）都必须带着这些约束做。
+> 真机环境：Legion R7000 APH9 / Win11 build 26200 / 双 1920x1080@144Hz。
+
+### P0-1：WinUI 3 窗口有两层背景，DWM 玻璃框扩展只解决其中一层
+
+* **实测**：仅 `DwmExtendFrameIntoClientArea(-1)` 时，覆盖层置顶后整个屏幕被不透明黑层遮住
+  （覆盖区采样亮度 0.0~3.5；把覆盖层移出屏幕后同一区域 30.6~254.7；`BitBlt CAPTUREBLT`
+  重测数值不变，排除 GDI 采样假象）。覆盖层自身装饰（预览面板边框/状态条）正常绘制——
+  不是"没渲染"，是"背景不透明"。
+* **根因**：WinUI 3 窗口背景两层——Win32 窗口背景 + `DesktopWindowXamlSource` 的
+  Composition Visual 背景。前者由 DWM 玻璃框扩展处理，后者必须用
+  `ICompositionSupportsSystemBackdrop` 设一个 **alpha=0 画刷**（自定义 `SystemBackdrop`
+  子类）框架才会移除黑底。WinAppSDK 1.8 的 winmd 里**不存在** `TransparentBackdrop`
+  内置类（只有 SystemBackdrop/MicaBackdrop/DesktopAcrylicBackdrop），必须自己写
+  （实现见 `src/DuoFlow.App/OverlayBackdrop.cs`，配方来自 castorix/WinUI3_SwapChainPanel_Layered）。
+* **修复状态**：已实现（DD-037），云端 CI 已实证（亮度探针），真机复验待做。
+
+### P0-2：WS_EX_TRANSPARENT 单独不足以让 WinUI 3 内容岛穿透鼠标
+
+* **实测**：只设 WS_EX_TRANSPARENT 时，`WindowFromPoint` 命中覆盖层的
+  `Microsoft.UI.Content.DesktopChildSiteBridge`（铺满客户区），真实点击/拖动/键盘全部被吞。
+* **对照实验**（真实输入注入，每组以"覆盖层移开后点击有效"做控制组）：顶层补
+  **WS_EX_LAYERED** 后穿透恢复；子窗口补 LAYERED|TRANSPARENT 或只留 TRANSPARENT 均非必需——
+  **最小修复 = 顶层一个 WS_EX_LAYERED**。改完 exstyle 必须 `SetWindowPos(SWP_FRAMECHANGED)`
+  才生效。单独给子窗口加 TRANSPARENT（不加 LAYERED）无效。
+* **修复状态**：已实现（DD-037，含 `SetLayeredWindowAttributes(LWA_ALPHA,255)` 初始化——
+  从未设置属性的 layered 窗口根本不会被合成），真机复验待做。
+
+### 组合风险：layered + SwapChainPanel + 透明（microsoft/microsoft-ui-xaml#1247）
+
+* 这是官方长期 issue：自 WinAppSDK 1.1.0 起"layered window + SwapChainPanel + 透明"
+  可能出现黑底/白底（DirectComposition 窗口）。本项目的覆盖层正是这个组合
+  （LAYERED 穿透修复 × 透明修复 × 右下角捕获预览），**两个 P0 修好后必须三件事一起复验**：
+  透明 + 穿透 + 预览内容正常。云端 CI 已把这三项做成可证伪探针（亮度采样 / WindowFromPoint /
+  捕获帧计数+截图）。
+
+### 排查线索（若修复后仍异常）
+
+* `presenter.IsAlwaysOnTop = true` 有社区报告会让穿透失效——OverlayWindow 目前设了这一项，
+  复验不过时**第一个查它**。
+* WM_DWMCOMPOSITIONCHANGED（RDP 会话切换、GPU 驱动重置）会重置 DWM 状态——已通过
+  `OverlayWin32Subclass` 在消息里重应用透明配方。
+
+### P1-a：覆盖层内捕获预览在真机上显示纯黑（待真机结论）
+
+* 现象：真机上预览面板边框正常、控制台帧计数持续增长（47~48 FPS），但面板内容黑。
+* 候选原因：① WGC 抓"自己正在显示该内容的显示器"造成自反馈/环路；② 捕获链与 layered
+  合成路径的交互（#1247 家族问题）。
+* **本轮不改捕获链**（DD 边界）；M1.4 接渲染管线时一并排查。云端 CI 上该预览一直正常
+  （截图可见镜像递归），说明代码链路本身可工作。
+
+### P1-b：默认 z 序为「控制台在覆盖层之上」（确认有意为之）
+
+* 两者都 TOPMOST，后创建的 console 浮在 overlay 之上——作为调试台是有意行为，M6 产品化时
+  再改（届时 console 变设置界面，生产模式不显示）。probe 做 real-effect 检查时会临时把
+  overlay 提到 console 之上（生产姿态），检查完恢复调试姿态。
+
+### 多显示器现状（记录，本轮不实现）
+
+* 覆盖层只覆盖 `DisplayArea.Primary`（主屏）。真机为双 1920x1080：副屏无覆盖、无特效，
+  属预期。多屏覆盖在 M0.3 已留 [!] 待真机项，实现排在后续 milestone。
+
+---
+
 # 7. Calibration Profiles
 
 > 校准 Profile 存储规范。每台设备一份，绑定 deviceId。

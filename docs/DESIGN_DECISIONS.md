@@ -1016,6 +1016,81 @@ DD-004/DD-035 冻结了 ManualProvider 的语义，但 M1.2 把它接进 UI 时�
 
 ---
 
+# DD-037：Overlay 透明与穿透的 WinUI 3 实现方案（真机 P0 修复）
+
+**Status:** Accepted（M0.3 真机首跑发现两个 P0 后修复时提出，随任务指令确认登记）
+
+## 背景
+
+M0.3 的 overlay 验收曾全绿，但 2026-09-16 真机首跑两项全不成立：
+
+1. **P0-1 不透明**：`DwmExtendFrameIntoClientArea(-1)` 只处理 Win32 一层背景；
+   `DesktopWindowXamlSource` 的 Composition Visual 背景仍是黑，覆盖层置顶后整屏被遮
+   （覆盖区采样亮度 0.0~3.5 vs 移开后 254.7）。当时的验收只查了"DWM API 返回 S_OK"——假阳性。
+2. **P0-2 吞输入**：只设 `WS_EX_TRANSPARENT` 时，WinUI 3 内容岛的
+   `DesktopChildSiteBridge` 仍然吞掉全部鼠标输入（`WindowFromPoint` 命中它）。当时的
+   验收只查了"style bit 被设上"——假阳性。
+
+## 决定
+
+1. **透明 = 双层处理**（缺一即黑屏）：
+   * XAML 岛层：`Window.SystemBackdrop = new TransparentBackdrop()`——自定义
+     `SystemBackdrop` 子类，在 `OnTargetConnected` 里对 `ICompositionSupportsSystemBackdrop`
+     设 **alpha=0 画刷**。WinAppSDK 1.8 无内置 TransparentBackdrop（已查 winmd），必须自写；
+   * Win32 层：`DwmExtendFrameIntoClientArea(MARGINS(0))`（**0，不是 -1**）+
+     `DwmEnableBlurBehindWindow(DWM_BB_ENABLE|DWM_BB_BLURREGION, 空区域 CreateRectRgn(-2,-2,-1,-1))`，
+     并用 `SetWindowSubclass` 处理 `WM_ERASEBKGND`（填黑 + return 1；配合 alpha-0 backdrop
+     该黑以 premultiplied alpha 合成为全透明）与 `WM_DWMCOMPOSITIONCHANGED`（重应用，
+     防 RDP/驱动重置后失效）。
+2. **穿透 = 顶层补 `WS_EX_LAYERED`**（最小改动，真机对照实验 B 组实证）：
+   同时必须 `SetLayeredWindowAttributes(LWA_ALPHA, 255)` 初始化（从未设置属性的 layered
+   窗口不会被合成）+ `SetWindowPos(SWP_FRAMECHANGED)` 使 exstyle 生效。子窗口不动。
+3. **验收必须可证伪**（堵 M0.3 假阳性的坑，进 CI 门禁）：
+   * 透明：进程内创建白色参考窗口（非 TOPMOST，天然在覆盖层之下）→ 覆盖层提到 TOPMOST
+     最前 → BitBlt 采样该区域亮度 ≥ 80 判过（修复失败 ≈ 0）；
+   * 穿透（API 级）：覆盖层置顶时 `WindowFromPoint(控制台中心)` 的 root 不得是覆盖层窗口；
+     真实输入（SendInput 点击/拖动）在真机复验；
+   * 两者与捕获预览（帧计数 + 截图）**同一次运行一起看**——layered + SwapChainPanel + 透明
+     是 microsoft-ui-xaml#1247 的已知问题组合，修好一个可能弄坏另一个。
+
+## 原因
+
+* 两层背景是 WinUI 3 内容岛架构的固有结构，社区方案
+  （castorix/WinUI3_SwapChainPanel_Layered、cnbluefire/WinUI3TransparentBackground、
+  Microsoft Q&A 1418063）一致收敛到上述配方，非本项目独创路径；
+* LAYERED 是 Win32 命中测试排除 layered+transparent 窗口的标准开关，内容岛只是让它
+  从"可选"变成"必需"；
+* 亮度采样 + 命中链检查让"看起来绿了"变成"行为可证伪"——云端 CI 直接断言行为，
+  真机只需复验观感。
+
+## 替代方案
+
+* `window.SystemBackdrop = new MicaBackdrop()/DesktopAcrylicBackdrop()` → 材质背景有
+  模糊/着色，不是全透明，放弃；
+* 用 `TransparentBackdrop` 内置类 → WinAppSDK 1.8 winmd 中不存在，编译即错，放弃；
+* 只修 LAYERED 不修 backdrop（或反之）→ #1247 组合必须整体验证，且单修任一项在真机上
+  仍有黑屏/吞输入其一，放弃；
+* 每秒重复 real-effect 探针 → z 序翻转闪烁，改为每进程一次 + 结果缓存，放弃。
+
+## 影响
+
+* `src/DuoFlow.App/OverlayBackdrop.cs`（TransparentBackdrop + Win32 消息子类，新增）；
+* `src/DuoFlow.App/OverlayWindow.xaml.cs`（exstyle 加 LAYERED、双透明层、回读旗标）；
+* `src/DuoFlow.App/OverlayNative.cs`（DWM/layered/采样/命中链 P/Invoke）；
+* `src/DuoFlow.App/OverlayProbe.cs` + CI 门禁（Transparency/HitTest 探针断言）；
+* M1.4 渲染（Warp 效果在透明层之上叠加时必须维持本配方）、M5/M6（窗口行为不回退）。
+
+## 迁移方案
+
+不适用（替换的是 M0.3 的错误实现；原 `ExtendFrame(-1)` 保留未调用作历史参考）。
+
+## 相关决策
+
+- DD-001（M0.3 overlay 架构）
+- DD-002（输入与渲染解耦——穿透恢复后"overlay 不吞输入"才真正成立）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。

@@ -10,9 +10,20 @@ namespace DuoFlow.App;
 
 /// <summary>
 /// M0.3 overlay window: borderless, covering the whole primary monitor,
-/// always on top, fully transparent (DWM frame extension + transparent
-/// XAML root), click-through and non-activating (WS_EX_TRANSPARENT |
-/// WS_EX_NOACTIVATE), hidden from Alt+Tab (WS_EX_TOOLWINDOW).
+/// always on top, fully transparent, click-through and non-activating
+/// (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE), hidden from
+/// Alt+Tab (WS_EX_TOOLWINDOW).
+///
+/// P0 fixes (real-machine findings, 2026-09-16):
+///  - P0-1 transparency: BOTH background layers must be handled - the Win32
+///    layer (DwmExtendFrameIntoClientArea with MARGINS(0) + blur-behind with
+///    an empty region + WM_ERASEBKGND subclass) and the XAML island layer
+///    (SystemBackdrop = TransparentBackdrop, an alpha-0 brush on
+///    ICompositionSupportsSystemBackdrop). The old DwmExtendFrame(-1)-only
+///    approach left the island opaque black and hid the whole desktop.
+///  - P0-2 click-through: WS_EX_LAYERED is REQUIRED for the hit-test
+///    exclusion; WS_EX_TRANSPARENT alone still lets the
+///    DesktopChildSiteBridge swallow all mouse input.
 ///
 /// The M0.2 desktop-capture chain is rendered inside it as the first
 /// piece of "effect" content.
@@ -23,8 +34,14 @@ public sealed partial class OverlayWindow : Window
     private CaptureRenderer? _renderer;
     private bool _cleanupDone;
 
-    /// <summary>DWM frame extension result (true == transparent client area).</summary>
+    /// <summary>Win32-layer transparency applied (MARGINS(0) + blur-behind).</summary>
     public bool DwmExtended { get; private set; }
+
+    /// <summary>P0-1: XAML island layer handled via TransparentBackdrop.</summary>
+    public bool BackdropApplied { get; private set; }
+
+    /// <summary>P0-2: WS_EX_LAYERED set AND read back from the real window.</summary>
+    public bool LayeredApplied { get; private set; }
 
     /// <summary>Capture chain state, surfaced to the console/CI report.</summary>
     public string CaptureState { get; private set; } = "starting";
@@ -65,6 +82,10 @@ public sealed partial class OverlayWindow : Window
         }
 
         // 2. Click-through + never steal focus + hidden from Alt+Tab.
+        //    P0-2: WS_EX_LAYERED is mandatory for real hit-test exclusion
+        //    (content island); TRANSPARENT alone was proven insufficient on
+        //    the real machine (WindowFromPoint still returned the
+        //    DesktopChildSiteBridge and real clicks were swallowed).
         try
         {
             long exStyle = OverlayNative.GetExStyle(hwnd);
@@ -72,9 +93,17 @@ public sealed partial class OverlayWindow : Window
                 exStyle
                     | OverlayNative.WS_EX_TRANSPARENT
                     | OverlayNative.WS_EX_NOACTIVATE
-                    | OverlayNative.WS_EX_TOOLWINDOW);
-            OverlayNative.ForceTopmost(hwnd);
-            Trace.Log("overlay: exstyle OK");
+                    | OverlayNative.WS_EX_TOOLWINDOW
+                    | OverlayNative.WS_EX_LAYERED);
+            OverlayNative.SetLayeredWindowAttributes(hwnd, 0, 255, OverlayNative.LWA_ALPHA);
+            OverlayNative.ForceTopmost(hwnd); // SWP_FRAMECHANGED makes the new style stick
+
+            LayeredApplied = (OverlayNative.GetExStyle(hwnd) & OverlayNative.WS_EX_LAYERED) != 0;
+            if (!LayeredApplied)
+            {
+                Warnings.Add("exstyle: WS_EX_LAYERED could not be applied (P0-2)");
+            }
+            Trace.Log($"overlay: exstyle OK layered={LayeredApplied}");
         }
         catch (Exception ex)
         {
@@ -82,15 +111,32 @@ public sealed partial class OverlayWindow : Window
             Trace.Log($"overlay: exstyle FAILED: {ex.Message}");
         }
 
-        // 3. Fully transparent client area (DWM glass frame over everything).
+        // 3. Fully transparent client area - both layers (P0-1).
+        //    a) XAML island layer (the one that was opaque black on real HW):
         try
         {
-            DwmExtended = OverlayNative.ExtendFrame(hwnd) == 0;
+            SystemBackdrop = new TransparentBackdrop();
+            BackdropApplied = true;
+            Trace.Log("overlay: TransparentBackdrop assigned");
+        }
+        catch (Exception ex)
+        {
+            Warnings.Add($"backdrop: {ex.Message}");
+            Trace.Log($"overlay: TransparentBackdrop FAILED: {ex.Message}");
+        }
+
+        //    b) Win32 layer: MARGINS(0) frame extension + empty blur region,
+        //       plus the message subclass that answers WM_ERASEBKGND and
+        //       re-applies DWM state on WM_DWMCOMPOSITIONCHANGED.
+        try
+        {
+            DwmExtended = OverlayNative.ApplyTransparentWin32Layer(hwnd) == 0;
             if (!DwmExtended)
             {
-                Warnings.Add("dwm: ExtendFrameIntoClientArea failed");
+                Warnings.Add("dwm: transparent win32 layer failed");
             }
-            Trace.Log($"overlay: dwm extended={DwmExtended}");
+            OverlayWin32Subclass.Install(hwnd);
+            Trace.Log($"overlay: win32 transparent layer applied={DwmExtended}");
         }
         catch (Exception ex)
         {

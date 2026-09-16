@@ -133,7 +133,11 @@ jobs:
           }
 
       # ---- M0.3 acceptance gate: overlay window properties must all hold ----
-      - name: Assert overlay properties (M0.3 gate)
+      # 2026-09-16: extended after two real-machine P0 false positives.
+      # The style-bit booleans alone proved "intent", not behavior; the gate
+      # now also asserts the REAL-EFFECT probes (Transparency luminance and
+      # hit-test chain), which live in duoflow-overlay-smoke.json too.
+      - name: Assert overlay properties (M0.3 gate + P0 real-effect gate)
         shell: pwsh
         run: |
           $jsonPath = "$PWD/duoflow-overlay-smoke.json"
@@ -143,15 +147,26 @@ jobs:
           }
           $j = Get-Content $jsonPath | ConvertFrom-Json
           $fail = @()
-          foreach ($prop in 'OverlayCreated','Fullscreen','Topmost','ClickThrough','NoActivate','ToolWindow','TransparentDwm') {
+          foreach ($prop in 'OverlayCreated','Fullscreen','Topmost','ClickThrough','NoActivate','ToolWindow','TransparentDwm','LayeredApplied','BackdropApplied') {
             if (-not $j.$prop) { $fail += $prop }
           }
           if ($j.MonitorCount -lt 1) { $fail += 'MonitorCount' }
+          # P0-1: the white reference window must be visible THROUGH the topmost overlay.
+          if (-not $j.Transparency -or -not $j.Transparency.Pass) {
+            Write-Host "Transparency probe detail: lum=$($j.Transparency.ReferenceLuminance) note=$($j.Transparency.Note)"
+            $fail += 'Transparency.Pass'
+          }
+          # P0-2: WindowFromPoint under the overlay must NOT resolve to the overlay child.
+          if (-not $j.HitTest -or -not $j.HitTest.Pass) {
+            Write-Host "HitTest probe detail: class=$($j.HitTest.WindowFromPointClass) note=$($j.HitTest.Note)"
+            $fail += 'HitTest.Pass'
+          }
           if ($fail.Count -gt 0) {
             Write-Error "M0.3 overlay checks FAILED: $($fail -join ', ')"
             exit 1
           }
           Write-Host "M0.3 overlay property checks PASSED (monitors=$($j.MonitorCount), capture=$($j.CaptureState), frames=$($j.CaptureFrames))"
+          Write-Host "P0 real-effect checks PASSED (transparency lum=$($j.Transparency.ReferenceLuminance), hit-test class=$($j.HitTest.WindowFromPointClass))"
 
       - name: Upload build log + screenshot
         if: always()

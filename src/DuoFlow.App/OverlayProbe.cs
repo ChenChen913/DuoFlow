@@ -3,8 +3,44 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Threading;
 
 namespace DuoFlow.App;
+
+/// <summary>
+/// P0-1 real-effect proof: a white reference window is created BELOW the
+/// topmost overlay; its area is sampled from the composited screen. If the
+/// overlay is truly transparent the white shows through (luminance ≈ 255);
+/// the old false-positive (style/API check only) read ≈ 0 on the real
+/// machine because the opaque island hid everything.
+/// </summary>
+public sealed class TransparencyProbe
+{
+    public string Method { get; set; } =
+        "BitBlt screen sample of a white reference window placed UNDER the topmost overlay";
+
+    public double ReferenceLuminance { get; set; }
+    public double PassThreshold { get; set; } = 80;
+    public bool Pass { get; set; }
+    public string Note { get; set; } = "";
+}
+
+/// <summary>
+/// P0-2 hit-test chain proof: WindowFromPoint at a covered console point
+/// must NOT resolve to the overlay's DesktopChildSiteBridge anymore once
+/// WS_EX_LAYERED is in place (root window != overlay hwnd).
+/// </summary>
+public sealed class HitTestProbe
+{
+    public string Method { get; set; } =
+        "WindowFromPoint at the covered console center, compared against the overlay root hwnd";
+
+    public string WindowFromPointClass { get; set; } = "";
+    public bool PointsToOverlayChild { get; set; }
+    public bool Pass { get; set; }
+    public string Note { get; set; } =
+        "API-level proof (run in CI); real-input SendInput click/drag through the overlay is verified separately on the real machine";
+}
 
 /// <summary>
 /// M0.3 verification matrix for the overlay window. Serialized to
@@ -21,6 +57,15 @@ public sealed class OverlayReport
     public bool NoActivate { get; set; }
     public bool ToolWindow { get; set; }
     public bool TransparentDwm { get; set; }
+
+    // P0 real-effect probes (2026-09-16): the style-bit booleans above only
+    // prove intent; these prove BEHAVIOR. CI gates on them.
+    public TransparencyProbe Transparency { get; set; } = new();
+    public HitTestProbe HitTest { get; set; } = new();
+
+    // P0 fix flags read back from the actual window.
+    public bool LayeredApplied { get; set; }
+    public bool BackdropApplied { get; set; }
 
     public string WindowRect { get; set; } = "";
     public string ScreenRect { get; set; } = "";
@@ -157,7 +202,191 @@ public static class OverlayProbe
             Trace.Log($"probe: capture section FAILED: {ex.Message}");
         }
 
+        // -- Section 5: P0 fix flags + REAL-EFFECT checks --
+        // The style booleans in Sections 1-4 only prove that bits were set
+        // and APIs returned S_OK - exactly the false positives that shipped
+        // M0.3. This section proves behavior: luminance under the overlay
+        // (P0-1) and the hit-test chain (P0-2).
+        report.LayeredApplied = overlay.LayeredApplied;
+        report.BackdropApplied = overlay.BackdropApplied;
+        try
+        {
+            EnsureRealEffectChecks(overlay);
+            report.Transparency = _transparency;
+            report.HitTest = _hitTest;
+        }
+        catch (Exception ex)
+        {
+            report.Warnings.Add($"real-effect: {ex.GetType().Name}: {ex.Message}");
+            Trace.Log($"probe: real-effect section FAILED: {ex.Message}");
+            report.Transparency.Note = $"probe error: {ex.Message}";
+            report.HitTest.Note = $"probe error: {ex.Message}";
+        }
+
         return report;
+    }
+
+    // ------------------------------------------------------------------
+    // Real-effect checks (run ONCE per process - they flip the TOPMOST
+    // z-order, which would visibly flicker every second otherwise).
+    // ------------------------------------------------------------------
+
+    private static bool _realEffectDone;
+    private static TransparencyProbe _transparency = new();
+    private static HitTestProbe _hitTest = new();
+
+    private const string RefWindowClassName = "DuoFlowLumaRef";
+
+    private static void EnsureRealEffectChecks(OverlayWindow overlay)
+    {
+        if (_realEffectDone)
+        {
+            return;
+        }
+        _realEffectDone = true;
+
+        IntPtr overlayHwnd = WinRT.Interop.WindowNative.GetWindowHandle(overlay);
+
+        // 1) White reference window, plain (non-topmost) z-order -> below
+        //    both topmost windows. NOACTIVATE + TOOLWINDOW so it never
+        //    steals focus or shows up in Alt+Tab.
+        IntPtr refWindow = CreateLumaReferenceWindow(overlayHwnd, out OverlayNative.RECT refRect);
+        try
+        {
+            // 2) Find the console window (the control panel that must stay
+            //    clickable THROUGH the overlay once P0-2 is fixed).
+            IntPtr consoleHwnd = FindWindowByTitlePrefix("DuoFlow Console");
+
+            // 3) Raise the overlay to the top of the TOPMOST band - the
+            //    production posture (console normally sits above it as a
+            //    debug panel, see P1-b in EXECUTION_PLAN §5).
+            OverlayNative.ForceTopmost(overlayHwnd);
+            Thread.Sleep(450); // let DWM composite a few frames
+
+            // 4) P0-1 proof: sample the composited screen where the white
+            //    reference window sits under the topmost overlay.
+            double lum = OverlayNative.SampleScreenLuminance(
+                (refRect.Left + refRect.Right) / 2 - 50,
+                (refRect.Top + refRect.Bottom) / 2 - 30,
+                100, 60);
+            _transparency.ReferenceLuminance = lum;
+            _transparency.Pass = lum >= _transparency.PassThreshold;
+            _transparency.Note = _transparency.Pass
+                ? "white reference visible through the overlay"
+                : lum >= 0
+                    ? "overlay still blocks the reference window (opaque island?)"
+                    : "sampling failed";
+            Trace.Log($"probe: transparency lum={lum:0.0} pass={_transparency.Pass}");
+
+            // 5) P0-2 proof (API level): hit-testing through the overlay.
+            if (consoleHwnd != IntPtr.Zero
+                && OverlayNative.GetWindowRect(consoleHwnd, out OverlayNative.RECT consoleRect))
+            {
+                var pt = new OverlayNative.POINT
+                {
+                    X = (consoleRect.Left + consoleRect.Right) / 2,
+                    Y = (consoleRect.Top + consoleRect.Bottom) / 2,
+                };
+                IntPtr hit = OverlayNative.WindowFromPoint(pt);
+                IntPtr root = OverlayNative.GetAncestor(hit, OverlayNative.GA_ROOT);
+
+                var className = new System.Text.StringBuilder(256);
+                _ = OverlayNative.GetClassName(hit, className, 256);
+                _hitTest.WindowFromPointClass = className.ToString();
+                _hitTest.PointsToOverlayChild = root == overlayHwnd;
+                _hitTest.Pass = !_hitTest.PointsToOverlayChild;
+                Trace.Log($"probe: hit-test class={_hitTest.WindowFromPointClass} pass={_hitTest.Pass}");
+            }
+            else
+            {
+                _hitTest.Note = "console window not found - hit-test check skipped (counts as failure)";
+                Trace.Log("probe: hit-test console window NOT FOUND");
+            }
+
+            // 6) Restore the debug layout: console above the overlay again.
+            if (consoleHwnd != IntPtr.Zero)
+            {
+                OverlayNative.ForceTopmost(consoleHwnd);
+            }
+        }
+        finally
+        {
+            if (refWindow != IntPtr.Zero)
+            {
+                _ = OverlayNative.DestroyWindow(refWindow);
+            }
+        }
+    }
+
+    private static IntPtr CreateLumaReferenceWindow(IntPtr overlayHwnd, out OverlayNative.RECT rect)
+    {
+        rect = default;
+
+        ushort atom = OverlayNative.RegisterClassW(new OverlayNative.WNDCLASSW
+        {
+            style = OverlayNative.CS_HREDRAW | OverlayNative.CS_VREDRAW,
+            lpfnWndProc = OverlayNative.DefWindowProcW,
+            hInstance = OverlayNative.GetModuleHandleW(null),
+            hbrBackground = OverlayNative.GetStockObject(0 /* WHITEBRUSH */),
+            lpszClassName = RefWindowClassName,
+        });
+        if (atom == 0)
+        {
+            Trace.Log("probe: RegisterClassW(DuoFlowLumaRef) failed (maybe registered already)");
+        }
+
+        // Place it center-left-upper: away from the console (bottom-left),
+        // the capture preview (bottom-right) and the status chip (top-right).
+        // All coordinates are proportional, so the CI runner's 1024x768 and
+        // the real machine's 1920x1080 both work.
+        if (!OverlayNative.GetWindowRect(overlayHwnd, out OverlayNative.RECT overlayRect))
+        {
+            return IntPtr.Zero;
+        }
+
+        int w = 320, h = 220;
+        int x = overlayRect.Left + (overlayRect.Right - overlayRect.Left) * 35 / 100;
+        int y = overlayRect.Top + (overlayRect.Bottom - overlayRect.Top) * 28 / 100;
+
+        IntPtr hwnd = OverlayNative.CreateWindowExW(
+            OverlayNative.WS_EX_NOACTIVATE_INT | OverlayNative.WS_EX_TOOLWINDOW_INT,
+            RefWindowClassName,
+            "DuoFlow LumaRef",
+            OverlayNative.WS_POPUP | OverlayNative.WS_VISIBLE,
+            x, y, w, h,
+            IntPtr.Zero, IntPtr.Zero, OverlayNative.GetModuleHandleW(null), IntPtr.Zero);
+
+        if (hwnd != IntPtr.Zero && OverlayNative.GetWindowRect(hwnd, out rect))
+        {
+            Trace.Log($"probe: luma reference window at {x},{y} {w}×{h}");
+        }
+        else
+        {
+            Trace.Log("probe: luma reference window creation FAILED");
+        }
+        return hwnd;
+    }
+
+    private static IntPtr FindWindowByTitlePrefix(string prefix)
+    {
+        IntPtr found = IntPtr.Zero;
+        OverlayNative.EnumWindows((hwnd, _) =>
+        {
+            if (!OverlayNative.IsWindowVisible(hwnd))
+            {
+                return true;
+            }
+
+            var title = new System.Text.StringBuilder(256);
+            _ = OverlayNative.GetWindowText(hwnd, title, 256);
+            if (title.ToString().StartsWith(prefix, StringComparison.Ordinal))
+            {
+                found = hwnd;
+                return false;
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
     }
 
     public static void WriteSmokeJson(OverlayReport report)

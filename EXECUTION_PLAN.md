@@ -59,9 +59,9 @@
 | --- | --- |
 | 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅） |
 | 当前小任务 | **M1.3 Animation Engine**（创建 Animation Engine + smoothing / velocity + 防止 Progress 跳变 + 单测——纯 C#，云端可完成；放 DuoFlow.Core） |
-| 下一步行动 | M1.3 Animation Engine（纯 C# 逻辑 + 单测，云端可完成）→ M1.4 Perspective Warp 需真机（D3D11 GPU / HLSL / Warp 调优）；**M1.2 UI 视觉验收挂起待真机**：先跑 scripts/setup-windows.ps1（约 30~60 分钟）再目测 Slider / Home / End / 显示；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual |
-| 阻塞项 | **M1.2 视觉验收待真机环境**（开发机无 .NET SDK，需 setup-windows.ps1；非代码阻塞——代码层已 CI 全绿）；M1.4 起 D3D11 GPU 确认与视觉调优需真机（真机双 GPU 已确认：RTX 4060 Laptop + Radeon 780M，1920x1080@144Hz）；Overlay 真实鼠标穿透/多屏/高DPI 联测仍待真机；ACPI 盖事件监听可行性待 M4/M5 预研 |
-| 最后更新 | 2026-09-16 · M1.2 Manual Progress 完成（App 引 Core + Slider/键盘/显示接线 + 防回环 + 14 单测全绿 + DD-036；视觉验收待真机）· Super Z |
+| 下一步行动 | M1.3 Animation Engine（纯 C# 逻辑 + 单测，云端可完成）→ M1.4 Perspective Warp 需真机（D3D11 GPU / HLSL / Warp 调优）；**真机复验队列**：① M0.3 两 P0 修复后「透明 + 穿透 + 预览内容」三件套目测（DD-037，#1247 组合必须同次运行一起验）；② M1.2 Slider/键盘/显示（真机首跑已过 ✅）；M4 Provider Manager 设计时注意：本机传感器全线缺位，真实输入 = ACPI 盖事件 + 摄像头 + Manual |
+| 阻塞项 | **M0.3 两 P0 已修复（DD-037），待真机复验三件套**：透明（亮度采样对比）+ 穿透（真实鼠标点击/拖动）+ 预览内容正常（#1247 已知组合，修好一个可能弄坏另一个）；P1-a 预览黑屏待真机结论（本轮不改捕获链）；IsAlwaysOnTop 可能干扰穿透——复验不过第一个查它；M1.4 起 D3D11 GPU 确认与视觉调优需真机 |
+| 最后更新 | 2026-09-16 · M0.3 真机 P0 修复（透明双层配方 + LAYERED 穿透 + 可证伪探针进 CI 门禁 + DD-037 + HC §6.2）· Super Z |
 
 ---
 
@@ -129,15 +129,21 @@
 **验收**：Desktop → Captured Texture 实时显示 ✅（云端 31FPS；不同分辨率/高DPI/高刷属真机矩阵测试，顺延至 M1 联调）。
 **踩坑记录**：① `IDirect3DDxgiInterfaceAccess` 必须 `InterfaceIsIUnknown`（.NET8 对 IInspectable ComImport 抛 PNSE）；② WinUI3 SwapChainPanel 绑定用 `Vortice.WinUI.ISwapChainPanelNative(panel)` 构造器；③ WinAppSDK 需 ≥1.8 配 Vortice.WinUI 3.8。
 
-#### M0.3 Overlay
+#### M0.3 Overlay（2026-09-16 真机复验：两个 P0 假阳性已发现并修复，修复后云端 CI 实证，真机复验待做）
 
-* [x] 创建透明 Overlay Window（DWM ExtendFrame 全客户区透明 + 透明 XAML root；截图证实桌面完全透出）
+> ⚠ **真机首跑结论（2026-09-16）**：下表中的「Click Through 穿透 ✓」与「DWM 透明 ✓」当时是**假阳性**
+> ——两项检查只验证了「style bit 被设上」「DWM API 返回 S_OK」，未验证行为。真机实测：
+> ① 覆盖层不透明（黑层遮全屏，亮度采样 0.0~3.5 vs 移开后 254.7）；② 鼠标全部被吞
+> （WindowFromPoint 命中 DesktopChildSiteBridge）。两 P0 的根因、修复与可证伪探针见 DD-037，
+> 平台行为沉淀见 HARDWARE_COMPATIBILITY §6.2。下面原验收记录保留不动（历史），真机复验结论以本轮新增探针 + 后续真机目测为准。
+
+* [x] 创建透明 Overlay Window（DWM ExtendFrame 全客户区透明 + 透明 XAML root；截图证实桌面完全透出）——⚠ 假阳性：云端截图的「透出」实为 runner 桌面本身黑；真机修复后亮度探针实证（DD-037）
 * [x] 设置全屏（无边框 OverlappedPresenter + MoveAndResize 到主屏 OuterBounds；断言窗口矩形 == 屏幕矩形 0,0 1024×768）
 * [x] 测试 Topmost（IsAlwaysOnTop + SetWindowPos HWND_TOPMOST；WS_EX_TOPMOST 回读断言）
-* [x] 测试 Click Through（WS_EX_TRANSPARENT 设置并回读断言；真实鼠标穿透行为留真机联测）
+* [x] 测试 Click Through（WS_EX_TRANSPARENT 设置并回读断言；真实鼠标穿透行为留真机联测）——⚠ 假阳性：真机证实 TRANSPARENT 单独不穿透，P0-2 修复 = 顶层补 WS_EX_LAYERED（真机对照实验 B 组）
 * [x] 测试 No Activate（WS_EX_NOACTIVATE 设置并回读断言；真实焦点行为留真机联测）
 * [x] 测试窗口切换（WS_EX_TOOLWINDOW 设置并回读断言 = 不出现在 Alt+Tab）
-* [!] 测试多显示器（经典 Win32 EnumDisplayMonitors 枚举路径云端验证 1 台屏；多屏 overlay 布局/跨屏迁移需真机）
+* [!] 测试多显示器（经典 Win32 EnumDisplayMonitors 枚举路径云端验证 1 台屏；多屏 overlay 布局/跨屏迁移需真机）——真机现为双 1920x1080：overlay 仅覆盖主屏，副屏无特效属预期（HARDWARE_COMPATIBILITY §6.2 已记录，本轮不实现）
 
 **验收**：Overlay 窗口机制云端全量验证通过 —— smoke JSON 7 属性全 true + Warnings 空（run 34997516255）；捕获渲染已迁入 overlay 实时运行（357 帧 / 25 FPS，GPU→GPU）。"不影响正常鼠标键盘操作"的最终确认属真机项（M0.4 起联测）。
 **踩坑记录**：① `DisplayArea.FindAll()` 在 WinAppSDK 1.8 投影下抛 InvalidCastException —— 改用经典 Win32 `EnumDisplayMonitors`/`GetMonitorInfo`；② 无头 CI 排障靠**文件追踪**：App 全链路 Trace 落盘 %USERPROFILE%\duoflow-trace.txt + 未处理异常落盘 duoflow-crash.txt + CI 打印，可秒级定位崩溃点；③ 云 runner 真实分辨率为 1024×768（勿假设 1920×1080）；④ console 控制台窗口需在 overlay 之后创建并 IsAlwaysOnTop，才能浮在 overlay 之上。
@@ -177,17 +183,17 @@
 **产物**：`src/DuoFlow.Core`（4 类型）、`src/DuoFlow.Core.Tests`（xunit，11 用例）、CI workflow 新增 `core-tests` job（WinUI 构建/探针两 job 不受影响）；新决策 DD-035（ManualProvider 驱动语义与 LidState 手动路径取值）。
 **放置理由**：类型放 `DuoFlow.Core` 而非 App——项目结构规划里 Core 就是 LidState / AnimationEngine 的家；纯 C# 不依赖 WinUI/D3D/Windows App SDK，云端单测与后续重构成本最低（渲染侧只消费 Progress 的 DD-002 铁律从 M1.1 起守住：Core 不含任何渲染概念）。
 
-#### M1.2 Manual Progress ✅（2026-09-16 云端完成：代码实现 + CI 构建验证；**UI 视觉验收待真机环境**）
+#### M1.2 Manual Progress ✅（2026-09-16 云端完成 + **真机验收通过**：UIAutomation 读值 + 真实输入注入，Home/End/点击/拖动全项符合预期，角度严格等于 180−150×Progress，防回环无抖动；DD-036 冻结）
 
-* [x] 创建 Progress Slider（范围 0~1）（StepFrequency 0.01 / 初值 0；挂在 M0.3 控制台窗口内，M0.3 报告区未动 —— 视觉验收待真机）
-* [x] 支持 0~1（Slider 全量连续可拖；0/1 边界与 0.01 步进值经 14 用例中的新用例锁定 —— 视觉验收待真机）
-* [x] 支持键盘控制：Home → 0，End → 1（根元素 KeyboardAccelerator 全局 scope，无需焦点；WinUI 3 的 Window 无 KeyDown 事件，方案理由与替代方案见 DD-036 —— 视觉验收待真机）
+* [x] 创建 Progress Slider（范围 0~1）（StepFrequency 0.01 / 初值 0；挂在 M0.3 控制台窗口内，M0.3 报告区未动 —— 真机验收 ✅）
+* [x] 支持 0~1（Slider 全量连续可拖；0/1 边界与 0.01 步进值经 14 用例中的新用例锁定 —— 真机点击轨道 80%/70% 实测值精确 ✅）
+* [x] 支持键盘控制：Home → 0，End → 1（根元素 KeyboardAccelerator 全局 scope，无需焦点；真机实证免焦点响应 Home/End ✅；方案理由见 DD-036）
 * [x] Home → 0（边界精确性单测：Progress=0 / Angle=180° §6 端点锁定）
 * [x] End → 1（边界精确性单测：Progress=1 / Angle=30° §6 端点锁定）
-* [x] 显示当前 Progress（`Progress 0.00 · Angle ≈ 180.0°`，拉取式读 ManualProvider.CurrentState —— 单一事实源；格式与防回环守卫见 DD-036 —— 视觉验收待真机）
+* [x] 显示当前 Progress（`Progress 0.00 · Angle ≈ 180.0°`，拉取式读 ManualProvider.CurrentState —— 单一事实源；真机实测显示与 Slider 值逐项一致、无抖动 ✅；格式与守卫见 DD-036）
 
 **验收（代码层）**：App 引用 Core（net8.0-windows → net8.0 单向引用）✅；Slider → ManualProvider.SetProgress → StateChanged → 显示 链路实现，防回环守卫（值差异 + 回声旗标）就位 ✅；Core 单测 14/14 通过（本地 .NET 8.0.425 + CI core-tests）✅；CI build-winui 连带构建 Core ✅。
-**验收（视觉层，待真机）**：拖动 Slider 连续变化 / Home、End 免焦点即时响应 / 数值显示刷新 —— **需真机环境（先跑 scripts/setup-windows.ps1 装 .NET 8 SDK + VS Build Tools）后目测验收，本轮明确标注为待完成项，不计入已完成验收**。
+**验收（视觉层）**：✅ 真机通过（2026-09-16）——UIAutomation 读取界面文本 + 真实输入注入：End→1.00/30.0°、Home→0.00/180.0°、边界重复按键不变、点击轨道 80%/70% 精确、拖动连续跟随、点选后↑有效；14/14 单测通过；构建用 winget 安装的 .NET 8 SDK 8.0.425（未装 VS Build Tools，dotnet build -p:Platform=x64 可用）。
 **产物**：`src/DuoFlow.App`（MainWindow.xaml/.cs M1.2 区块 + csproj 引用）、`src/DuoFlow.Core.Tests`（+3 用例 = 14）、新决策 DD-036（驱动链/键盘方案/防回环/单一事实源/显示格式/依赖方向）。
 **踩坑记录**：`WindowClosedEventArgs` 在 WinAppSDK 1.8 的 C# 投影中无法以显式类型引用（CI 实证 CS0246，run 35052712786）——与 M0.2 起 OverlayWindow 的处理一致，改用**类型推断 lambda**（`Closed += (_, _) => Cleanup();`）绕过；处理器内逻辑不变（退订 + StopAsync）。
 
@@ -300,6 +306,17 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-16 · Phase 1 / M0.3 P0 修复（真机首跑发现的两个假阳性） · Super Z (main agent)
+
+- **真机首跑结论**：M0.3 当时的「Click Through ✓」「DWM 透明 ✓」两项为假阳性（只验了 style bit / API 返回值，没验行为）——真机上覆盖层①不透明（黑层遮全屏：覆盖区亮度 0.0~3.5 vs 移开后 254.7，CAPTUREBLT 重测排除采样假象）②吞鼠标（WindowFromPoint 命中 DesktopChildSiteBridge，点击/拖动/键盘全无效）。两者必须在 M1.4 前修掉，否则后续所有视觉效果要么看不见要么没法交互
+- **P0-1 修复（透明=双层缺一即黑屏）**：① XAML 岛层——新建 `TransparentBackdrop`（自定义 SystemBackdrop 子类，OnTargetConnected 里对 ICompositionSupportsSystemBackdrop 设 alpha=0 画刷；WinAppSDK 1.8 无内置 TransparentBackdrop，已查 winmd 确认）；② Win32 层——DwmExtendFrameIntoClientArea 改 **MARGINS(0)**（弃用 -1 老写法）+ DwmEnableBlurBehindWindow 空区域（CreateRectRgn(-2,-2,-1,-1)）+ SetWindowSubclass 处理 WM_ERASEBKGND（填黑 return 1，premultiplied alpha 下全透明）与 WM_DWMCOMPOSITIONCHANGED（RDP/驱动重置后重应用）
+- **P0-2 修复（穿透）**：顶层补 **WS_EX_LAYERED**（真机对照实验 B 组的最小改动）+ SetLayeredWindowAttributes(LWA_ALPHA,255) 初始化（未设属性的 layered 窗口不会被合成）+ SetWindowPos(SWP_FRAMECHANGED) 生效；子窗口不动
+- **假阳性堵漏（可证伪探针进 CI 门禁）**：OverlayProbe 新增 Section 5——① 透明探针：进程内创建白色参考窗口（非 TOPMOST 天然在覆盖层下，避开 console/装饰位置）→ 覆盖层提到 TOPMOST 最前 → BitBlt 采样亮度 ≥80 判过（修复失败 ≈0）；② 命中探针：WindowFromPoint(被覆盖的 console 中心) 的 root 不得是 overlay（API 级穿透证据；真实 SendInput 注入由真机复验）；每进程只跑一次（z 序翻转避免每秒闪烁），检查完恢复调试 z 序；CI 断言新增 Transparency.Pass / HitTest.Pass / LayeredApplied / BackdropApplied
+- **同次运行三件套纪律**：layered + SwapChainPanel + 透明 = microsoft-ui-xaml#1247 已知问题组合——透明/穿透/预览内容（帧计数+截图）必须在同一次运行里同时验证，云端 CI 已按此断言
+- **P1-a/P1-b 结论**：预览黑屏待真机结论（候选：WGC 自反馈 / #1247 家族；本轮不动捕获链），HC §6.2 已记录检查方法；z 序「console 在 overlay 之上」确认为有意调试台行为（M6 产品化再改）；多显示器现状（仅主屏覆盖）已记录
+- **产物**：`src/DuoFlow.App/OverlayBackdrop.cs`（新增）、`OverlayWindow.xaml.cs`、`OverlayNative.cs`、`OverlayProbe.cs`、`.github/workflows/m0-windows-build.yml`、`docs/DESIGN_DECISIONS.md`（DD-037）、`docs/HARDWARE_COMPATIBILITY.md`（§6.2 真机已知问题）、本文件三件套
+- **遗留 / 阻塞**：修复效果云端 CI 实证中；**真机复验三件套（透明+穿透+预览同次运行）待做**——复验不过时第一个排查 IsAlwaysOnTop（HC §6.2 线索）；下一步 M1.3 Animation Engine
 
 ### 2026-09-16 · Phase 2 / M1.2 Manual Progress · Super Z (main agent)
 
