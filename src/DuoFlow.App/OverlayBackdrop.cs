@@ -1,15 +1,10 @@
 using System;
-using Microsoft.UI.Composition;   // NOT Windows.UI.Composition: since WinAppSDK
-                                  // 1.1 the SystemBackdrop override signature
-                                  // (ICompositionSupportsSystemBackdrop) lives in
-                                  // Microsoft.UI.Composition. BUT the
-                                  // SystemBackdrop PROPERTY on that interface is
-                                  // typed as Windows.UI.Composition.CompositionBrush
-                                  // (cross-projected), so the brush must be created
-                                  // by a Windows.UI.Composition.Compositor -
-                                  // exactly the castorix recipe.
+using Microsoft.UI.Composition;   // SystemBackdrop override signature lives here
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Hosting;  // ElementCompositionPreview (NOT .Media - CS0103)
 using Microsoft.UI.Xaml.Media;
+using Windows.UI.Composition;     // ICompositionSupportsSystemBackdrop.SystemBackdrop
+                                  // property type + Compositor for the alpha-0 brush
 
 namespace DuoFlow.App;
 
@@ -34,11 +29,22 @@ namespace DuoFlow.App;
 /// overlay is exactly that combination, so transparency, click-through AND
 /// the capture preview must be re-verified TOGETHER (CI luminance/hit-test
 /// probes + real-machine visual pass).
+///
+/// Projection traps found along the way (all CI-verified):
+///  - the OnTargetConnected override signature uses
+///    Microsoft.UI.Composition.ICompositionSupportsSystemBackdrop (CS0115
+///    with the Windows.UI.Composition one, run 35073292924);
+///  - the SystemBackdrop PROPERTY on that interface is typed as
+///    Windows.UI.Composition.CompositionBrush (CS0029, same run);
+///  - "new Windows.UI.Composition.Compositor()" requires an OS-level
+///    (Windows.System) DispatcherQueue - the WinUI 3 UI thread only has the
+///    Microsoft.UI.Dispatching one (Access is denied, runs 35074034434 /
+///    35074411095); the managed CreateOnCurrentThread does not exist in the
+///    desktop projection (CS0117, run 35074837054) so the native CoreMessaging
+///    export is used as fallback.
 /// </summary>
 internal sealed class TransparentBackdrop : SystemBackdrop
 {
-    private Windows.UI.Composition.Compositor? _compositor;
-
     protected override void OnTargetConnected(
         ICompositionSupportsSystemBackdrop connectedTarget, XamlRoot xamlRoot)
     {
@@ -46,49 +52,62 @@ internal sealed class TransparentBackdrop : SystemBackdrop
 
         try
         {
-            // CI-verified (run 35074034434): "new Compositor()" fails with
-            // "Access is denied. The caller must initialize DispatcherQueue
-            // on this thread before this operation." - the WinRT composition
-            // factory requires a DispatcherQueue even on the XAML UI thread
-            // (it is not automatically registered for it this early in
-            // window construction). Ensure one exists first, then build the
-            // compositor. The brush MUST come from a Windows.UI.Composition
-            // Compositor because ICompositionSupportsSystemBackdrop.
-            // SystemBackdrop is typed in that namespace (run 35073292924).
-            _compositor ??= CreateCompositorWithDispatcherQueue();
-            connectedTarget.SystemBackdrop =
-                _compositor.CreateColorBrush(Windows.UI.Color.FromArgb(0, 255, 0, 255));
+            CompositionBrush brush = CreateAlphaZeroBrush(xamlRoot);
+            connectedTarget.SystemBackdrop = brush;
             Trace.Log("backdrop: alpha-0 system backdrop brush connected");
         }
         catch (Exception ex)
         {
-            Trace.Log($"backdrop: OnTargetConnected FAILED: {ex.Message}");
+            Trace.Log($"backdrop: OnTargetConnected FAILED: {ex.GetType().Name}: {ex.Message}");
             throw;
         }
-    }
-
-    private Windows.UI.Composition.Compositor CreateCompositorWithDispatcherQueue()
-    {
-        // IMPORTANT: the OS composition factory checks the WINDOWS.SYSTEM
-        // DispatcherQueue, NOT the Microsoft.UI.Dispatching one that WinUI 3
-        // registers on its UI thread (CI-verified twice: with the MSFT queue
-        // present, "new Compositor()" still throws Access is denied -
-        // run 35074411095). The desktop projection has no managed
-        // CreateOnCurrentThread (CS0117, run 35074837054), so the native
-        // CoreMessaging export is used (castorix helper).
-        if (!OverlayNative.EnsureOsDispatcherQueue())
-        {
-            throw new InvalidOperationException(
-                "Could not ensure an OS DispatcherQueue for Windows.UI.Composition.Compositor.");
-        }
-
-        return new Windows.UI.Composition.Compositor();
     }
 
     protected override void OnTargetDisconnected(ICompositionSupportsSystemBackdrop disconnectedTarget)
     {
         disconnectedTarget.SystemBackdrop = null;
         base.OnTargetDisconnected(disconnectedTarget);
+    }
+
+    /// <summary>
+    /// Builds the alpha-0 brush in the WINDOWS.UI.Composition namespace (the
+    /// ICompositionSupportsSystemBackdrop.SystemBackdrop property type).
+    /// Path 1 (preferred): reuse the XAML visual's own compositor - it is the
+    /// one that paints the island, and if Microsoft.UI.Composition.* is a
+    /// re-projection of the same WinRT runtime classes the runtime cast to
+    /// Windows.UI.Composition.Compositor succeeds.
+    /// Path 2 (fallback): ensure an OS-level DispatcherQueue via the native
+    /// CoreMessaging export, then construct a fresh Windows.UI.Composition
+    /// Compositor (castorix recipe).
+    /// Every step is logged so a CI run pinpoints the failing path.
+    /// </summary>
+    private static CompositionBrush CreateAlphaZeroBrush(XamlRoot xamlRoot)
+    {
+        var alphaZero = Windows.UI.Color.FromArgb(0, 255, 0, 255);
+
+        // ---- Path 1: XAML's own compositor, runtime-cast to the OS projection.
+        try
+        {
+            Microsoft.UI.Composition.Visual visual =
+                ElementCompositionPreview.GetElementVisual((UIElement)xamlRoot.Content);
+            object msCompositor = visual.Compositor;
+            var osCompositor = (Windows.UI.Composition.Compositor)msCompositor;
+            Trace.Log("backdrop: path1 OK - XAML compositor runtime-cast to Windows.UI.Composition");
+            return osCompositor.CreateColorBrush(alphaZero);
+        }
+        catch (Exception ex)
+        {
+            Trace.Log($"backdrop: path1 (XAML compositor cast) failed: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        // ---- Path 2: OS DispatcherQueue (native CoreMessaging) + new Compositor.
+        if (!OverlayNative.EnsureOsDispatcherQueue())
+        {
+            throw new InvalidOperationException(
+                "Could not ensure an OS DispatcherQueue for Windows.UI.Composition.Compositor.");
+        }
+        Trace.Log("backdrop: path2 OS DispatcherQueue present, constructing Compositor");
+        return new Windows.UI.Composition.Compositor().CreateColorBrush(alphaZero);
     }
 }
 
