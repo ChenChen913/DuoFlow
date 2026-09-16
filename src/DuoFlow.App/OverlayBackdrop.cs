@@ -83,19 +83,23 @@ internal sealed class TransparentBackdrop : SystemBackdrop
     {
         var alphaZero = Windows.UI.Color.FromArgb(0, 255, 0, 255);
 
-        // ---- Path 1: XAML's own compositor, runtime-cast to the OS projection.
+        // ---- Path 1: XAML's own compositor, re-wrapped into the OS projection.
+        // A direct C# cast fails (InvalidCastException, run 35075895577):
+        // Microsoft.UI.Composition.Compositor and Windows.UI.Composition.Compositor
+        // are distinct .NET projection types even when they wrap the same native
+        // WinRT object. CsWinRT's As<T>() re-queries the interfaces and wraps the
+        // SAME native object in the requested projection.
         try
         {
             Microsoft.UI.Composition.Visual visual =
                 ElementCompositionPreview.GetElementVisual((UIElement)xamlRoot.Content);
-            object msCompositor = visual.Compositor;
-            var osCompositor = (Windows.UI.Composition.Compositor)msCompositor;
-            Trace.Log("backdrop: path1 OK - XAML compositor runtime-cast to Windows.UI.Composition");
+            var osCompositor = WinRT.MarshalExtensions.As<Windows.UI.Composition.Compositor>(visual.Compositor);
+            Trace.Log("backdrop: path1 OK - XAML compositor re-wrapped as Windows.UI.Composition.Compositor");
             return osCompositor.CreateColorBrush(alphaZero);
         }
         catch (Exception ex)
         {
-            Trace.Log($"backdrop: path1 (XAML compositor cast) failed: {ex.GetType().Name}: {ex.Message}");
+            Trace.Log($"backdrop: path1 (XAML compositor rewrap) failed: {ex.GetType().Name}: {ex.Message}");
         }
 
         // ---- Path 2: OS DispatcherQueue (native CoreMessaging) + new Compositor.
