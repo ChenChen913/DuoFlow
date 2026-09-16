@@ -59,9 +59,9 @@
 | --- | --- |
 | 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅） |
 | 当前小任务 | **M1.4 Perspective Warp**（DuoWarp.hlsl + 基础 Perspective Warp 绑定 Progress + 曲线调整 + 0↔1 双向测试——**需真机 D3D11 GPU**，云端可先备代码与构建验证） |
-| 下一步行动 | M1.4 需真机（D3D11 / HLSL / Warp 调优；云端可先写 shader 框架 + CI 构建验证）→ M1.5 Hinge Mask；**真机复验队列**：① M0.3 两 P0 修复后「透明 + 穿透 + 预览内容」三件套同次运行目测（DD-037，#1247 组合）；② M1.2 已过 ✅；③ D3D11 GPU 确认（M0.1 遗留）随 M1.4 一起 |
-| 阻塞项 | **M0.3 两 P0 已修复（DD-037），待真机复验三件套**：透明（亮度采样）+ 穿透（真实鼠标）+ 预览正常（#1247 已知组合）；P1-a 预览黑屏待真机结论（M1.4 时一并排查）；IsAlwaysOnTop 干扰穿透时第一个查它；M1.4 起 D3D11 GPU 确认与视觉调优需真机（双 GPU 已确认：RTX 4060 Laptop + Radeon 780M） |
-| 最后更新 | 2026-09-16 · M1.3 Animation Engine 完成（限速指数逼近 + Velocity 真实值 + 可注入时间源 + 28/28 单测 + DD-038）· Super Z |
+| 下一步行动 | M1.4 需真机（D3D11 / HLSL / Warp 调优；云端可先写 shader 框架 + CI 构建验证）→ M1.5 Hinge Mask；**真机复验队列**：① M0.3 三件套已过 ✅（透明+穿透+预览同次运行，2026-09-16）；② M1.2 已过 ✅；③ D3D11 GPU 确认（M0.1 遗留）随 M1.4 一起 |
+| 阻塞项 | 无阻塞。M0.3 三件套真机已验收（DD-037 配方真机成立）；App 自带透明探针的假阴性已修（异步化 + GDI 分级 trace + 双对照，DD-037 勘误节，修复后真机重验待下轮复验顺带确认）；M1.4 起 D3D11 GPU 确认与视觉调优需真机（双 GPU 已确认：RTX 4060 Laptop + Radeon 780M）。CI 口径：最后一次代码提交 45a7d77 的 CI run 35079881457 全绿；afc573b 为纯文档提交，按 workflow paths 过滤不触发 CI（设计如此） |
+| 最后更新 | 2026-09-16 · M0.3 真机复验三件套通过 + 探针假阴性修复 + 三处小债清理 · Super Z |
 
 ---
 
@@ -129,18 +129,26 @@
 **验收**：Desktop → Captured Texture 实时显示 ✅（云端 31FPS；不同分辨率/高DPI/高刷属真机矩阵测试，顺延至 M1 联调）。
 **踩坑记录**：① `IDirect3DDxgiInterfaceAccess` 必须 `InterfaceIsIUnknown`（.NET8 对 IInspectable ComImport 抛 PNSE）；② WinUI3 SwapChainPanel 绑定用 `Vortice.WinUI.ISwapChainPanelNative(panel)` 构造器；③ WinAppSDK 需 ≥1.8 配 Vortice.WinUI 3.8。
 
-#### M0.3 Overlay（2026-09-16 真机复验：两个 P0 假阳性已发现并修复，修复后云端 CI 实证，真机复验待做）
+#### M0.3 Overlay ✅（2026-09-16 真机复验通过：两 P0 修复后「透明 + 穿透 + 预览」三件套同次运行全过，DD-037 配方真机成立；P1-a 一并关闭）
 
 > ⚠ **真机首跑结论（2026-09-16）**：下表中的「Click Through 穿透 ✓」与「DWM 透明 ✓」当时是**假阳性**
 > ——两项检查只验证了「style bit 被设上」「DWM API 返回 S_OK」，未验证行为。真机实测：
 > ① 覆盖层不透明（黑层遮全屏，亮度采样 0.0~3.5 vs 移开后 254.7）；② 鼠标全部被吞
 > （WindowFromPoint 命中 DesktopChildSiteBridge）。两 P0 的根因、修复与可证伪探针见 DD-037，
-> 平台行为沉淀见 HARDWARE_COMPATIBILITY §6.2。下面原验收记录保留不动（历史），真机复验结论以本轮新增探针 + 后续真机目测为准。
+> 平台行为沉淀见 HARDWARE_COMPATIBILITY §6.2。下面原验收记录保留不动（历史）。
+>
+> ✅ **真机复验结论（2026-09-16 同日，三件套同次运行全过）**：① 透明——纯红参考窗 rgb(255,0,0)
+> 原样透出，「置顶 vs 移出」全屏截图同点逐位相同（lum 55.6 / rgb(46.4,60.2,55.5)）；② 穿透——
+> 真实点击轨道 0.40 → 滑块 0.4、真实拖动 0.70→0.29 全程跟随（控制组同次通过），exstyle 实测
+> 0x080801A8 全 bit 在位；③ 预览——红标记镜像 rgb(251,69,69) + 面板裁剪可见缩小桌面 + 帧计数
+> 47~49 FPS（P1-a 关闭）。唯一遗留：App 自带透明探针真机恒 0（假阴性，与 RDP 无关），已修复
+> （异步化 + GDI 分级 trace + 双对照，DD-037 勘误节）。器材教训：拖动注入需 MOUSEEVENTF_VIRTUALDESK(0x4000)，
+> 否则坐标按主屏而非虚拟桌面归一化；找窗口勿用 `*Overlay*` 模糊匹配（控制台标题也含 Overlay）。
 
-* [x] 创建透明 Overlay Window（DWM ExtendFrame 全客户区透明 + 透明 XAML root；截图证实桌面完全透出）——⚠ 假阳性（云桌面本身黑看不出）；P0-1 已按 cnbluefire 配方重写（直接接口赋 alpha-0 画刷 + 官方 OS Compositor helper），透明实证=真机采样对比（云 RDP 合成不处理 per-pixel alpha，亮度探针仅信息性）
+* [x] 创建透明 Overlay Window（DWM ExtendFrame 全客户区透明 + 透明 XAML root；截图证实桌面完全透出）——⚠ 假阳性（云桌面本身黑看不出）；P0-1 已按 cnbluefire 配方重写（直接接口赋 alpha-0 画刷 + 官方 OS Compositor helper），透明实证=真机采样对比（亮度探针仅信息性——云上恒 0 的旧归因「RDP 会话」已被真机复验推翻，见 DD-037 勘误节）——✅ 真机复验通过（2026-09-16：红窗透出 + 置顶/移出逐位相同）
 * [x] 设置全屏（无边框 OverlappedPresenter + MoveAndResize 到主屏 OuterBounds；断言窗口矩形 == 屏幕矩形 0,0 1024×768）
 * [x] 测试 Topmost（IsAlwaysOnTop + SetWindowPos HWND_TOPMOST；WS_EX_TOPMOST 回读断言）
-* [x] 测试 Click Through（WS_EX_TRANSPARENT 设置并回读断言；真实鼠标穿透行为留真机联测）——⚠ 假阳性：真机证实 TRANSPARENT 单独不穿透，P0-2 修复 = 顶层补 WS_EX_LAYERED（真机对照实验 B 组）
+* [x] 测试 Click Through（WS_EX_TRANSPARENT 设置并回读断言；真实鼠标穿透行为留真机联测）——⚠ 假阳性：真机证实 TRANSPARENT 单独不穿透，P0-2 修复 = 顶层补 WS_EX_LAYERED（真机对照实验 B 组）——✅ 真机复验通过（2026-09-16：真实点击 0.40 / 拖动 0.70→0.29，控制组同次通过；IsAlwaysOnTop 与穿透同时成立）
 * [x] 测试 No Activate（WS_EX_NOACTIVATE 设置并回读断言；真实焦点行为留真机联测）
 * [x] 测试窗口切换（WS_EX_TOOLWINDOW 设置并回读断言 = 不出现在 Alt+Tab）
 * [!] 测试多显示器（经典 Win32 EnumDisplayMonitors 枚举路径云端验证 1 台屏；多屏 overlay 布局/跨屏迁移需真机）——真机现为双 1920x1080：overlay 仅覆盖主屏，副屏无特效属预期（HARDWARE_COMPATIBILITY §6.2 已记录，本轮不实现）
@@ -197,7 +205,11 @@
 **产物**：`src/DuoFlow.App`（MainWindow.xaml/.cs M1.2 区块 + csproj 引用）、`src/DuoFlow.Core.Tests`（+3 用例 = 14）、新决策 DD-036（驱动链/键盘方案/防回环/单一事实源/显示格式/依赖方向）。
 **踩坑记录**：`WindowClosedEventArgs` 在 WinAppSDK 1.8 的 C# 投影中无法以显式类型引用（CI 实证 CS0246，run 35052712786）——与 M0.2 起 OverlayWindow 的处理一致，改用**类型推断 lambda**（`Closed += (_, _) => Cleanup();`）绕过；处理器内逻辑不变（退订 + StopAsync）。
 
-#### M1.3 Animation Engine ✅（2026-09-16 云端完成：纯 C# + 单测 28/28；渲染接线留 M1.4）
+#### M1.3 Animation Engine ✅（2026-09-16 云端完成：纯 C# + 单测 28/28；渲染接线留 M1.4；真机独立复现通过）
+
+> ✅ **真机独立复现（2026-09-16）**：`dotnet test src/DuoFlow.Core.Tests` 本地 .NET 8 → 28/28 通过；
+> AnimationEngineOptions 常量（τ=0.10s / 2.0 全程每秒 / maxDt=0.25s / ε=1e-6）与 DD-038 逐字一致；
+> 引擎实现（dt 钳制 / ε 到位 / 速率上限分支）抽查齐全。DD-038 六条决定可直接作 M1.4 接口契约。
 
 * [x] 创建 Animation Engine（`DuoFlow.Core/AnimationEngine`：Provider 原始 LidState → 平滑 LidState 的中间层，零渲染概念——DD-002；位置/理由同 M1.1：Core 纯 C#，云端可测）
 * [x] 实现 smoothing（限速指数逼近：v=(target−current)/τ 钓 ±maxV，默认 τ=0.10s / 2.0 全程每秒；DD-038）
@@ -311,6 +323,15 @@
 
 ## §5 进度日志（append-only，新记录写在最上面）
 
+### 2026-09-16 · M0.3 真机复验收尾（三件套通过 + 探针假阴性修复 + 三处小债清理） · Super Z (main agent)
+
+- **真机复验结论（用户提供，同一次 App 运行 + 独立器材）**：三件套全过——① 透明：纯红参考窗 rgb(255,0,0) 原样透出、「置顶 vs 移出」全屏截图同点逐位相同（lum 55.6 / rgb(46.4,60.2,55.5)），覆盖层未改变任何像素；② 穿透：真实点击轨道 0.40 → 滑块 0.4、真实拖动 0.70→0.29 全程跟随（中间值 0.60/0.50/0.40），控制组（控制台置顶）同次通过，exstyle 实测 0x080801A8 全 bit 在位；③ 预览（P1-a 关闭）：红标记镜像 rgb(251,69,69) + 面板裁剪可见缩小桌面 + 帧计数 47~49 FPS。M1.3 真机独立复现 28/28 + 常量与 DD-038 逐字一致。CI 口径订正：CI 绿 = 45a7d77（最后一次代码提交，run 35079881457 #45）；afc573b 为纯文档提交，按 paths 过滤不触发 CI（设计如此，非漏跑）
+- **唯一新问题——App 自带透明探针假阴性（lum 恒 0）已修**：真机是物理控制台会话（SM_REMOTESESSION=0）探针照样恒 0，且同次运行独立采样证明屏幕透明——「云 RDP 会话不处理 per-pixel alpha」旧归因**被推翻**（三条对照实验：不泵消息的原生白窗 450ms 后 rgb(255,255,255)、逐字复刻探针 GDI 序列读到 85=255/3、CAPTUREBLT 无关）。领先假设（未证实）：旧同步流程在 `ForceTopmost` 改 z 序后立即在 UI 线程 `Thread.Sleep(450)`，重合成被自身阻塞 → DWM 合成黑背景 → BitBlt 读 0（与「恰为 0.0」「任何环境恒 0」「独立采样器读不到黑」三事实吻合）
+- **探针整改（可证伪）**：① 等待改 `await Task.Delay(450)`（UI 线程可泵消息，DWM 可重合成）；② 采样前 `InvalidateRect + UpdateWindow` 显式重绘一帧；③ GDI 每步写 trace 与 `TransparencyProbe.Diagnostics`（GetDC/CreateCompatibleDC/CreateDIBSection/BitBlt 返回值 + DIB 前 8 字节 + 采样矩形 + 主屏/虚拟桌面几何 + DPI，manifest=PerMonitorV2）；④ 同次运行双对照：后台线程 BitBlt（`Task.Run`）与 GetPixel 点采样采同一矩形——若 UI 线程仍 0 而后台正常即锁定线程阻塞机制；⑤ 探针定位如实改写：进程内自采样、信息性记录、不进 CI 门禁，透明实证权威=真机采样对比不变（穿透门禁 HitTest.Pass 不动）。修复后真机重验待下轮复验顺带确认
+- **三处小债清理**：① 代码注释与实现矛盾——`OverlayWindow.xaml.cs` 类级/BackdropApplied XML 注释删「TransparentBackdrop」表述、构造函数 colorkey 叙事改为 LWA_ALPHA 现状（colorkey 已证伪回退）、Win32 层注释删「WM_PAINT 填充」（已移除）、`OverlayBackdrop.cs` 第 4 点同步修正 + 补真机验证结论；② `EXECUTION_PLAN` §5 M0.3 条目首段旧 TransparentBackdrop 方案加删除线废弃标记；③ HC §6.2 `IsAlwaysOnTop` 排查线索降级为社区传闻（真机实证置顶与穿透同时成立，复验不过先疑器材）
+- **产物**：`src/DuoFlow.App/OverlayProbe.cs`（异步化 + 诊断字段）、`OverlayNative.cs`（分级采样/GetPixel/GetSystemMetrics/GetDpiForSystem/UpdateWindow）、`OverlayWindow.xaml.cs`、`OverlayBackdrop.cs`（注释纠偏）、`.github/workflows/m0-windows-build.yml`（RDP 归因注释修正 + 诊断输出）、`docs/DESIGN_DECISIONS.md`（DD-037 勘误节）、`docs/HARDWARE_COMPATIBILITY.md`（§6.2 复验结论/勘误/降级/P1-a 关闭）、本文件三件套
+- **遗留 / 阻塞**：无；下一步 M1.4 Perspective Warp（真机 D3D11；AnimationEngine.Update/Tick/Current 为渲染侧唯一入口，渲染层必须在透明层之上叠加，任何改动后重跑三件套；Warp 视觉验收建议网格/棋盘格参考图量格线形变）
+
 ### 2026-09-16 · Phase 2 / M1.3 Animation Engine · Super Z (main agent)
 
 - **完成**：`DuoFlow.Core/AnimationEngine`（+ Options + ITimeSource，纯 C# 零渲染概念）——Provider 原始 LidState → 平滑 LidState 的中间层。算法=**限速指数逼近**（v=(target−current)/τ 钓 ±maxV，默认 τ=0.10s / 2.0·全程每秒）：远离目标时段速稳定、接近目标时指数收敛、中途反向符号自动翻转；越过目标即到位（ε 内速度置 0，无渐近爬行/无超调抖动）
@@ -326,7 +347,7 @@
 ### 2026-09-16 · Phase 1 / M0.3 P0 修复（真机首跑发现的两个假阳性） · Super Z (main agent)
 
 - **真机首跑结论**：M0.3 当时的「Click Through ✓」「DWM 透明 ✓」两项为假阳性（只验了 style bit / API 返回值，没验行为）——真机上覆盖层①不透明（黑层遮全屏：覆盖区亮度 0.0~3.5 vs 移开后 254.7，CAPTUREBLT 重测排除采样假象）②吞鼠标（WindowFromPoint 命中 DesktopChildSiteBridge，点击/拖动/键盘全无效）。两者必须在 M1.4 前修掉，否则后续所有视觉效果要么看不见要么没法交互
-- **P0-1 修复（透明=双层缺一即黑屏）**：① XAML 岛层——新建 `TransparentBackdrop`（自定义 SystemBackdrop 子类，OnTargetConnected 里对 ICompositionSupportsSystemBackdrop 设 alpha=0 画刷；WinAppSDK 1.8 无内置 TransparentBackdrop，已查 winmd 确认）；② Win32 层——DwmExtendFrameIntoClientArea 改 **MARGINS(0)**（弃用 -1 老写法）+ DwmEnableBlurBehindWindow 空区域（CreateRectRgn(-2,-2,-1,-1)）+ SetWindowSubclass 处理 WM_ERASEBKGND（填黑 return 1，premultiplied alpha 下全透明）与 WM_DWMCOMPOSITIONCHANGED（RDP/驱动重置后重应用）
+- **P0-1 修复（透明=双层缺一即黑屏）**：~~① XAML 岛层——新建 `TransparentBackdrop`（自定义 SystemBackdrop 子类，OnTargetConnected 里对 ICompositionSupportsSystemBackdrop 设 alpha=0 画刷；WinAppSDK 1.8 无内置 TransparentBackdrop，已查 winmd 确认）~~（**首段为当日早间旧方案，已被本条目末尾【CI 迭代终态补充】推翻：SystemBackdrop 子类 brush 连接成功但屏幕仍黑，勿照抄；终态=直接 window.As<> 接口赋 alpha-0 画刷，见 DD-037**）；② Win32 层——DwmExtendFrameIntoClientArea 改 **MARGINS(0)**（弃用 -1 老写法）+ DwmEnableBlurBehindWindow 空区域（CreateRectRgn(-2,-2,-1,-1)）+ SetWindowSubclass 处理 WM_ERASEBKGND（填黑 return 1，premultiplied alpha 下全透明）与 WM_DWMCOMPOSITIONCHANGED（RDP/驱动重置后重应用）
 - **P0-2 修复（穿透）**：顶层补 **WS_EX_LAYERED**（真机对照实验 B 组的最小改动）+ SetLayeredWindowAttributes(LWA_ALPHA,255) 初始化（未设属性的 layered 窗口不会被合成）+ SetWindowPos(SWP_FRAMECHANGED) 生效；子窗口不动
 - **假阳性堵漏（可证伪探针进 CI 门禁）**：OverlayProbe 新增 Section 5——① 透明探针：进程内创建白色参考窗口（非 TOPMOST 天然在覆盖层下，避开 console/装饰位置）→ 覆盖层提到 TOPMOST 最前 → BitBlt 采样亮度 ≥80 判过（修复失败 ≈0）；② 命中探针：WindowFromPoint(被覆盖的 console 中心) 的 root 不得是 overlay（API 级穿透证据；真实 SendInput 注入由真机复验）；每进程只跑一次（z 序翻转避免每秒闪烁），检查完恢复调试 z 序；CI 断言新增 Transparency.Pass / HitTest.Pass / LayeredApplied / BackdropApplied
 - **同次运行三件套纪律**：layered + SwapChainPanel + 透明 = microsoft-ui-xaml#1247 已知问题组合——透明/穿透/预览内容（帧计数+截图）必须在同一次运行里同时验证，云端 CI 已按此断言

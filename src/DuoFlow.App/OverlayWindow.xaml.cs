@@ -14,12 +14,14 @@ namespace DuoFlow.App;
 /// (WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE), hidden from
 /// Alt+Tab (WS_EX_TOOLWINDOW).
 ///
-/// P0 fixes (real-machine findings, 2026-09-16):
+/// P0 fixes (real-machine findings, 2026-09-16; both verified PASS on the
+/// real machine the same day - see DD-037 / HARDWARE_COMPATIBILITY §6.2):
 ///  - P0-1 transparency: BOTH background layers must be handled - the Win32
 ///    layer (DwmExtendFrameIntoClientArea with MARGINS(0) + blur-behind with
-///    an empty region + WM_ERASEBKGND subclass) and the XAML island layer
-///    (SystemBackdrop = TransparentBackdrop, an alpha-0 brush on
-///    ICompositionSupportsSystemBackdrop). The old DwmExtendFrame(-1)-only
+///    an empty region) and the XAML island layer (an alpha-0 brush assigned
+///    DIRECTLY on the window's ICompositionSupportsSystemBackdrop interface
+///    via WinRT.CastExtensions.As<> - no SystemBackdrop subclass, which was
+///    CI-disproven; see OverlayBackdrop.cs). The old DwmExtendFrame(-1)-only
 ///    approach left the island opaque black and hid the whole desktop.
 ///  - P0-2 click-through: WS_EX_LAYERED is REQUIRED for the hit-test
 ///    exclusion; WS_EX_TRANSPARENT alone still lets the
@@ -37,7 +39,7 @@ public sealed partial class OverlayWindow : Window
     /// <summary>Win32-layer transparency applied (MARGINS(0) + blur-behind).</summary>
     public bool DwmExtended { get; private set; }
 
-    /// <summary>P0-1: XAML island layer handled via TransparentBackdrop.</summary>
+    /// <summary>P0-1: alpha-0 backdrop brush connected via window.As&lt;ICompositionSupportsSystemBackdrop&gt;.</summary>
     public bool BackdropApplied { get; private set; }
 
     /// <summary>P0-2: WS_EX_LAYERED set AND read back from the real window.</summary>
@@ -84,11 +86,11 @@ public sealed partial class OverlayWindow : Window
         // 2. Click-through + never steal focus + hidden from Alt+Tab.
         //    P0-2: WS_EX_LAYERED is mandatory for real hit-test exclusion
         //    (content island); TRANSPARENT alone was proven insufficient on
-        //    the real machine. Layered attributes use a COLOR KEY (magenta):
-        //    the GDI surface under the transparent XAML root is painted in
-        //    the key color and DWM punches it out - the actual recipe the
-        //    layered-overlay reference repo uses (its TransparentBackdrop
-        //    is commented out; colorkey is the live path).
+        //    the real machine. Layered attributes are initialized with
+        //    LWA_ALPHA(255) - the COLOR KEY variant (LWA_COLORKEY) was tried
+        //    and REVERTED (CI 35077849717: the island's DComp background
+        //    never reaches a GDI surface, so the key color is never punched
+        //    out, and the colorkey combo broke click-through).
         try
         {
             OverlayNative.EnableLayeredClickThrough(hwnd);
@@ -98,7 +100,7 @@ public sealed partial class OverlayWindow : Window
             {
                 Warnings.Add("exstyle: WS_EX_LAYERED could not be applied (P0-2)");
             }
-            Trace.Log($"overlay: exstyle OK layered={LayeredApplied} (LWA_ALPHA colorkey rejected by CI)");
+            Trace.Log($"overlay: exstyle OK layered={LayeredApplied} (LWA_ALPHA; colorkey tried and reverted)");
         }
         catch (Exception ex)
         {
@@ -127,8 +129,12 @@ public sealed partial class OverlayWindow : Window
             Trace.Log($"overlay: island transparency FAILED: {ex.Message}");
         }
 
-        //    b) Win32 surface layer: WM_PAINT subclass fills black; the
-        //       empty-region blur-behind makes DWM treat it as per-pixel alpha.
+        //    b) Win32 surface layer: DwmExtendFrameIntoClientArea(MARGINS(0))
+        //       + blur-behind with an EMPTY region - the degenerate region
+        //       marks the window for DWM per-pixel alpha without drawing any
+        //       real blur. (A WM_PAINT fill inside the subclass was TRIED AND
+        //       REVERTED on the layered window - CI 35079027989 - so the
+        //       subclass only re-applies on WM_DWMCOMPOSITIONCHANGED.)
         try
         {
             DwmExtended = OverlayNative.ApplyTransparentWin32Layer(hwnd) == 0;

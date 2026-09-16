@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace DuoFlow.App;
@@ -132,6 +133,46 @@ public static class OverlayNative
 
     [DllImport("user32.dll")]
     public static extern bool InvalidateRect(IntPtr hWnd, IntPtr lpRect, bool bErase);
+
+    [DllImport("user32.dll")]
+    public static extern bool UpdateWindow(IntPtr hWnd);
+
+    // ---- Real-machine probe diagnostics (2026-09-16 false-negative hunt):
+    //      system metrics + DPI awareness + per-point GetPixel control path.
+    //      The probe's BitBlt path kept reading lum=0 on the real machine
+    //      while independent samplers proved the screen WAS transparent -
+    //      these let the probe report its own evidence instead of a bare
+    //      number. ----
+
+    public const int SM_CXSCREEN = 0;
+    public const int SM_CYSCREEN = 1;
+    public const int SM_XVIRTUALSCREEN = 76;
+    public const int SM_YVIRTUALSCREEN = 77;
+    public const int SM_CXVIRTUALSCREEN = 78;
+    public const int SM_CYVIRTUALSCREEN = 79;
+
+    [DllImport("user32.dll")]
+    public static extern int GetSystemMetrics(int nIndex);
+
+    [DllImport("user32.dll")]
+    public static extern uint GetDpiForSystem();
+
+    // COLORREF = 0x00BBGGRR; CLR_INVALID (0xFFFFFFFF) on failure.
+    [DllImport("gdi32.dll")]
+    public static extern uint GetPixel(IntPtr hdc, int x, int y);
+
+    /// <summary>
+    /// Control-path sampler: reads a single screen point via GetPixel (a
+    /// different GDI entry than the BitBlt+DIB sequence). Returns "R,G,B"
+    /// or "failed". GetPixel is slow - spot checks only, never for rects.
+    /// </summary>
+    public static string SamplePointViaGetPixel(IntPtr screenDc, int x, int y)
+    {
+        uint c = GetPixel(screenDc, x, y);
+        return c == 0xFFFFFFFF
+            ? "failed"
+            : $"{c & 0xFF},{(c >> 8) & 0xFF},{(c >> 16) & 0xFF}";
+    }
 
     // Empty blur region: marks the window blur-enabled so the alpha-0
     // backdrop region composites through DWM, while the degenerate region
@@ -398,14 +439,24 @@ public static class OverlayNative
     /// final composited desktop (BitBlt from the screen DC, CAPTUREBLT not
     /// needed - real-machine testing showed identical results either way).
     /// Returns -1 on failure.
+    /// When <paramref name="stages"/> is non-null every GDI step result is
+    /// appended to it (GetDC / DIB / BitBlt return values + the first 8 DIB
+    /// bytes) so the probe can report WHERE a sampling failure happened
+    /// instead of a bare -1. Thread-safe: no shared state.
     /// </summary>
-    public static double SampleScreenLuminance(int x, int y, int width, int height)
+    public static double SampleScreenLuminance(
+        int x, int y, int width, int height, List<string>? stages = null)
     {
+        void Stage(string s) { stages?.Add(s); Trace.Log(s); }
+
+        Stage($"sample: rect=({x},{y}) {width}x{height} thread={GetCurrentThreadId()}");
         IntPtr screenDc = GetDC(IntPtr.Zero);
         if (screenDc == IntPtr.Zero)
         {
+            Stage("sample: GetDC(NULL) FAILED");
             return -1;
         }
+        Stage($"sample: GetDC OK dc=0x{screenDc.ToInt64():X}");
 
         try
         {
@@ -420,6 +471,7 @@ public static class OverlayNative
             IntPtr memDc = CreateCompatibleDC(screenDc);
             if (memDc == IntPtr.Zero)
             {
+                Stage("sample: CreateCompatibleDC FAILED");
                 return -1;
             }
 
@@ -427,22 +479,31 @@ public static class OverlayNative
             {
                 if (CreateDIBSection(memDc, ref bmi, 0 /* DIB_RGB_COLORS */, out IntPtr bits, IntPtr.Zero, 0) == IntPtr.Zero)
                 {
+                    Stage("sample: CreateDIBSection FAILED");
                     return -1;
                 }
+                Stage($"sample: DIB OK bits=0x{bits.ToInt64():X}");
 
                 IntPtr old = SelectObject(memDc, bits);
                 bool ok = BitBlt(memDc, 0, 0, width, height, screenDc, x, y, SRCCOPY);
                 SelectObject(memDc, old);
                 if (!ok)
                 {
+                    Stage("sample: BitBlt FAILED (returned FALSE)");
                     return -1;
                 }
+                Stage("sample: BitBlt OK (SRCCOPY)");
 
                 // Copy the DIB out instead of pointer arithmetic (keeps the
                 // project free of AllowUnsafeBlocks); 32bpp top-down BGRA.
                 int stride = width * 4;
                 byte[] px = new byte[stride * height];
                 Marshal.Copy(bits, px, 0, px.Length);
+
+                // First 8 raw bytes: if DWM handed us a black frame these are
+                // literally all zero, which distinguishes "composited black"
+                // from "API failed" (the API steps above already returned OK).
+                Stage($"sample: dib[0..8]={BytesToHex(px, 8)}");
 
                 double total = 0;
                 for (int row = 0; row < height; row++)
@@ -496,6 +557,27 @@ public static class OverlayNative
 
     [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW")]
     public static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    public static string BytesToHex(byte[] data, int count)
+    {
+        var sb = new System.Text.StringBuilder(count * 3);
+        for (int i = 0; i < count && i < data.Length; i++)
+        {
+            _ = sb.Append(i == 0 ? "" : " ").Append(data[i].ToString("X2"));
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// One-line description of the primary + virtual-screen geometry (the
+    /// real machine has a 4800x1350 virtual desktop over a 1920x1080
+    /// primary - coordinate normalization bugs hide here).
+    /// </summary>
+    public static string DescribeScreenGeometry()
+        => $"primary={GetSystemMetrics(SM_CXSCREEN)}x{GetSystemMetrics(SM_CYSCREEN)} " +
+           $"virtual=({GetSystemMetrics(SM_XVIRTUALSCREEN)},{GetSystemMetrics(SM_YVIRTUALSCREEN)}) " +
+           $"{GetSystemMetrics(SM_CXVIRTUALSCREEN)}x{GetSystemMetrics(SM_CYVIRTUALSCREEN)} " +
+           $"dpiSystem={GetDpiForSystem()}";
 
     public static long GetExStyle(IntPtr hwnd)
         => IntPtr.Size == 8

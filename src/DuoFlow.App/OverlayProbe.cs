@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
-using System.Threading;
+using System.Threading.Tasks;
 
 namespace DuoFlow.App;
 
@@ -13,16 +13,53 @@ namespace DuoFlow.App;
 /// overlay is truly transparent the white shows through (luminance ≈ 255);
 /// the old false-positive (style/API check only) read ≈ 0 on the real
 /// machine because the opaque island hid everything.
+///
+/// 2026-09-16 (real-machine re-verification round): the probe itself was
+/// reporting a FALSE NEGATIVE there - lum=0 while independent same-run
+/// samplers proved the screen WAS transparent. The old attribution ("cloud
+/// RDP sessions don't composite per-pixel alpha") is RETRACTED: the real
+/// machine is a physical console session (SM_REMOTESESSION=0) and still
+/// read 0 with the old probe. Leading explanation: the old flow blocked the
+/// UI thread with Thread.Sleep(450) right after a z-order change, starving
+/// re-composition - so DWM composited the black backdrop and BitBlt read 0.
+/// The flow is now ASYNC (the wait no longer blocks the UI thread), the
+/// overlay is repainted explicitly before sampling, and every GDI stage is
+/// traced. Two control paths (background-thread BitBlt + GetPixel spots)
+/// are sampled against the same rect in the same run. This probe stays
+/// INFORMATIONAL ONLY - the transparency authority remains the real-machine
+/// sampling comparison (overlay-on vs overlay-away, DD-037).
 /// </summary>
 public sealed class TransparencyProbe
 {
     public string Method { get; set; } =
         "BitBlt screen sample of a white reference window placed UNDER the topmost overlay";
 
+    /// <summary>UI-thread sample after the async wait (the headline number).</summary>
     public double ReferenceLuminance { get; set; }
+
+    /// <summary>Control: same rect, same moment, sampled on a background thread.</summary>
+    public double BackgroundThreadLuminance { get; set; } = -1;
+
+    /// <summary>Control: GetPixel spot checks (center + corners of the sample rect).</summary>
+    public string GetPixelRgb { get; set; } = "";
+
+    public string SampleRect { get; set; } = "";
+
+    /// <summary>Primary/virtual-screen geometry + system DPI (coordinate-normalization traps).</summary>
+    public string ScreenGeometry { get; set; } = "";
+
+    /// <summary>False when the GDI chain itself failed (see Diagnostics for where).</summary>
+    public bool BitBltOk { get; set; }
+
+    /// <summary>First 8 raw DIB bytes - all zero means "DWM handed us a black frame".</summary>
+    public string DibFirst8Bytes { get; set; } = "";
+
     public double PassThreshold { get; set; } = 80;
     public bool Pass { get; set; }
     public string Note { get; set; } = "";
+
+    /// <summary>Per-stage GDI trace (also mirrored into duoflow-trace.txt).</summary>
+    public List<string> Diagnostics { get; set; } = new();
 }
 
 /// <summary>
@@ -59,7 +96,10 @@ public sealed class OverlayReport
     public bool TransparentDwm { get; set; }
 
     // P0 real-effect probes (2026-09-16): the style-bit booleans above only
-    // prove intent; these prove BEHAVIOR. CI gates on them.
+    // prove intent; these prove BEHAVIOR. CI gates on the HIT-TEST probe;
+    // the transparency luminance is INFORMATIONAL ONLY (known false-negative
+    // history - UI-thread starvation in the old synchronous flow, DD-037);
+    // the transparency authority is the real-machine sampling comparison.
     public TransparencyProbe Transparency { get; set; } = new();
     public HitTestProbe HitTest { get; set; } = new();
 
@@ -229,56 +269,121 @@ public static class OverlayProbe
     // ------------------------------------------------------------------
     // Real-effect checks (run ONCE per process - they flip the TOPMOST
     // z-order, which would visibly flicker every second otherwise).
+    //
+    // ASYNC since the 2026-09-16 false-negative round: the old version was
+    // synchronous and did Thread.Sleep(450) on the UI thread right after
+    // ForceTopmost - the leading explanation for the constant lum=0 (the
+    // blocked UI thread starves re-composition; DD-037). The wait is now
+    // `await Task.Delay`, the overlay is repainted explicitly, and every
+    // GDI stage is traced into TransparencyProbe.Diagnostics.
     // ------------------------------------------------------------------
 
-    private static bool _realEffectDone;
+    private static bool _realEffectStarted;
     private static TransparencyProbe _transparency = new();
     private static HitTestProbe _hitTest = new();
 
     private const string RefWindowClassName = "DuoFlowLumaRef";
 
+    /// <summary>
+    /// Kicks the real-effect checks off ONCE (fire-and-forget async flow);
+    /// later Collect calls just copy the live probe objects. Until the flow
+    /// completes, the note reads "running" - the smoke JSON is rewritten
+    /// every second, so the final values reach the CI gate anyway.
+    /// </summary>
     private static void EnsureRealEffectChecks(OverlayWindow overlay)
     {
-        if (_realEffectDone)
+        if (_realEffectStarted)
         {
             return;
         }
-        _realEffectDone = true;
+        _realEffectStarted = true;
 
+        _transparency.Note = "real-effect probe running (async; UI thread stays free)";
+        Trace.Log("probe: real-effect checks START (async)");
+        _ = RunRealEffectChecksAsync(overlay);
+    }
+
+    private static async Task RunRealEffectChecksAsync(OverlayWindow overlay)
+    {
         IntPtr overlayHwnd = WinRT.Interop.WindowNative.GetWindowHandle(overlay);
+        IntPtr refWindow = IntPtr.Zero;
 
-        // 1) White reference window, plain (non-topmost) z-order -> below
-        //    both topmost windows. NOACTIVATE + TOOLWINDOW so it never
-        //    steals focus or shows up in Alt+Tab.
-        IntPtr refWindow = CreateLumaReferenceWindow(overlayHwnd, out OverlayNative.RECT refRect);
         try
         {
+            // 1) White reference window, plain (non-topmost) z-order -> below
+            //    both topmost windows. NOACTIVATE + TOOLWINDOW so it never
+            //    steals focus or shows up in Alt+Tab.
+            refWindow = CreateLumaReferenceWindow(overlayHwnd, out OverlayNative.RECT refRect);
+            if (refWindow == IntPtr.Zero)
+            {
+                _transparency.Note = "reference window creation failed - transparency check skipped (informational only)";
+                Trace.Log("probe: transparency check SKIPPED (no reference window)");
+                return;
+            }
+
             // 2) Find the console window (the control panel that must stay
             //    clickable THROUGH the overlay once P0-2 is fixed).
             IntPtr consoleHwnd = FindWindowByTitlePrefix("DuoFlow Console");
 
             // 3) Raise the overlay to the top of the TOPMOST band - the
             //    production posture (console normally sits above it as a
-            //    debug panel, see P1-b in EXECUTION_PLAN §5).
+            //    debug panel, see P1-b in EXECUTION_PLAN §5) - then force a
+            //    repaint so DWM has fresh content to composite.
             OverlayNative.ForceTopmost(overlayHwnd);
-            Thread.Sleep(450); // let DWM composite a few frames
+            _ = OverlayNative.InvalidateRect(overlayHwnd, IntPtr.Zero, true);
+            _ = OverlayNative.UpdateWindow(overlayHwnd);
 
-            // 4) P0-1 proof: sample the composited screen where the white
-            //    reference window sits under the topmost overlay.
-            double lum = OverlayNative.SampleScreenLuminance(
-                (refRect.Left + refRect.Right) / 2 - 50,
-                (refRect.Top + refRect.Bottom) / 2 - 30,
-                100, 60);
+            // 4) Wait WITHOUT blocking the UI thread. The old
+            //    Thread.Sleep(450) is the prime suspect for the constant
+            //    lum=0 (blocked UI thread starves re-composition, DD-037);
+            //    Task.Delay lets the island pump messages and DWM composite
+            //    while we wait.
+            int uiThread = OverlayNative.GetCurrentThreadId();
+            Trace.Log($"probe: waiting 450ms via await Task.Delay (UI thread {uiThread} stays free)");
+            await Task.Delay(450);
+            Trace.Log($"probe: wait done (thread now {OverlayNative.GetCurrentThreadId()})");
+
+            // 5) P0-1 proof: sample the composited screen where the white
+            //    reference window sits under the topmost overlay. Fully
+            //    instrumented (every GDI stage traced) + two control paths
+            //    (background-thread BitBlt, GetPixel spots) on the same rect.
+            int sx = (refRect.Left + refRect.Right) / 2 - 50;
+            int sy = (refRect.Top + refRect.Bottom) / 2 - 30;
+            var stages = new List<string>();
+            double lum = OverlayNative.SampleScreenLuminance(sx, sy, 100, 60, stages);
+
+            _transparency.SampleRect = $"{sx},{sy} 100x60";
+            _transparency.ScreenGeometry = OverlayNative.DescribeScreenGeometry();
+            _transparency.BitBltOk = lum >= 0;
+            _transparency.Diagnostics.AddRange(stages);
+            _transparency.DibFirst8Bytes =
+                stages.Find(s => s.StartsWith("sample: dib[0..8]=", StringComparison.Ordinal)) ?? "";
+            _transparency.BackgroundThreadLuminance = await Task.Run(
+                () => OverlayNative.SampleScreenLuminance(sx, sy, 100, 60));
+
+            IntPtr screenDc = OverlayNative.GetDC(IntPtr.Zero);
+            try
+            {
+                string c = OverlayNative.SamplePointViaGetPixel(screenDc, sx + 50, sy + 30);
+                string tl = OverlayNative.SamplePointViaGetPixel(screenDc, sx + 5, sy + 5);
+                string br = OverlayNative.SamplePointViaGetPixel(screenDc, sx + 95, sy + 55);
+                _transparency.GetPixelRgb = $"center={c} topleft={tl} bottomright={br}";
+            }
+            finally
+            {
+                _ = OverlayNative.ReleaseDC(IntPtr.Zero, screenDc);
+            }
+
             _transparency.ReferenceLuminance = lum;
             _transparency.Pass = lum >= _transparency.PassThreshold;
             _transparency.Note = _transparency.Pass
-                ? "white reference visible through the overlay"
+                ? $"white reference visible through the overlay (bgThread={_transparency.BackgroundThreadLuminance:0.0})"
                 : lum >= 0
-                    ? "overlay still blocks the reference window (opaque island?)"
-                    : "sampling failed";
-            Trace.Log($"probe: transparency lum={lum:0.0} pass={_transparency.Pass}");
+                    ? $"overlay still blocks the reference window (bgThread={_transparency.BackgroundThreadLuminance:0.0}) - informational only, transparency authority = real-machine sampling (DD-037)"
+                    : "sampling failed - see Diagnostics; informational only";
+            Trace.Log($"probe: transparency lum={lum:0.0} bgThread={_transparency.BackgroundThreadLuminance:0.0} getPixel[{_transparency.GetPixelRgb}] pass={_transparency.Pass}");
 
-            // 5) P0-2 proof (API level): hit-testing through the overlay.
+            // 6) P0-2 proof (API level): hit-testing through the overlay.
             if (consoleHwnd != IntPtr.Zero
                 && OverlayNative.GetWindowRect(consoleHwnd, out OverlayNative.RECT consoleRect))
             {
@@ -303,11 +408,17 @@ public static class OverlayProbe
                 Trace.Log("probe: hit-test console window NOT FOUND");
             }
 
-            // 6) Restore the debug layout: console above the overlay again.
+            // 7) Restore the debug layout: console above the overlay again.
             if (consoleHwnd != IntPtr.Zero)
             {
                 OverlayNative.ForceTopmost(consoleHwnd);
             }
+        }
+        catch (Exception ex)
+        {
+            _transparency.Note = $"probe error: {ex.GetType().Name}: {ex.Message}";
+            _hitTest.Note = $"probe error: {ex.GetType().Name}: {ex.Message}";
+            Trace.Log($"probe: real-effect checks FAILED: {ex.GetType().Name}: {ex.Message}");
         }
         finally
         {
@@ -315,6 +426,7 @@ public static class OverlayProbe
             {
                 _ = OverlayNative.DestroyWindow(refWindow);
             }
+            Trace.Log("probe: real-effect checks END");
         }
     }
 

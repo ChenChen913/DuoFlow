@@ -28,9 +28,16 @@ namespace DuoFlow.App;
 ///      DQTAT_COM_STA). Microsoft.UI.Composition.* (XAML's own compositor)
 ///      is a DIFFERENT WinRT runtime class - casts and CsWinRT As&lt;T&gt;
 ///      re-wraps of its objects fail (runs 35075895577/35076653477);
-///   4. WM_PAINT is subclassed to fill the Win32 surface black and skip
-///      default painting (the empty-region blur-behind turns the DWM state
-///      into per-pixel alpha over the desktop).
+///   4. the comctl32 subclass re-applies the Win32-layer recipe on
+///      WM_DWMCOMPOSITIONCHANGED (RDP session switch, driver reset).
+///      NO WM_PAINT fill: that was TRIED AND REVERTED on the layered window
+///      (CI run 35079027989 correlated it with a hit-test regression) - the
+///      empty-region blur-behind alone puts DWM in per-pixel alpha mode.
+///
+/// Real-machine status (2026-09-16 re-verification): transparency VERIFIED -
+/// a pure-red reference window under the topmost overlay sampled rgb(255,0,0)
+/// unmodified, and overlay-on vs overlay-away full-screen captures were
+/// bit-identical (see HARDWARE_COMPATIBILITY §6.2).
 ///
 /// Known sharp edge (microsoft-ui-xaml#1247): layered + SwapChainPanel +
 /// transparent is a long-standing problem combination - transparency,
