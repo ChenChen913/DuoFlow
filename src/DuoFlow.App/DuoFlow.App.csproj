@@ -24,8 +24,16 @@
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.*" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.*" />
     <PackageReference Include="Vortice.Direct3D11" Version="3.*" />
+    <PackageReference Include="Vortice.D3DCompiler" Version="3.*" />
     <PackageReference Include="Vortice.DXGI" Version="3.*" />
     <PackageReference Include="Vortice.WinUI" Version="3.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- M1.4 (DD-039): the warp shader ships next to the exe and is compiled
+         at startup (D3DCompile via Vortice.D3DCompiler) - no build-time FXC
+         dependency, so plain dotnet/VS MSBuild CI needs no extra workload. -->
+    <Content Include="..\..\shaders\DuoWarp.hlsl" Link="shaders\DuoWarp.hlsl" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
@@ -34,6 +42,8 @@
          -> StateChanged -> display). Core is pure net8.0 (no WinUI/D3D/WinAppSDK),
          so referencing it from the net8.0-windows App pulls nothing heavy in. -->
     <ProjectReference Include="..\DuoFlow.Core\DuoFlow.Core.csproj" />
+    <!-- M1.4: warp geometry (pure net8.0, unit tested) feeds the shader. -->
+    <ProjectReference Include="..\DuoFlow.Render\DuoFlow.Render.csproj" />
   </ItemGroup>
 
 </Project>

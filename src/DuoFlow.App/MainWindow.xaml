@@ -3,7 +3,7 @@
     x:Class="DuoFlow.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="DuoFlow Console — M0.3 Overlay · M1.2 Manual Progress">
+    Title="DuoFlow Console — M0.3 Overlay · M1.2 Manual · M1.4 Warp">
 
     <!-- M1.2 keyboard control: WinUI 3's Window class has no KeyDown event
          (unlike WPF), so Home/End are KeyboardAccelerators on the ROOT
@@ -52,6 +52,12 @@
                 FontFamily="Consolas"
                 FontSize="14.5"
                 Text="Progress 0.00 · Angle ≈ 180.0°（§6 示意映射）" />
+            <TextBlock
+                x:Name="SmoothText"
+                FontFamily="Consolas"
+                FontSize="12.5"
+                Foreground="#444444"
+                Text="平滑 Progress 0.00（AnimationEngine → Warp）" />
             <TextBlock
                 FontSize="11.5"
                 Foreground="#666666"

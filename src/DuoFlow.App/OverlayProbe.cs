@@ -130,6 +130,10 @@ public sealed class OverlayReport
     public double CaptureFps { get; set; }
     public string CaptureState { get; set; } = "unknown";
 
+    /// <summary>M1.4 warp pipeline state (informational only - the CI gate
+    /// does not assert on it; the real-machine grid check is the authority).</summary>
+    public string WarpState { get; set; } = "unknown";
+
     public List<string> Warnings { get; set; } = new();
 }
 
@@ -247,6 +251,7 @@ public static class OverlayProbe
             report.TransparentDwm = overlay.DwmExtended;
             report.CaptureFrames = overlay.Renderer?.PresentedFrames ?? 0;
             report.CaptureState = overlay.CaptureState;
+            report.WarpState = overlay.WarpState;
             report.Warnings.AddRange(overlay.Warnings);
         }
         catch (Exception ex)

@@ -1227,6 +1227,88 @@ M1.4（渲染接线）/ M3.4（摄像头平滑）/ M4（Provider Manager）会�
 
 ---
 
+# DD-039：M1.4 Perspective Warp 的几何模型、参数默认值与进程内验收路线
+
+**Status:** Accepted（M1.4 实现时提出，随任务指令确认登记）
+
+## 背景
+
+PROJECT_SPEC §10 只定了"必须是 Perspective/Projective Warp、不是 Scale、强度由 Progress 控制、
+具体参数靠视觉测试"；TECHNICAL_PROPOSAL §7 给了合盖示意。M1.4 动手时有七件事规格未定死：
+形变的数学模型、铰链位置与折叠方向、透视强度、p=1 端点行为、与透明覆盖层的叠加方式、
+HLSL 的编译方式、以及——本轮真机暴露的——显示合成路径坏掉时的验收方法。
+
+## 决定
+
+1. **数学模型 = 绕水平铰链旋转的平面 + 针孔相机（真单应，非仿射）**。像素着色器逐像素求逆映射
+   `(sx, sy) = (M00·x, M11·y) / (M00 + M21·y)`，其中 `M00 = r·cosφ`、`M11 = r`、
+   `M21 = ±sinφ`、`φ = Progress × MaxFoldDegrees`（r = 相机距离/屏高）。铰链系坐标
+   （x 横向 [-1,1]，y 自铰链 [0,1]）经 DestY/SrcY 两个线性重映射适配铰链在顶边或底边。
+   纯 C# 模型在 **`DuoFlow.Render`（新建纯 net8.0 模块）**，shader 只消费常量——
+   几何可单测，渲染不出可测数学。
+2. **参数默认值**：`r = 2.5`（透视强度中等）、`MaxFoldDegrees = 90`、
+   `TiltAwayFromViewer = true`（远边向内收缩、四边形始终在画面内，适合面板内验证）、
+   铰链 = 底边（`HingeAtTop = false`）、边界羽化 `0.004`（归一化单位）。
+   **方向与铰链边都是参数**——最终艺术方向（盖子朝你合上 = tilt-toward）留 M2.3 视觉调优定稿。
+3. **p=1 端点 = 完全坍缩**：MaxFold=90° 时平面恰好侧对相机，投影高度为 0，叠加羽化后
+   无任何不透明像素——"全关即消失"是数学事实也是可接受端点；要留残余画面把 MaxFold 调小
+   （如 85°），参数已备好。单测覆盖两种方向的端点行为。
+4. **叠加方式 = 预乘 alpha + 不设混合状态**：四边形外 shader 输出 (0,0,0,0)，后备缓冲每帧
+   先清透再画一次全屏三角形——输出本身就是预乘色，DWM 按缓冲 alpha 与桌面合成，
+   混合状态在此场景是数学上的空操作。**DD-037 透明配方零改动**（warp 只在预览面板内部渲染）。
+5. **数据流 = 引擎 Tick → WarpGeometry → 常量缓冲**：渲染循环每帧 `clock.Tick()`，
+   只消费 `AnimationEngine` 的平滑输出（DD-002/DD-038 铁律，不读 Provider）。
+   `LidAnimationClock`（App 层门面）用一把锁串行化 UI 线程的 `Update` 与捕获线程的 `Tick`——
+   引擎本体零改动（单线程语义不变），M4 Provider Manager 接管线程归属后可去掉锁。
+6. **HLSL 运行时编译**：`shaders/DuoWarp.hlsl` 作为 Content 随 exe 分发，启动时
+   `Compiler.CompileFromFile`（Vortice.D3DCompiler）编译——构建期不依赖 FXC/VS 组件，
+   CI 无需新增 workload；**初始化失败自动回退 M0.2 blit**（TryCreate 永不抛，云 WARP runner 保活）。
+7. **验收 = 进程内缓冲区回读（--warp-selftest）**：真机显示合成路径本轮发现既有环境问题
+   （SwapChainPanel 内容不可见，改动前基线 baaf444 同样复现，时间线与 KB5129195 于
+   2026-09-19 凌晨重启后生效吻合——见 HC §6.2），屏幕采样不可用。自测模式由 App 驱动引擎
+   0→1→0 九档，渲染线程在 Present 前 staging 回读整帧（含 alpha），分析脚本量色带边界行号
+   对比单应理论值。**实测：8 档（p=0/0.25/0.5/0.75 双向）quadTop 与全部边界误差 ≤3px
+   （多数 ≤1px），无滞回；p=1 完全坍缩符合预期。**
+
+## 原因
+
+* 单应是"平面绕轴旋转"的唯一精确投影模型；逐像素逆映射让 GPU 做全部插值，
+  CPU 每帧只算 3 个标量（M00/M11/M21）；
+* 参数化（方向/铰链边/强度/端点角）让"视觉调优"不碰代码——M2.3 只改 WarpOptions；
+* 预乘 alpha 不设混合：少一个状态对象、少一类 premultiplied/straight 配置错误；
+* 运行时编译 + 回退：M1.4 的交付物是渲染能力，不能因 shader 初始化失败让捕获预览（M0.2 资产）陪葬；
+* 进程内验收：显示路径坏时不阻塞渲染里程碑；同时它比屏幕采样**更精确**（拿到的是带 alpha 的
+  原始输出，无 DWM/窗口几何/DPI 干扰）——这套基建（selftest 模式 + 分析脚本）后续每个渲染
+  Pass（M1.5-M1.7）都复用。
+
+## 替代方案
+
+* 顶点网格形变 → 需细分网格逼近投影、边缘锯齿难除；像素级单应精确且更简单，放弃；
+* 仿射/双轴 scale 近似 → 违反 §10"不是简单 Scale"；单测以"远边宽高比 = 1/cosφ"签名防回归；
+* 构建期 FXC 编译 .cso → CI 依赖 VS 组件路径，且 shader 调优期需反复重编；运行时编译零成本；
+* 把引擎加锁下沉进 Core → 改 DD-038 单线程语义、污染纯 C# 域模型；锁留接线层，M4 收编；
+* 用 DispatcherQueue 把每帧渲染调度回 UI 线程 → 帧率被 UI 队列钳制、跨线程延迟；锁更轻。
+
+## 影响
+
+* 新增 `src/DuoFlow.Render`（M1.5-M1.7 的 Mask/Blur/Dimming 数学同住此模块）；
+* `CaptureRenderer` 渲染路径分叉（warp / blit 回退），新增 `WarpState` 诊断属性（信息性，不进门禁）；
+* `--warp-selftest` + `_test/m14-selftest.ps1` 成为渲染类里程碑的验收基建（仓库外脚本 + 仓库内模式）；
+* CI 无新门禁：WARP runner 上 shader 编译失败也只回退 blit，M0.3 门禁不受影响。
+
+## 迁移方案
+
+不适用（新增）。约束一条：**M1.5 Hinge Mask 必须复用 WarpOptions 的铰链定义**
+（HingeAtTop + 同一铰链系坐标系），否则 Mask 与 Warp 折叠线错位。
+
+## 相关决策
+
+- DD-002（渲染只消费 Progress）
+- DD-037（透明配方零改动——warp 在面板内部、四边形外全透明）
+- DD-038（Tick/Current 双入口——本决策的 LidAnimationClock 是其接线实现）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。

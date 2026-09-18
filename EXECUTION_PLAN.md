@@ -57,11 +57,11 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅） |
-| 当前小任务 | **M1.4 Perspective Warp**（DuoWarp.hlsl + 基础 Perspective Warp 绑定 Progress + 曲线调整 + 0↔1 双向测试——**需真机 D3D11 GPU**，云端可先备代码与构建验证） |
-| 下一步行动 | M1.4 需真机（D3D11 / HLSL / Warp 调优；云端可先写 shader 框架 + CI 构建验证）→ M1.5 Hinge Mask；**真机复验队列**：① M0.3 三件套已过 ✅（透明+穿透+预览同次运行，2026-09-16）；② M1.2 已过 ✅；③ D3D11 GPU 确认（M0.1 遗留）随 M1.4 一起 |
-| 阻塞项 | 无阻塞。M0.3 三件套真机已验收（DD-037 配方真机成立）；App 自带透明探针的假阴性已修（异步化 + GDI 分级 trace + 双对照，DD-037 勘误节，修复后真机重验待下轮复验顺带确认）；M1.4 起 D3D11 GPU 确认与视觉调优需真机（双 GPU 已确认：RTX 4060 Laptop + Radeon 780M）。CI 口径：最后一次代码提交 45a7d77 的 CI run 35079881457 全绿；afc573b 为纯文档提交，按 workflow paths 过滤不触发 CI（设计如此） |
-| 最后更新 | 2026-09-16 · M0.3 真机复验三件套通过 + 探针假阴性修复 + 三处小债清理 · Super Z |
+| 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅；M1.1-M1.4 ✅） |
+| 当前小任务 | **M1.5 Hinge Mask**（Hinge Position / Hinge Width / Falloff 可调 + 可视化 Debug Mask）——数学放 DuoFlow.Render（复用 DD-039 铰链定义），渲染按 M1.4 同套路（hlsl + 常量缓冲 + --*-selftest 验收） |
+| 下一步行动 | M1.5 Hinge Mask → M1.6 Blur → M1.7 Dimming → M1.8 MVP Composite；**真机环境问题待查**（见 HC §6.2：2026-09-19 起 SwapChainPanel 屏幕内容不可见，疑与 KB5129195 重启生效有关——渲染本身已被进程内自测证明正确，不阻塞 M1.5-M1.7 的同套路开发，但 M1.8 全链路视觉验收前必须解决） |
+| 阻塞项 | 渲染无阻塞（M1.4 已按进程内自测路线验收 ✅）。**机器显示合成路径疑似被 2026-09-19 生效的 Windows 安全更新破坏**：SwapChainPanel 内容屏幕上不可见（warp/blit/基线 baaf444 三方复现），证据与排查线索见 HC §6.2 与 DD-039 §7——下一位接手若要做屏幕级视觉验证，先处理这条。CI 口径：本次 push 起以 GitHub Actions 实际 run 为准 |
+| 最后更新 | 2026-09-19 · M1.4 Perspective Warp 完成（真机 GPU 实证 + 进程内自测 9 档 ≤3px 无滞回）· Super Z |
 
 ---
 
@@ -220,13 +220,17 @@
 **验收**：Core 单测 28/28（本地 .NET 8.0.425 + CI core-tests）✅；引擎不含任何 WinUI/D3D 概念 ✅；ManualProvider（DD-035）语义零改动——引擎在 Provider 下游 ✅；**渲染接线（Update/Tick → Warp uniform）属 M1.4**，本轮不接 UI/渲染（不扩范围）✅。
 **产物**：`src/DuoFlow.Core`（AnimationEngine / AnimationEngineOptions / ITimeSource + Stopwatch/Manual 时间源）、`src/DuoFlow.Core.Tests/AnimationEngineTests.cs`（14 用例）、新决策 DD-038（限速指数逼近/Velocity 单位符号/可注入时间源/首帧对齐/输出重建/双驱动入口）。
 
-#### M1.4 Perspective Warp
+#### M1.4 Perspective Warp ✅（2026-09-19 完成：真机 GPU 实证 + 进程内自测 9 档 ≤3px 无滞回）
 
-* [ ] 创建 `DuoWarp.hlsl`
-* [ ] 实现基础 Perspective Warp 并绑定 Progress
-* [ ] 调整 Warp 曲线；测试 0 → 1 与 1 → 0
+* [x] 创建 `DuoWarp.hlsl`（绕铰链单应逆映射像素着色器：`(sx,sy)=(M00·x,M11·y)/(M00+M21·y)`，四边形外预乘透明 + 边界羽化；p=0 恒等；运行时 D3DCompile，失败自动回退 M0.2 blit）
+* [x] 实现基础 Perspective Warp 并绑定 Progress（`DuoFlow.Render/WarpGeometry` 纯数学 + `WarpPipeline` 渲染管线；渲染每帧 `clock.Tick()` → `WarpGeometry.Compute(Current.Progress)` → 常量缓冲——引擎为唯一进度源 DD-002/DD-038；`LidAnimationClock` 门面锁串行化 UI Update × 捕获线程 Tick）
+* [x] 调整 Warp 曲线；测试 0 → 1 与 1 → 0（参数化：r=2.5 / MaxFold=90° / TiltAwayFromViewer / HingeAtTop / 羽化 0.004——方向与铰链边一个参数翻转，定稿留 M2.3；单测以"远边宽高比=1/cosφ"投影签名防 scale 冒充）
 
-**验收**：Progress 改变时，桌面产生连续空间变形。
+**验收（数学层）**：Core.Tests 新增 24 用例（p=0 恒等/铺满、单调折叠、四角往返、前后向互逆、投影签名、r 敏感性、0→1→0 无滞回+连续性上界、tilt-toward、铰链镜像、NaN/越界/坏参数、MaxFold/羽化生效）——**合计 52/52 本地+CI 全绿** ✅。
+**验收（渲染层）**：真机 GPU（RTX 4060/780M 混合架构，捕获设备上渲染）实证——shader 编译+管线初始化成功（trace: `warp: pipeline ready`）、首帧回读 alpha=255 不透明镜像 + 四角 alpha=24 羽化、48 FPS 出帧 ✅；**进程内自测 `--warp-selftest`**（渲染线程 Present 前 staging 回读整帧含 alpha，量色带边界 vs 单应预测）：p=0/0.25/0.5/0.75 双向 8 档 quadTop 与 9 条边界全部 ≤3px（多数 ≤1px）、无滞回、p=1 完全坍缩符合 MaxFold=90° 数学预期 ✅——"Progress 改变时，桌面产生连续空间变形"在本机显示合成路径故障的情况下以更强精度成立。
+**真机三件套复验**：P0-1 透明 delta=0 ✅、P0-2 点击 0.4 + 拖动 0.70→0.29 ✅（首跑拖动 FAIL 为注入器材缺 `MOUSEEVENTF_VIRTUALDESK`——双屏虚拟桌面宽 3840 导致坐标压缩一半，修正后即过；器材教训再次写进 HC §6.2）；P1-a 屏幕层面 differential=0——**非本里程碑回归**，基线 baaf444 复现，见 HC §6.2 环境条目。
+**产物**：`shaders/DuoWarp.hlsl`、`src/DuoFlow.Render/`（新纯 net8.0 模块：WarpOptions/WarpFrame/WarpGeometry）、`src/DuoFlow.App/`（WarpPipeline.cs、LidAnimationClock.cs 新增；CaptureRenderer/OverlayWindow/MainWindow/App/OverlayProbe/csproj 接线）、`src/DuoFlow.Core.Tests/WarpGeometryTests.cs`、DD-039、`_test/m14-selftest.ps1`（仓库外验收基建）。
+**踩坑记录**：① Vortice 3.8.3 API 与常见资料差异大（`Compiler.CompileFromFile` 非 D3DCompileFromFile、`RenderTargetBlendDescription` 字段名、固定缓冲需 unsafe→改无混合方案、Blob 在 Vortice.DirectX）——反射程序集拿真实签名是唯一可靠路径；② WinUI 面板屏幕坐标在 DPI 125% 下是 DIP×1.25，屏幕采样前必须 `SetProcessDPIAware` 并换算；③ 显示合成路径故障时，**渲染正确性必须与显示正确性分开举证**（进程内回读是渲染侧的权威证据）。
 
 #### M1.5 Hinge Mask
 
@@ -322,6 +326,16 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-19 · Phase 2 / M1.4 Perspective Warp（真机 GPU 实证 + 进程内自测验收） · Super Z (main agent)
+
+- **完成**：M1.4 三项任务全勾——① `shaders/DuoWarp.hlsl`：绕水平铰链的真单应逆映射像素着色器（`(sx,sy)=(M00·x,M11·y)/(M00+M21·y)`，四边形外预乘透明、边界羽化、p=0 恒等）；② `DuoFlow.Render` 新纯 net8.0 模块（WarpOptions/WarpFrame/WarpGeometry：几何可单测、shader 只吃常量）+ `WarpPipeline` 渲染管线（运行时 D3DCompile、失败自动回退 M0.2 blit）+ `LidAnimationClock` 线程安全门面（UI Update × 捕获线程 Tick，引擎本体零改动 DD-038）；③ 曲线参数化（r=2.5/MaxFold=90°/TiltAway/HingeAtTop/羽化 0.004——方向与铰链边一个参数翻转，定稿留 M2.3）+ 0↔1 双向验证
+- **验收（渲染层，进程内路线）**：真机显示合成路径本轮发现**既有环境故障**（SwapChainPanel 屏幕内容不可见，改动前基线 baaf444 同样复现——非本里程碑回归，时间线与 KB5129195 于 2026-09-19 07:20 重启后生效吻合，详见 HC §6.2）→ 按DD-039 §7 改走 **`--warp-selftest` 进程内回读验收**：渲染线程 Present 前 staging 回读整帧（含 alpha），色带参考窗 + 9 档进度 sweep，边界行号 vs 单应理论值——**p=0/0.25/0.5/0.75 双向 8 档 quadTop+全边界误差 ≤3px（多数 ≤1px）、无滞回、p=1 完全坍缩符合预期**；首帧回读另证 alpha=255 镜像 + 48 FPS 出帧（RTX 4060/780M 混合架构，渲染在捕获设备上）
+- **单测 24 新用例（合计 52/52 本地+CI）**：p=0 恒等/铺满、单调折叠、四角往返、前后向互逆、投影签名（宽高比=1/cosφ，防 scale 冒充）、r 敏感性、双向无滞回+连续性上界、tilt-toward 端点、铰链上下镜像、NaN/越界/坏参数、MaxFold/羽化生效
+- **真机三件套复验（渲染路径变更纪律）**：P0-1 透明 delta=0 ✅；P0-2 点击 0.4 ✅ + 拖动 0.70→0.29 ✅（首跑拖动 FAIL=注入器材缺 MOUSEEVENTF_VIRTUALDESK 0x4000，双屏虚拟桌面宽 3840 致坐标压缩一半——9/16 交接已警示的坑再次应验，HC §6.2 已再强调）；P1-a 屏幕层面 differential=0=环境故障（非回归），渲染正确性由进程内自测独立举证
+- **踩坑记录**：① Vortice 3.8.3 真实 API 与常见资料差异大（Compiler.CompileFromFile / RenderTargetBlendDescription 字段名 / 固定缓冲需 unsafe→改无混合方案 / Blob 在 Vortice.DirectX）——**反射程序集拿真实签名是唯一可靠路径**；② DPI 125% 下面板物理坐标 = DIP×1.25，屏幕采样前必须 SetProcessDPIAware + 换算；③ **渲染正确性与显示正确性必须分开举证**——进程内回读是渲染侧权威证据，屏幕采样只对 DWM 合成负责；④ 旧验证脚本 `$dir` 硬编码旧解压目录，复验前先核对被测二进制路径（本轮首跑三件套实际测的是 DuoFlow-main 旧构建）
+- **产物**：`shaders/DuoWarp.hlsl`、`src/DuoFlow.Render/`、`src/DuoFlow.App/`（WarpPipeline/LidAnimationClock 新增 + CaptureRenderer/OverlayWindow/MainWindow/App/OverlayProbe/csproj 接线）、`src/DuoFlow.Core.Tests/WarpGeometryTests.cs`、DD-039、HC §6.2 环境条目、`_test/m14-*.ps1`（仓库外验收脚本与产物）
+- **遗留 / 阻塞**：渲染无阻塞 → M1.5 Hinge Mask（数学放 DuoFlow.Render，复用 DD-039 铰链定义，验收复用 --*-selftest 套路）；**机器显示合成路径故障待查**（KB5129195/回滚/干净环境对照——M1.8 全链路屏幕级视觉验收前必须解决，否则只能全程走进程内验收）；GitHub token 建议轮换（本/上轮对话明文出现过）
 
 ### 2026-09-16 · M0.3 真机复验收尾（三件套通过 + 探针假阴性修复 + 三处小债清理） · Super Z (main agent)
 

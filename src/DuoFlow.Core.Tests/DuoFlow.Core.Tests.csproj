@@ -3,6 +3,8 @@
   <!--
     DuoFlow.Core.Tests - unit tests for the M1.1 domain model (xunit).
     Pure net8.0: runs with plain "dotnet test" on any OS / cloud CI.
+    Also covers DuoFlow.Render (M1.4 warp geometry, pure net8.0) so one
+    test project keeps both pure-math modules under the CI core-tests job.
   -->
 
   <PropertyGroup>
@@ -25,6 +27,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DuoFlow.Core\DuoFlow.Core.csproj" />
+    <ProjectReference Include="..\DuoFlow.Render\DuoFlow.Render.csproj" />
   </ItemGroup>
 
 </Project>

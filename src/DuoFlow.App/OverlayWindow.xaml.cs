@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Threading.Tasks;
 using DuoFlow.Capture;
+using DuoFlow.Core;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -34,7 +37,19 @@ public sealed partial class OverlayWindow : Window
 {
     private DesktopCapture? _capture;
     private CaptureRenderer? _renderer;
+    private readonly bool _selfTest;
     private bool _cleanupDone;
+
+    /// <summary>
+    /// M1.4: the smoothed lid clock (AnimationEngine behind a small lock).
+    /// The console forwards ManualProvider states here (UI thread); the
+    /// capture render loop Ticks it (frame-pool worker thread).
+    /// </summary>
+    public LidAnimationClock Clock { get; } = new();
+
+    /// <summary>M1.4 warp pipeline state (informational; the console and the
+    /// smoke JSON surface it, the CI gate does not assert on it).</summary>
+    public string WarpState => _renderer?.WarpState ?? "off (no renderer)";
 
     /// <summary>Win32-layer transparency applied (MARGINS(0) + blur-behind).</summary>
     public bool DwmExtended { get; private set; }
@@ -53,9 +68,10 @@ public sealed partial class OverlayWindow : Window
 
     public CaptureRenderer? Renderer => _renderer;
 
-    public OverlayWindow()
+    public OverlayWindow(bool selfTest = false)
     {
-        Trace.Log("overlay: ctor begin");
+        _selfTest = selfTest;
+        Trace.Log($"overlay: ctor begin (selfTest={selfTest})");
         InitializeComponent();
 
         IntPtr hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
@@ -156,6 +172,72 @@ public sealed partial class OverlayWindow : Window
         Trace.Log("overlay: ctor done");
     }
 
+    /// <summary>
+    /// M1.4: feed a raw provider state into the animation clock (called on
+    /// the UI thread by the console window; DD-035 ManualProvider semantics
+    /// untouched - the engine sits downstream, DD-038).
+    /// </summary>
+    public void NotifyLidState(LidState state) => Clock.Update(state);
+
+    // ------------------------------------------------------------------
+    // M1.4 self-test (--warp-selftest): drives the animation engine through
+    // a 0→1→0 sweep and dumps the RENDERED back buffer at each step.
+    //
+    // Purpose: the machine's desktop-composition path currently has a
+    // pre-existing issue (SwapChainPanel content invisible on screen,
+    // reproduced with the pre-M1.4 baseline - see HANDOFF-M1.4-wip.md), so
+    // M1.4 acceptance runs IN-PROCESS: the dumped frames contain the warp
+    // output INCLUDING alpha, and the analysis script compares band-boundary
+    // positions against the WarpGeometry homography prediction.
+    //
+    // A fullscreen color-band reference window must be on screen while this
+    // runs - the desktop capture is the warp's source texture.
+    // ------------------------------------------------------------------
+
+    private async Task RunWarpSelfTestAsync()
+    {
+        try
+        {
+            string dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                "duoflow-warp-selftest");
+            Directory.CreateDirectory(dir);
+
+            double[] steps = { 0.0, 0.25, 0.5, 0.75, 1.0, 0.75, 0.5, 0.25, 0.0 };
+            string[] tags = { "up0", "up1", "up2", "up3", "up4", "down1", "down2", "down3", "down4" };
+
+            Trace.Log("selftest: begin (settle 3s)");
+            await Task.Delay(3000);
+
+            for (int i = 0; i < steps.Length; i++)
+            {
+                double p = steps[i];
+                LidState raw = new(
+                    Angle: ManualProvider.DefaultOpenAngleDegrees
+                           - (ManualProvider.DefaultOpenAngleDegrees - ManualProvider.DefaultNearClosedAngleDegrees) * p,
+                    Progress: p,
+                    Velocity: 0.0,
+                    Confidence: 1.0,
+                    Source: LidStateSource.Manual);
+                NotifyLidState(raw);
+
+                await Task.Delay(2500); // engine slew (rate cap 2.0/s) + settle
+
+                string path = Path.Combine(dir, $"selftest-{tags[i]}.raw");
+                _renderer?.RequestDump(path);
+                Trace.Log($"selftest: step {tags[i]} p={p:0.00} requested " +
+                          $"(engine now {Clock.CurrentProgress:0.000} v={Clock.CurrentVelocity:0.000})");
+                await Task.Delay(1500); // let a rendered frame carry the dump out
+            }
+
+            Trace.Log("selftest: DONE");
+        }
+        catch (Exception ex)
+        {
+            Trace.Log($"selftest: FAILED: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
         Trace.Log("overlay: loaded");
@@ -164,7 +246,7 @@ public sealed partial class OverlayWindow : Window
             _capture = new DesktopCapture();
             _capture.Start();
 
-            _renderer = new CaptureRenderer(CapturePanel, _capture);
+            _renderer = new CaptureRenderer(CapturePanel, _capture, Clock);
             _renderer.Initialize();
 
             SizeInt32 size = _capture.Item.Size;
@@ -172,6 +254,11 @@ public sealed partial class OverlayWindow : Window
                 $"overlay · {_capture.MonitorDescription} · {size.Width}×{size.Height} · GPU→GPU";
             CaptureState = "running";
             Trace.Log("overlay: capture running");
+
+            if (_selfTest)
+            {
+                _ = RunWarpSelfTestAsync();
+            }
         }
         catch (Exception ex)
         {

@@ -67,19 +67,24 @@ public partial class App : Application
         Trace.Log("launch begin");
 
         bool smoke = false;
+        bool selfTest = false;
         foreach (string arg in Environment.GetCommandLineArgs())
         {
             if (string.Equals(arg, "--overlay-smoke", StringComparison.OrdinalIgnoreCase))
             {
                 smoke = true;
             }
+            if (string.Equals(arg, "--warp-selftest", StringComparison.OrdinalIgnoreCase))
+            {
+                selfTest = true;
+            }
         }
-        Trace.Log($"smoke={smoke}");
+        Trace.Log($"smoke={smoke} selfTest={selfTest}");
 
         try
         {
             Trace.Log("overlay: constructing...");
-            _overlay = new OverlayWindow();
+            _overlay = new OverlayWindow(selfTest);
             Trace.Log("overlay: constructed OK");
             _overlay.Activate();
             Trace.Log("overlay: activated OK");

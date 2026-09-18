@@ -137,18 +137,19 @@ Overlay 不影响正常鼠标和键盘操作。
 
 ---
 
-## M1.4 Perspective Warp
+## M1.4 Perspective Warp ✅（2026-09-19）
 
-* [ ] 创建 `DuoWarp.hlsl`
-* [ ] 实现基础 Perspective Warp
-* [ ] 绑定 Progress
-* [ ] 调整 Warp 曲线
-* [ ] 测试 0 → 1
-* [ ] 测试 1 → 0
+* [x] 创建 `DuoWarp.hlsl`（绕铰链单应逆映射 + 预乘 alpha 透明 + 边界羽化；运行时 D3DCompile，失败回退 blit）
+* [x] 实现基础 Perspective Warp（`DuoFlow.Render/WarpGeometry` 纯数学 + `WarpPipeline` 渲染管线）
+* [x] 绑定 Progress（AnimationEngine `Tick()` → `WarpGeometry.Compute(Current.Progress)` → 常量缓冲；`LidAnimationClock` 门面串行化 UI/渲染线程）
+* [x] 调整 Warp 曲线（r=2.5 / MaxFold=90° / TiltAway / HingeAtTop / 羽化 0.004 全参数化——方向定稿留 M2.3）
+* [x] 测试 0 → 1（单测 24 新用例 + 真机 `--warp-selftest` 进程内回读：8 档边界 vs 单应预测 ≤3px）
+* [x] 测试 1 → 0（无滞回 + p=1 完全坍缩符合 MaxFold=90° 数学预期）
 
 ### 验收
 
-Progress 改变时，桌面产生连续空间变形。
+Progress 改变时，桌面产生连续空间变形。✅ 渲染层已实证（进程内回读 9 档 ≤3px 无滞回，DD-039 §7）；
+屏幕合成层面受真机既有环境故障影响（HC §6.2，2026-09-19），非本里程碑回归。
 
 ---
 

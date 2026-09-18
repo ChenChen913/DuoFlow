@@ -215,6 +215,11 @@ public sealed partial class MainWindow : Window
 
     private void OnManualStateChanged(object? sender, LidState state)
     {
+        // M1.4: the render side consumes the state through the AnimationEngine
+        // (the clock lives on the overlay), never through the slider (DD-002 /
+        // DD-038). ManualProvider semantics are untouched (DD-035).
+        _overlay?.NotifyLidState(state);
+
         UpdateProgressDisplay();
     }
 
@@ -225,6 +230,12 @@ public sealed partial class MainWindow : Window
         // pulling keeps that true even if handler ordering ever changes).
         LidState current = _manualProvider.CurrentState;
         ProgressText.Text = FormatProgress(current.Progress, current.Angle);
+
+        // M1.4: show what the render side actually consumes - the engine's
+        // smoothed progress, pulled from the clock (never a cached copy).
+        SmoothText.Text = _overlay is null
+            ? "平滑 Progress 不可用（无 overlay）"
+            : $"平滑 Progress（M1.3→M1.4 渲染输入）{_overlay.Clock.CurrentProgress:0.00}";
 
         // Follow the provider if it moved on its own (e.g. keyboard jump;
         // later: M1.3 smoothing). The guard + value check prevent loops.
@@ -260,5 +271,5 @@ public sealed partial class MainWindow : Window
         $"DWM 透明                {Mark(r.TransparentDwm)}\n" +
         $"多显示器枚举            {r.MonitorCount} 台    {r.Monitors}\n" +
         $"─────────────────────────────────────\n" +
-        $"捕获·渲染（迁入 overlay）  {r.CaptureState} · {_lastFps:0} FPS · 累计 {r.CaptureFrames} 帧（GPU→GPU）";
+        $"捕获·渲染（迁入 overlay）  {r.CaptureState} · warp={r.WarpState} · {_lastFps:0} FPS · 累计 {r.CaptureFrames} 帧（GPU→GPU→Warp）";
 }
