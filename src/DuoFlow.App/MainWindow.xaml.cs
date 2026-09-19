@@ -58,6 +58,15 @@ public sealed partial class MainWindow : Window
         // referenceable from C# in the WinAppSDK projection (CS0246, same
         // pitfall as OverlayWindow.Closed since M0.2).
         Closed += (_, _) => DetachManualProvider();
+        // The console is the app's only visible surface with a close button:
+        // closing it must take the (borderless, click-through, Alt+Tab-hidden)
+        // overlay down with it, or the overlay lingers with no way to close
+        // it except Task Manager (2026-09-19, real user hit). WinUI 3
+        // unpackaged: Application.Exit() only stops the DispatcherQueue (the
+        // process lingers - verified 2026-09-19); Environment.Exit actually
+        // terminates. Graceful D3D cleanup is skipped - the OS reclaims
+        // everything; a proper shutdown flow is M5 territory.
+        Closed += (_, _) => Environment.Exit(0);
         ((FrameworkElement)Content).Loaded += OnLoaded;
     }
 

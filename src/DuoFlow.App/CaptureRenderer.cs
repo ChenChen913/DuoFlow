@@ -46,6 +46,8 @@ public sealed class CaptureRenderer : IDisposable
     private WarpPipeline? _warp;
     private readonly WarpOptions _warpOptions = new();
     private readonly HingeMaskProfile _maskProfile = HingeMask.Build();
+    private readonly BlurOptions _blurOptions = new();
+    private double _maxBlurNormalized;
     private int _panelPixelWidth;
     private int _panelPixelHeight;
     private bool _disposed;
@@ -152,6 +154,11 @@ public sealed class CaptureRenderer : IDisposable
         WarpState = _warp is null ? "blit fallback (warp init failed)" : "active";
         Trace.Log($"capture renderer: warp state = {WarpState} (swapchain {swapSize.Width}×{swapSize.Height})");
 
+        // M1.6: blur radius knob, normalized to the source frame height once
+        // (the capture frame pool only changes size via RecreateFramePool,
+        // which re-runs this method's caller flow - a restart for now).
+        _maxBlurNormalized = _blurOptions.MaxBlurNormalized(size.Height);
+
         // GPU -> GPU: every captured frame goes straight to the panel.
         _capture.FrameArrived += OnFrameArrived;
     }
@@ -177,7 +184,7 @@ public sealed class CaptureRenderer : IDisposable
             // thread's Tick().
             LidState state = clock.Tick();
             WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
-            warp.Render(_context, texture, frame, _maskProfile, request?.DebugMask ?? false);
+            warp.Render(_context, texture, frame, _maskProfile, request?.DebugMask ?? false, _maxBlurNormalized, state.Progress);
         }
         else
         {

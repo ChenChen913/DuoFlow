@@ -33,7 +33,7 @@ namespace DuoFlow.App;
 public sealed class WarpPipeline : IDisposable
 {
     /// <summary>Constant buffer layout - must match the cbuffer in DuoWarp.hlsl
-    /// (7 × float4 = 112 bytes; three float4s instead of float3x3 leave no
+    /// (8 × float4 = 128 bytes; three float4s instead of float3x3 leave no
     /// row/column-major packing doubt).</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Constants
@@ -45,6 +45,7 @@ public sealed class WarpPipeline : IDisposable
         public Vector4 SrcYRemap;
         public Vector4 EdgeParams;
         public Vector4 MaskParams; // M1.5: x=center, y=width, z=falloff, w=debug
+        public Vector4 BlurParams; // M1.6: x=maxBlurNorm, y=progress, z=aspect, w=-
     }
 
     public const string ShaderFileName = "DuoWarp.hlsl";
@@ -182,7 +183,7 @@ public sealed class WarpPipeline : IDisposable
     /// after this call.
     /// </summary>
     public void Render(ID3D11DeviceContext context, ID3D11Texture2D desktopTexture, WarpFrame frame,
-        HingeMaskProfile mask, bool debugMask)
+        HingeMaskProfile mask, bool debugMask, double maxBlurNormalized, double progress)
     {
         if (_disposed || _renderTarget is null)
         {
@@ -204,6 +205,13 @@ public sealed class WarpPipeline : IDisposable
                 (float)mask.HingeWidth,
                 (float)mask.FalloffExponent,
                 debugMask ? 1f : 0f),
+            // M1.6 blur (DD-041): radius = mask × progress × maxBlur, applied
+            // in the source frame; z carries the frame aspect for round taps.
+            BlurParams = new Vector4(
+                (float)maxBlurNormalized,
+                (float)progress,
+                (float)((double)_height / _width),
+                0f),
         };
         context.UpdateSubresource(constants, _constantBuffer!, 0, 0, 0, null);
 

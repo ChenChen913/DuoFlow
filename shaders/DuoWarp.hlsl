@@ -49,6 +49,13 @@ cbuffer WarpConstants : register(b0)
     // z: falloff exponent (shape of the falloff)
     // w: debug flag (>0.5 -> output the mask heat ramp instead of the image)
     float4 MaskParams;
+    // M1.6 Blur (DD-041):
+    // x: max blur radius, normalized to the SOURCE frame height
+    //    (CPU: MaxBlurPixels / captureHeight)
+    // y: progress (0..1) - the pass scales the mask by it
+    // z: frame height over frame width (aspect correction for round kernels)
+    // w: reserved
+    float4 BlurParams;
 };
 
 Texture2D    DesktopTexture : register(t0);
@@ -117,6 +124,36 @@ float4 PSMain(VSOutput input) : SV_Target
 
     float2 sourceUv = float2(sx * 0.5 + 0.5, SrcYRemap.x * sy + SrcYRemap.y);
     float3 rgb = DesktopTexture.Sample(LinearClamp, sourceUv).rgb;
+
+    // M1.6 Blur (DD-041): radius = mask × progress × maxBlur, applied in the
+    // SOURCE frame (offsets map linearly through SrcYRemap). 13-tap hexagonal
+    // kernel; radius 0 collapses onto the center tap (progress 0 = no blur
+    // anywhere, hinge rows only blur as the mask rises). The mask is taken at
+    // the DEST pixel - PROJECT_SPEC §12 "blur where the fold is".
+    float radius = mask * BlurParams.y * BlurParams.x;
+    if (radius > 1e-5)
+    {
+        static const float2 kDirs[6] = {
+            float2( 1.00,  0.00), float2( 0.50,  0.87), float2(-0.50,  0.87),
+            float2(-1.00,  0.00), float2(-0.50, -0.87), float2( 0.50, -0.87)
+        };
+        // Aspect: sx units span half the frame width, sy units the height.
+        float aspect = BlurParams.z;
+        float3 acc = rgb * 0.25;
+        [unroll]
+        for (int k = 0; k < 6; k++)
+        {
+            float sxA = sx + kDirs[k].x * radius * 0.5 * aspect;
+            float syA = sy + kDirs[k].y * radius * 0.5;
+            float sxO = sx + kDirs[k].x * radius * aspect;
+            float syO = sy + kDirs[k].y * radius;
+            float2 uvA = float2(sxA * 0.5 + 0.5, SrcYRemap.x * syA + SrcYRemap.y);
+            float2 uvO = float2(sxO * 0.5 + 0.5, SrcYRemap.x * syO + SrcYRemap.y);
+            acc += DesktopTexture.Sample(LinearClamp, uvA).rgb * (0.5 / 6.0);
+            acc += DesktopTexture.Sample(LinearClamp, uvO).rgb * (0.25 / 6.0);
+        }
+        rgb = acc;
+    }
 
     return float4(rgb * a, a);
 }

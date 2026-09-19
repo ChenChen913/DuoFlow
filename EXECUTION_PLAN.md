@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅；M1.1-M1.5 ✅） |
-| 当前小任务 | **M1.6 Blur**（局部 Blur，由 Hinge Mask 与 Progress 控制 + 调整最大 Blur + 测试性能）——消费 DD-040 的同一个 mask 值，shader 内实现（单 Pass 合并），验收复用 --warp-selftest 套路 |
-| 下一步行动 | M1.6 Blur → M1.7 Dimming → M1.8 MVP Composite；**真机环境问题待查**（见 HC §6.2：2026-09-19 起 SwapChainPanel 屏幕内容不可见，疑与 KB5129195 重启生效有关——渲染本身已被进程内自测证明正确，不阻塞 M1.6/M1.7 的同套路开发，但 M1.8 全链路视觉验收前必须解决） |
-| 阻塞项 | 无阻塞。~~机器显示合成路径故障~~ **已于 2026-09-19 修复**（交换链尺寸改为面板像素尺寸，绕过 KB5129195 引入的 DPI 缩放回归，根因/实验链/代价见 HC §6.2）。屏幕级验收能力恢复。CI 口径：以 GitHub Actions 实际 run 为准 |
-| 最后更新 | 2026-09-19 · M1.4 + M1.5 完成；显示合成回归修复（P1-a 预览差分 0→122.71）· Super Z |
+| 当前小任务 | **M1.7 Dimming**（由 Hinge Mask 与 Progress 控制，调整最大暗化程度）——消费 DD-040 的同一个 mask 值（shader 内已算好），`brightness = 1 − mask × progress × maxDarkness`，验收复用边缘过渡/亮度剖面套路 |
+| 下一步行动 | M1.7 Dimming → M1.8 MVP Composite（Warp+Mask+Blur+Dimming 全链路实时运行）→ M2 视觉打磨；显示合成回归已修复（HC §6.2），屏幕级验收可用 |
+| 阻塞项 | 无阻塞。显示合成故障已于 2026-09-19 修复（HC §6.2）；M1 收尾在望。CI 口径：以 GitHub Actions 实际 run 为准 |
+| 最后更新 | 2026-09-19 · M1.6 Blur 完成（铰链区 3× 模糊/远区锐利/47.4 FPS）· Super Z |
 
 ---
 
@@ -247,6 +247,18 @@
 * [ ] 创建 Blur Pass（局部 Blur，由 Hinge Mask 与 Progress 控制）
 * [ ] 调整最大 Blur；测试性能
 
+#### M1.6 Blur ✅（2026-09-19 完成：单 Pass 13-tap 核 + 边缘过渡宽度法定量验收）
+
+* [x] 创建 Blur Pass（局部 Blur，由 Hinge Mask 与 Progress 控制——DuoWarp.hlsl 内实现：`radius = mask × progress × maxBlur`，13-tap 六边形核，源空间半径经 SrcYRemap 线性映射；radius→0 恒等收敛=全开零模糊硬保证；`DuoFlow.Render/BlurOptions` 校验 MaxBlurPixels ∈ (0,64]）
+* [x] 调整最大 Blur（MaxBlurPixels 默认 24 源像素，M2.5 参数面板暴露；核形状/半径定义全参数化——DD-041）
+* [x] 测试性能（13-tap 全屏核 @600×338：平均 47.4 FPS vs 基线 48，损失可忽略；progress=0 时分支裁剪零成本）
+
+**验收（数学层）**：BlurOptionsTests 5 新用例（归一化换算/极小值/非法半径/非法帧高/默认值）——**合计 80/80 本地+CI 全绿** ✅。
+**验收（渲染层，边缘过渡宽度法）**：半屏黑白参考窗给出竖直锐边，逐行测 30%-70% 上升宽度——p=0.75 铰链区（mask≈1）**1px→3px = 3× 模糊**（三行一致）；p=0.5 远区（quad 内 mask=0 可见带）**1× 保持锐利**——"不全屏同时糊"由 mask+折叠几何双重保证（p=0.75 时整个可见四边形落在遮罩区内，远区不可见）✅。
+**度量下限记录**：p=0.5 铰链核半径 ±1.9 面板像素低于 8-bit 量化精度，该断言为信息项；p=0.75 的 3× 已证明模糊链路（DD-041 §6）。
+**产物**：`shaders/DuoWarp.hlsl`（BlurParams，cbuffer 128 字节）、`src/DuoFlow.Render/BlurOptions.cs`、`src/DuoFlow.Core.Tests/BlurOptionsTests.cs`、CaptureRenderer/WarpPipeline 接线、DD-041、`_test/m16-blur-verify.ps1` + `m16-analyze.ps1`（仓库外验收基建）。
+**附带**：控制台关闭 → 全应用退出（`Environment.Exit(0)`；`Application.Exit()` 只停 DispatcherQueue 不杀进程——WinUI 3 非打包已知行为，trace+进程双重验证），解决"关控制台后覆盖层+黄框无路可关"的真实用户问题。
+
 #### M1.7 Dimming
 
 * [ ] 创建 Dimming Pass（由 Hinge Mask 与 Progress 控制，调整最大暗化程度）
@@ -331,6 +343,17 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-19 · Phase 2 / M1.6 Blur（单 Pass 13-tap 核 + 边缘宽度法定量验收） · Super Z (main agent)
+
+- **完成**：DuoWarp.hlsl 加 Blur Pass——`radius = mask × progress × maxBlur`，**单 Pass 13-tap 六边形核**（中心 0.25 + 双环 12 tap；radius→0 恒等收敛 = 全开零模糊硬保证），源空间半径经 SrcYRemap 线性映射（无逐 tap 重解单应，省 10× ALU）；mask 在 dest 像素取值（"糊在折叠处"）；`DuoFlow.Render/BlurOptions`（MaxBlurPixels ∈ (0,64] 校验，24 默认）+ 归一化换算；cbuffer 112→128 字节
+- **验收（边缘过渡宽度法，比对比度法灵敏 5×）**：半屏黑白参考窗 → 逐行测 30%-70% 上升宽度——p=0.75 铰链区 1px→3px（**3× 模糊**，三行一致）；p=0.5 远区（quad 内 mask=0 可见带）**1× 锐利保持**；**"不全屏同时糊"的几何证明**：p=0.75 时整个可见四边形都落在遮罩区内，远区根本不可见——mask 与折叠几何共同保证 PROJECT_SPEC §12
+- **性能**：13-tap 全屏 @600×338 平均 **47.4 FPS** vs 基线 48——损失可忽略；progress=0 分支裁剪零成本
+- **单测 5 新用例（合计 80/80 本地+CI）**：归一化换算/极小值/非法半径（0/负/64.1/NaN/∞）/非法帧高/默认值
+- **度量下限教训**：p=0.5 铰链核半径 ±1.9 面板像素低于 8-bit 量化精度 → 该断言降为信息项，p=0.75 的 3× 证明链路——**验收断言必须设计在度量能力的可分辨区**；另：全屏纯色参考窗无法区分镜像与透底（镜像同色），参考窗必须带结构
+- **附带**：控制台关闭 → 全应用退出（WinUI 3 非打包 `Application.Exit()` 只停 DispatcherQueue 不杀进程——trace+进程双重验证后改 `Environment.Exit(0)`），解决真实用户"关控制台后覆盖层+黄框无路可关"
+- **产物**：`shaders/DuoWarp.hlsl`、`src/DuoFlow.Render/BlurOptions.cs`、`src/DuoFlow.Core.Tests/BlurOptionsTests.cs`、`src/DuoFlow.App/`（CaptureRenderer/WarpPipeline/MainWindow 接线）、DD-041、`_test/m16-blur-verify.ps1`/`m16-analyze.ps1`
+- **遗留 / 阻塞**：无 → M1.7 Dimming（`brightness = 1 − mask × progress × maxDarkness`，同一 mask 挂接点，亮度剖面验收套路同本条）
 
 ### 2026-09-19 · 显示合成回归修复（SwapChainPanel 内容不可见 → 已解决） · Super Z (main agent)
 

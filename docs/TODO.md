@@ -163,14 +163,14 @@ Progress 改变时，桌面产生连续空间变形。✅ 渲染层已实证（�
 
 ---
 
-## M1.6 Blur
+## M1.6 Blur ✅（2026-09-19）
 
-* [ ] 创建 Blur Pass
-* [ ] 实现局部 Blur
-* [ ] 根据 Hinge Mask 控制
-* [ ] 根据 Progress 控制
-* [ ] 调整最大 Blur
-* [ ] 测试性能
+* [x] 创建 Blur Pass（DuoWarp.hlsl 单 Pass 13-tap 六边形核，DD-041）
+* [x] 实现局部 Blur（源空间半径，tap 经 SrcYRemap 线性映射）
+* [x] 根据 Hinge Mask 控制（mask 在 dest 像素取值——糊在折叠处）
+* [x] 根据 Progress 控制（radius→0 恒等收敛 = 全开零模糊硬保证）
+* [x] 调整最大 Blur（MaxBlurPixels 默认 24 源像素，限 (0,64]，M2.5 暴露 UI）
+* [x] 测试性能（47.4 FPS vs 基线 48；progress=0 分支裁剪零成本）
 
 ---
 
