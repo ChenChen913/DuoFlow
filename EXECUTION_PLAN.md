@@ -57,11 +57,11 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前 Phase | **Phase 2 — M1 Rendering MVP ✅ 全部完成**（M1.1-M1.8）；进入 Phase 3 — M2 视觉打磨 |
-| 当前小任务 | **M2.1 Gradient Pass**（颜色/强度可配置，随 Progress 调整，防颜色过度）——挂在心跳渲染的 Pass 链上，验收复用 selftest 套路 |
-| 下一步行动 | M2.1 Gradient → M2.2 Light Sweep → M2.3 Visual Tuning（用户真机参与）→ M2.4 Demo Mode → M2.5 Parameter Panel；屏幕级验收已恢复（HC §6.2） |
+| 当前 Phase | **Phase 2 — M1 ✅**；渲染模型 v2（DD-046 物理景深，DuoFold 参照）已上线 |
+| 当前小任务 | **M2.1 Gradient Pass**（颜色/强度可配置，随 Progress 调整）——挂心跳渲染 Pass 链 |
+| 阻塞项 | 无阻塞 |
 | 阻塞项 | 无阻塞。显示合成故障已于 2026-09-19 修复（HC §6.2）。CI 口径：以 GitHub Actions 实际 run 为准 |
-| 最后更新 | 2026-09-19 · M1 全部完成（M1.8 全屏合成 + 捕获/渲染解耦 DD-044）+ 预览面板放大 · Super Z |
+| 最后更新 | 2026-09-19 · 渲染模型 v2（DD-046 物理景深，DuoFold 参照）+ 面板放大 + M1 收官 · Super Z |
 
 ---
 
