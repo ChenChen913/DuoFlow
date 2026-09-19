@@ -29,7 +29,12 @@
                     Text="overlay · capture starting..." />
             </Border>
             <Border BorderBrush="#66FFFFFF" BorderThickness="1" CornerRadius="8">
-                <SwapChainPanel x:Name="CapturePanel" Width="480" Height="270" />
+                <!-- 800x450 DIP (2026-09-19 user feedback): the preview is the
+                     demo surface for the M1 effects - at 480x270 the blur/dim
+                     were invisible (3.2x downscale ate the detail). 800x450
+                     keeps a clear gap to the console (which ends at x=604)
+                     and halves the downscale ratio. -->
+                <SwapChainPanel x:Name="CapturePanel" Width="800" Height="450" />
             </Border>
         </StackPanel>
 

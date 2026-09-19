@@ -207,6 +207,12 @@ public sealed partial class OverlayWindow : Window
             string[] tags = { "up0", "up1", "up2", "up3", "up4", "down1", "down2", "down3", "down4" };
 
             Trace.Log("selftest: begin (settle 3s)");
+            // Hide the overlay's own decorations during the sweep: the capture
+            // otherwise contains the panel (recursion), the console and the
+            // status chip, polluting the dumped frames. The swapchain keeps
+            // rendering while collapsed - the readback sees the pure warp
+            // output, and the capture sees the clean reference window.
+            Root.Visibility = Visibility.Collapsed;
             await Task.Delay(3000);
 
             for (int i = 0; i < steps.Length; i++)
@@ -247,6 +253,10 @@ public sealed partial class OverlayWindow : Window
         catch (Exception ex)
         {
             Trace.Log($"selftest: FAILED: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            Root.Visibility = Visibility.Visible; // restore the overlay UI
         }
     }
 
