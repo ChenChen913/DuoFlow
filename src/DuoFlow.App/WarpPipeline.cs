@@ -33,7 +33,7 @@ namespace DuoFlow.App;
 public sealed class WarpPipeline : IDisposable
 {
     /// <summary>Constant buffer layout - must match the cbuffer in DuoWarp.hlsl
-    /// (8 × float4 = 128 bytes; three float4s instead of float3x3 leave no
+    /// (9 × float4 = 144 bytes; three float4s instead of float3x3 leave no
     /// row/column-major packing doubt).</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Constants
@@ -46,6 +46,7 @@ public sealed class WarpPipeline : IDisposable
         public Vector4 EdgeParams;
         public Vector4 MaskParams; // M1.5: x=center, y=width, z=falloff, w=debug
         public Vector4 BlurParams; // M1.6: x=maxBlurNorm, y=progress, z=aspect, w=-
+        public Vector4 DimParams;  // M1.7: x=maxDarkness
     }
 
     public const string ShaderFileName = "DuoWarp.hlsl";
@@ -183,7 +184,8 @@ public sealed class WarpPipeline : IDisposable
     /// after this call.
     /// </summary>
     public void Render(ID3D11DeviceContext context, ID3D11Texture2D desktopTexture, WarpFrame frame,
-        HingeMaskProfile mask, bool debugMask, double maxBlurNormalized, double progress)
+        HingeMaskProfile mask, bool debugMask, double maxBlurNormalized, double progress,
+        double maxDarkness)
     {
         if (_disposed || _renderTarget is null)
         {
@@ -212,6 +214,8 @@ public sealed class WarpPipeline : IDisposable
                 (float)progress,
                 (float)((double)_height / _width),
                 0f),
+            // M1.7 dimming (DD-042): brightness = 1 - mask × progress × x.
+            DimParams = new Vector4((float)maxDarkness, 0f, 0f, 0f),
         };
         context.UpdateSubresource(constants, _constantBuffer!, 0, 0, 0, null);
 

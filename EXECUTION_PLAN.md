@@ -58,10 +58,10 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅；M1.1-M1.5 ✅） |
-| 当前小任务 | **M1.7 Dimming**（由 Hinge Mask 与 Progress 控制，调整最大暗化程度）——消费 DD-040 的同一个 mask 值（shader 内已算好），`brightness = 1 − mask × progress × maxDarkness`，验收复用边缘过渡/亮度剖面套路 |
-| 下一步行动 | M1.7 Dimming → M1.8 MVP Composite（Warp+Mask+Blur+Dimming 全链路实时运行）→ M2 视觉打磨；显示合成回归已修复（HC §6.2），屏幕级验收可用 |
+| 当前小任务 | **M1.8 MVP Composite**（Warp + Hinge Mask + Blur + Dimming 组合实时运行）——四个 Pass 的 shader ingredient 已全部就位并各自定量验收；剩余工作 = 全屏化组合渲染 + M1 总验收（Manual Progress → Warp → Blur → Dimming 全链路实时运行） |
+| 下一步行动 | M1.8 MVP Composite → M2 视觉打磨（渐变/光带/调优/Demo 模式/参数面板）；显示合成回归已修复（HC §6.2），屏幕级验收可用 |
 | 阻塞项 | 无阻塞。显示合成故障已于 2026-09-19 修复（HC §6.2）；M1 收尾在望。CI 口径：以 GitHub Actions 实际 run 为准 |
-| 最后更新 | 2026-09-19 · M1.6 Blur 完成（铰链区 3× 模糊/远区锐利/47.4 FPS）· Super Z |
+| 最后更新 | 2026-09-19 · M1.7 Dimming 完成（白窗亮度剖面误差 ≤1.4）——M1 仅剩 M1.8 合成 · Super Z |
 
 ---
 
@@ -259,15 +259,20 @@
 **产物**：`shaders/DuoWarp.hlsl`（BlurParams，cbuffer 128 字节）、`src/DuoFlow.Render/BlurOptions.cs`、`src/DuoFlow.Core.Tests/BlurOptionsTests.cs`、CaptureRenderer/WarpPipeline 接线、DD-041、`_test/m16-blur-verify.ps1` + `m16-analyze.ps1`（仓库外验收基建）。
 **附带**：控制台关闭 → 全应用退出（`Environment.Exit(0)`；`Application.Exit()` 只停 DispatcherQueue 不杀进程——WinUI 3 非打包已知行为，trace+进程双重验证），解决"关控制台后覆盖层+黄框无路可关"的真实用户问题。
 
-#### M1.7 Dimming
+#### M1.7 Dimming ✅（2026-09-19 完成：公式逐字落地 + 白窗亮度剖面误差 ≤1.4）
 
-* [ ] 创建 Dimming Pass（由 Hinge Mask 与 Progress 控制，调整最大暗化程度）
+* [x] 创建 Dimming Pass（由 Hinge Mask 与 Progress 控制，调整最大暗化程度——shader 一行乘法：`rgb *= 1 − mask × progress × maxDarkness`，mask/progress 复用 BlurParams 现值，四 Pass 共享同一常量流；`DuoFlow.Render/DimOptions` 校验 MaxDarkness ∈ [0,1]，默认 0.8 = PROJECT_SPEC §13 示例值）
+
+**验收（数学层）**：DimOptionsTests 6 新用例（默认值/边界 0 与 1/负值/超界/NaN/∞）——**合计 86/86 本地+CI 全绿** ✅。
+**验收（渲染层，白窗亮度剖面）**：全屏纯白参考窗（均匀色下模糊 no-op，测得变化纯属暗化）——p=0 全 255 ✅；p=0.75 铰链行 104/110/123 vs 预测 104.3/110.7/124.4（**误差 ≤1.4**）✅；p=0.5 铰链行误差 ≤0.8 ✅；p=0.5 远区（mask=0）255 不动 ✅；FPS 47.4 ✅。
+**度量教训（DD-042）**：面板自身内容存在于捕获中，blur tap 会把递归暗内容混进采样——分析脚本扫描列必须避开面板在源画面的投影区（dest x ≤ 380），修正后误差从 21 降至 ≤1.4。
+**产物**：`shaders/DuoWarp.hlsl`（DimParams，cbuffer 144 字节）、`src/DuoFlow.Render/DimOptions.cs`、`src/DuoFlow.Core.Tests/DimOptionsTests.cs`、CaptureRenderer/WarpPipeline 接线、DD-042、`_test/m17-dim-verify.ps1`/`m17-analyze.ps1`。
 
 #### M1.8 MVP Composite
 
 * [ ] Warp + Hinge Mask + Blur + Dimming 组合实时运行
 
-**M1 总验收**：Manual Progress → Warp → Blur → Dimming 全链路实时运行。
+**M1 总验收**：Manual Progress → Warp → Blur → Dimming 全链路实时运行。（M1.8 待做——四个 Pass 的 shader 侧 ingredient 已全部就位并各自定量验收）
 
 ### Phase 3 — M2 Visual Refinement
 
@@ -354,6 +359,15 @@
 - **附带**：控制台关闭 → 全应用退出（WinUI 3 非打包 `Application.Exit()` 只停 DispatcherQueue 不杀进程——trace+进程双重验证后改 `Environment.Exit(0)`），解决真实用户"关控制台后覆盖层+黄框无路可关"
 - **产物**：`shaders/DuoWarp.hlsl`、`src/DuoFlow.Render/BlurOptions.cs`、`src/DuoFlow.Core.Tests/BlurOptionsTests.cs`、`src/DuoFlow.App/`（CaptureRenderer/WarpPipeline/MainWindow 接线）、DD-041、`_test/m16-blur-verify.ps1`/`m16-analyze.ps1`
 - **遗留 / 阻塞**：无 → M1.7 Dimming（`brightness = 1 − mask × progress × maxDarkness`，同一 mask 挂接点，亮度剖面验收套路同本条）
+
+### 2026-09-19 · Phase 2 / M1.7 Dimming（公式逐字落地 + 白窗亮度剖面误差 ≤1.4） · Super Z (main agent)
+
+- **完成**：DuoWarp.hlsl 加 Dimming Pass——`rgb *= 1 − mask × progress × maxDarkness`（PROJECT_SPEC §13 逐字），一行乘法置于 blur 之后；mask/progress 直接复用 MaskParams/BlurParams 现值——**一个铰链、一份 mask、一个 progress，四 Pass 共享同一常量流**（DD-040 口径统一承诺兑现）；`DuoFlow.Render/DimOptions`（MaxDarkness 默认 0.8 = §13 示例值，校验 [0,1]）；cbuffer 128→144 字节
+- **验收（白窗亮度剖面）**：全屏纯白参考窗（模糊对均匀色 no-op → 测得变化纯属暗化）——p=0 全 255（progress=0 不动）✅；p=0.75 铰链行 104/110/123 vs 预测 104.3/110.7/124.4 **误差 ≤1.4** ✅；p=0.5 铰链行误差 ≤0.8 ✅；p=0.5 远区（mask=0）255 不动 ✅；FPS 47.4 ✅
+- **单测 6 新用例（合计 86/86 本地+CI）**：默认值/边界 0 与 1/负值/超界/NaN/∞
+- **度量教训（DD-042 沉淀）**：**递归污染**——面板自身内容存在于捕获画面中，blur tap 会把面板投影区的递归暗内容混进采样（首个分析轮次 row 326 误差 21 的根因）；分析脚本扫描列限制在 dest x ≤ 380（source x < 1290 = 面板投影区之外）后误差降至 ≤1.4。**凡涉及"采样源画面"的度量都必须避开面板投影区**
+- **产物**：`shaders/DuoWarp.hlsl`、`src/DuoFlow.Render/DimOptions.cs`、`src/DuoFlow.Core.Tests/DimOptionsTests.cs`、`src/DuoFlow.App/`（CaptureRenderer/WarpPipeline 接线）、DD-042、`_test/m17-dim-verify.ps1`/`m17-analyze.ps1`
+- **遗留 / 阻塞**：无 → **M1.8 MVP Composite**（Warp+Mask+Blur+Dimming 全链路实时运行）——shader 侧 ingredient 全部就位且各自定量验收，M1 收尾在望；M1.8 需要决策全屏化渲染与面板预览的分工（真机屏幕级验收已恢复可用）
 
 ### 2026-09-19 · 显示合成回归修复（SwapChainPanel 内容不可见 → 已解决） · Super Z (main agent)
 

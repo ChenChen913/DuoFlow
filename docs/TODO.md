@@ -174,12 +174,12 @@ Progress 改变时，桌面产生连续空间变形。✅ 渲染层已实证（�
 
 ---
 
-## M1.7 Dimming
+## M1.7 Dimming ✅（2026-09-19）
 
-* [ ] 创建 Dimming Pass
-* [ ] 根据 Hinge Mask 控制
-* [ ] 根据 Progress 控制
-* [ ] 调整最大暗化程度
+* [x] 创建 Dimming Pass（shader 一行乘法，mask/progress 复用共享常量流——DD-042）
+* [x] 根据 Hinge Mask 控制（同一份 mask 值，无口径漂移）
+* [x] 根据 Progress 控制（progress=0 实测全 255 不动）
+* [x] 调整最大暗化程度（MaxDarkness 默认 0.8，限 [0,1]，M2.5 暴露 UI）
 
 ---
 

@@ -1446,6 +1446,58 @@ PROJECT_SPEC §12：`blur = hingeMask × progress × maxBlur`，"正常打开几
 
 ---
 
+# DD-042：M1.7 Dimming 的公式落地与递归污染度量教训
+
+**Status:** Accepted（M1.7 实现时提出，随任务指令确认登记）
+
+## 背景
+
+PROJECT_SPEC §13 公式已定：`brightness = 1 − hingeMask × progress × maxDarkness`。
+未定死：maxDarkness 的量纲与默认值、与 Blur Pass 的关系（各自重算 mask 还是共用）、
+纯白参考窗下如何定量验收。
+
+## 决定
+
+1. **公式逐字落地**：shader 在 blur 之后执行 `rgb *= 1 − mask × progress × maxDarkness`；
+   mask 与 progress 直接复用 DD-040/BlurParams 的现值——**一个铰链、一份 mask、一个
+   progress**，四个 Pass（warp/mask/blur/dim）共享同一套常量，不存在各 Pass 口径漂移。
+2. **MaxDarkness 默认 0.8**（PROJECT_SPEC §13 示例值），校验 [0,1]：负值=提亮（无意义），
+   >1=负光。M2.5 参数面板暴露。
+3. **验收 = 纯白参考窗亮度剖面**：模糊对均匀白是 no-op，测得的亮度变化纯属暗化 Pass。
+   实测（600×338 dump，扫描列限制在源 x<1290 避开面板递归区）：p=0 全 255 ✅；
+   p=0.75 铰链行 104/110/123 vs 预测 104.3/110.7/124.4（**误差 ≤1.4**）✅；
+   p=0.5 铰链行误差 ≤0.8 ✅；p=0.5 远区（mask=0）255 不动 ✅；FPS 47.4 ✅。
+
+## 原因
+
+* 四 Pass 共享常量是"单 Pass 合并"路线的直接收益：暗化不需要自己的采样，一行乘法；
+* 纯白参考窗把暗化信号从模糊信号里干净分离（模糊对均匀色不可见）——两个 Pass 用两张
+  参考窗分别验收，互不污染。
+
+## 替代方案
+
+* mask 重算（Blur/Dim 各算各的）→ 常量冗余且口径漂移风险，放弃；
+* 纯黑参考窗（测提亮）→ 黑色下暗化不可见，白窗是唯一正确选择。
+
+## 影响
+
+* cbuffer 128→144 字节（DimParams.x = maxDarkness）；
+* M1.8 合成的全部 ingredient 就位（warp/mask/blur/dim 同一常量流）；
+* 度量教训沉淀：**递归污染**——面板自身内容会出现在捕获里，blur tap 会把它混进采样，
+  分析脚本的扫描列必须避开面板在源画面中的投影区（本机：dest x ≤ 380）。
+
+## 迁移方案
+
+不适用（新增）。M1.8 合成时若拆分 Pass，DimParams 语义不变。
+
+## 相关决策
+
+- DD-040（mask——暗化的权重来源）
+- DD-041（blur——progress/maxDarkness 共用常量流的先例）
+- DD-039（铰链系坐标系）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。

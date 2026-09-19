@@ -56,6 +56,11 @@ cbuffer WarpConstants : register(b0)
     // z: frame height over frame width (aspect correction for round kernels)
     // w: reserved
     float4 BlurParams;
+    // M1.7 Dimming (DD-042):
+    // x: max darkness as a fraction of full brightness, [0,1]
+    //    (brightness = 1 - mask * BlurParams.y * x - PROJECT_SPEC 13)
+    // yzw: reserved
+    float4 DimParams;
 };
 
 Texture2D    DesktopTexture : register(t0);
@@ -154,6 +159,13 @@ float4 PSMain(VSOutput input) : SV_Target
         }
         rgb = acc;
     }
+
+    // M1.7 Dimming (DD-042): brightness = 1 - mask × progress × maxDarkness.
+    // Same mask, same progress as the blur pass (DD-040: one hinge, one
+    // mask). Uniform over the masked area - PROJECT_SPEC 13 keeps the
+    // near-hinge band progressively darker, never the whole screen (the
+    // mask is zero above its width).
+    rgb *= saturate(1.0 - mask * BlurParams.y * DimParams.x);
 
     return float4(rgb * a, a);
 }

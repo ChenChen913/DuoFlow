@@ -48,6 +48,7 @@ public sealed class CaptureRenderer : IDisposable
     private readonly HingeMaskProfile _maskProfile = HingeMask.Build();
     private readonly BlurOptions _blurOptions = new();
     private double _maxBlurNormalized;
+    private readonly DimOptions _dimOptions = new();
     private int _panelPixelWidth;
     private int _panelPixelHeight;
     private bool _disposed;
@@ -184,7 +185,7 @@ public sealed class CaptureRenderer : IDisposable
             // thread's Tick().
             LidState state = clock.Tick();
             WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
-            warp.Render(_context, texture, frame, _maskProfile, request?.DebugMask ?? false, _maxBlurNormalized, state.Progress);
+            warp.Render(_context, texture, frame, _maskProfile, request?.DebugMask ?? false, _maxBlurNormalized, state.Progress, _dimOptions.MaxDarkness);
         }
         else
         {
