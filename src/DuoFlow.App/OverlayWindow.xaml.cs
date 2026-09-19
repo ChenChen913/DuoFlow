@@ -39,6 +39,7 @@ public sealed partial class OverlayWindow : Window
     private CaptureRenderer? _renderer;
     private readonly bool _selfTest;
     private bool _cleanupDone;
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _renderTimer;
 
     /// <summary>
     /// M1.4: the smoothed lid clock (AnimationEngine behind a small lock).
@@ -232,14 +233,16 @@ public sealed partial class OverlayWindow : Window
             // M1.5: hinge-mask debug phase (DD-040). The mask is
             // progress-independent; the debug dumps show it through the
             // shader's heat ramp (R channel = mask value exactly).
-            //   p=0   -> identity quad: the FULL frame is mask, so the
-            //            profile can be decoded row by row against theory.
-            //   p=0.5 -> the folded quad clips the mask (alpha boundary at
+            //   p=0.25 -> quad covers the top of the frame; the mask profile
+            //            decodes row by row against theory (p=0 no longer
+            //            renders anything - the M1.8 global fade keeps the
+            //            fully-open desktop invisible).
+            //   p=0.5  -> the folded quad clips the mask (alpha boundary at
             //            the known FarEdgeY) - quad/mask coupling evidence.
-            NotifyLidState(RawLidState(0.0));
+            NotifyLidState(RawLidState(0.25));
             await Task.Delay(2500);
-            _renderer?.RequestDump(Path.Combine(dir, "selftest-mask-p0.raw"), debugMask: true);
-            Trace.Log("selftest: mask debug dump @p=0 requested");
+            _renderer?.RequestDump(Path.Combine(dir, "selftest-mask-p25.raw"), debugMask: true);
+            Trace.Log("selftest: mask debug dump @p=0.25 requested");
             await Task.Delay(1500);
 
             NotifyLidState(RawLidState(0.5));
@@ -295,6 +298,17 @@ public sealed partial class OverlayWindow : Window
             CaptureState = "running";
             Trace.Log("overlay: capture running");
 
+            // M1.8 render heartbeat (TECHNICAL_PROPOSAL §22): the composite
+            // renders at its own ~30 FPS from the persistent latest-frame
+            // copy, independent of the capture rate (a static screen produces
+            // no WGC frames - the old render-in-callback loop stalled at
+            // 1 FPS at fullscreen). The engine Tick rides the heartbeat.
+            _renderTimer = DispatcherQueue.CreateTimer();
+            _renderTimer.Interval = TimeSpan.FromMilliseconds(30);
+            _renderTimer.Tick += (_, _) => _renderer?.RenderTick();
+            _renderTimer.Start();
+            Trace.Log("overlay: render heartbeat started (30ms)");
+
             if (_selfTest)
             {
                 _ = RunWarpSelfTestAsync();
@@ -316,6 +330,7 @@ public sealed partial class OverlayWindow : Window
         }
         _cleanupDone = true;
 
+        _renderTimer?.Stop();
         _renderer?.Dispose();
         _capture?.Dispose();
         _renderer = null;

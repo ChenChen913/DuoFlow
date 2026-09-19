@@ -183,13 +183,13 @@ Progress 改变时，桌面产生连续空间变形。✅ 渲染层已实证（�
 
 ---
 
-## M1.8 MVP Composite
+## M1.8 MVP Composite ✅（2026-09-19）
 
-* [ ] Warp
-* [ ] Hinge Mask
-* [ ] Blur
-* [ ] Dimming
-* [ ] Composite
+* [x] Warp（全屏实时）
+* [x] Hinge Mask（同一 mask 常量流）
+* [x] Blur（13-tap 核，全屏 1:1）
+* [x] Dimming（公式逐字）
+* [x] Composite（全屏合成实时运行；捕获/渲染解耦 DD-044：常驻最新帧 + 30ms 渲染心跳；全局不透明度 0.65 稳定自反馈；全局淡入=静止态隐形）
 
 ### M1 验收
 

@@ -33,7 +33,7 @@ namespace DuoFlow.App;
 public sealed class WarpPipeline : IDisposable
 {
     /// <summary>Constant buffer layout - must match the cbuffer in DuoWarp.hlsl
-    /// (9 × float4 = 144 bytes; three float4s instead of float3x3 leave no
+    /// (10 × float4 = 160 bytes; three float4s instead of float3x3 leave no
     /// row/column-major packing doubt).</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Constants
@@ -47,6 +47,7 @@ public sealed class WarpPipeline : IDisposable
         public Vector4 MaskParams; // M1.5: x=center, y=width, z=falloff, w=debug
         public Vector4 BlurParams; // M1.6: x=maxBlurNorm, y=progress, z=aspect, w=-
         public Vector4 DimParams;  // M1.7: x=maxDarkness
+        public Vector4 GlobalParams; // M1.8: x=global effect opacity
     }
 
     public const string ShaderFileName = "DuoWarp.hlsl";
@@ -185,7 +186,7 @@ public sealed class WarpPipeline : IDisposable
     /// </summary>
     public void Render(ID3D11DeviceContext context, ID3D11Texture2D desktopTexture, WarpFrame frame,
         HingeMaskProfile mask, bool debugMask, double maxBlurNormalized, double progress,
-        double maxDarkness)
+        double maxDarkness, double effectOpacity)
     {
         if (_disposed || _renderTarget is null)
         {
@@ -216,6 +217,10 @@ public sealed class WarpPipeline : IDisposable
                 0f),
             // M1.7 dimming (DD-042): brightness = 1 - mask × progress × x.
             DimParams = new Vector4((float)maxDarkness, 0f, 0f, 0f),
+            // M1.8 fullscreen composite (DD-044): global fade-in of the whole
+            // effect - 0 while fully open so the identity mirror never ghosts
+            // on the live desktop.
+            GlobalParams = new Vector4((float)effectOpacity, 0f, 0f, 0f),
         };
         context.UpdateSubresource(constants, _constantBuffer!, 0, 0, 0, null);
 

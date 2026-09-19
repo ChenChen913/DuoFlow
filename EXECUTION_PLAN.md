@@ -57,11 +57,11 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅；M1.1-M1.5 ✅） |
-| 当前小任务 | **M1.8 MVP Composite**（Warp + Hinge Mask + Blur + Dimming 组合实时运行）——四个 Pass 的 shader ingredient 已全部就位并各自定量验收；剩余工作 = 全屏化组合渲染 + M1 总验收（Manual Progress → Warp → Blur → Dimming 全链路实时运行） |
-| 下一步行动 | M1.8 MVP Composite → M2 视觉打磨（渐变/光带/调优/Demo 模式/参数面板）；显示合成回归已修复（HC §6.2），屏幕级验收可用 |
-| 阻塞项 | 无阻塞。显示合成故障已于 2026-09-19 修复（HC §6.2）；M1 收尾在望。CI 口径：以 GitHub Actions 实际 run 为准 |
-| 最后更新 | 2026-09-19 · M1.7 完成 + 效果强度包络（用户反馈：虚化 0.35 起可见，DD-043）· Super Z |
+| 当前 Phase | **Phase 2 — M1 Rendering MVP ✅ 全部完成**（M1.1-M1.8）；进入 Phase 3 — M2 视觉打磨 |
+| 当前小任务 | **M2.1 Gradient Pass**（颜色/强度可配置，随 Progress 调整，防颜色过度）——挂在心跳渲染的 Pass 链上，验收复用 selftest 套路 |
+| 下一步行动 | M2.1 Gradient → M2.2 Light Sweep → M2.3 Visual Tuning（用户真机参与）→ M2.4 Demo Mode → M2.5 Parameter Panel；屏幕级验收已恢复（HC §6.2） |
+| 阻塞项 | 无阻塞。显示合成故障已于 2026-09-19 修复（HC §6.2）。CI 口径：以 GitHub Actions 实际 run 为准 |
+| 最后更新 | 2026-09-19 · M1 全部完成（M1.8 全屏合成 + 捕获/渲染解耦 DD-044）+ 预览面板放大 · Super Z |
 
 ---
 
@@ -268,11 +268,16 @@
 **度量教训（DD-042）**：面板自身内容存在于捕获中，blur tap 会把递归暗内容混进采样——分析脚本扫描列必须避开面板在源画面的投影区（dest x ≤ 380），修正后误差从 21 降至 ≤1.4。
 **产物**：`shaders/DuoWarp.hlsl`（DimParams，cbuffer 144 字节）、`src/DuoFlow.Render/DimOptions.cs`、`src/DuoFlow.Core.Tests/DimOptionsTests.cs`、CaptureRenderer/WarpPipeline 接线、DD-042、`_test/m17-dim-verify.ps1`/`m17-analyze.ps1`。
 
-#### M1.8 MVP Composite
+#### M1.8 MVP Composite ✅（2026-09-19 完成：全屏合成实时运行 + 捕获/渲染解耦架构）
 
-* [ ] Warp + Hinge Mask + Blur + Dimming 组合实时运行
+* [x] Warp + Hinge Mask + Blur + Dimming 组合实时运行——SwapChainPanel 全屏化（面板像素=窗口客户区 1914×1074），四 Pass 在同一 shader/常量流下全屏实时合成；**捕获/渲染解耦**（DD-044，TECHNICAL_PROPOSAL §22 落地）：WGC 回调仅刷新常驻最新帧纹理，渲染心跳（30ms，UI 线程）独立执行 Tick→合成→Present——修复全屏下"静态屏幕无捕获帧→渲染停摆 1 FPS"的问题；**反馈稳定化**：全局不透明度 0.65 使全屏自反馈收敛为磨砂玻璃稳态（α=1 时无界复合真机实证数秒融化）；**全局淡入**：progress<0.15 合成透明=静止态隐形（无鬼影）
 
-**M1 总验收**：Manual Progress → Warp → Blur → Dimming 全链路实时运行。（M1.8 待做——四个 Pass 的 shader 侧 ingredient 已全部就位并各自定量验收）
+**M1 总验收 ✅**：Manual Progress → Warp → Blur → Dimming 全链路实时运行——真机全屏验证：折叠/虚化/暗化随滑块实时联动；三件套复验 P0-1 静止态透明 delta=0、P0-2 点击 0.4/拖动 0.29 全过。
+**验收（selftest @1914×1074）**：quadTop p=0.25/0.5/0.75 = 215/483/774 vs 理论 213.5/482/773.9（**≤1.5px**）双向无滞回；mask 剖面（p=0.25/0.5）误差达标；p=0 淡入隐形、p=1 几何坍缩均为预期端点 ✅。
+**验收（模糊/暗化 @全屏）**：铰链区边缘过渡 1px→7px（**7× 模糊**，1:1 无降采样）；暗化铰链行与公式误差 ≤1.4；FPS 32.2（心跳设计值）✅。
+**踩坑记录**：① 全屏自反馈：捕获包含自身输出，α=1 时 fold^n(D) 无界复合数秒融化——全局不透明度 0.65 使反馈收敛（半透明=稳定机制也是美学，DD-044）；② 静态屏幕无 WGC 帧 → 回调驱动渲染全屏停摆 1 FPS——心跳架构修复；③ 三件套的透明度测试必须先归零滑块（套件自己驱动过滑块，M1.8 后折叠效果会真实改变屏幕——这是产品正确而非回归）。
+
+
 
 ### Phase 3 — M2 Visual Refinement
 
@@ -348,6 +353,15 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-19 · Phase 2 / M1.8 MVP Composite（全屏合成 + 捕获/渲染解耦——M1 收官） · Super Z (main agent)
+
+- **完成**：SwapChainPanel 全屏化（面板像素 = 窗口客户区 1914×1074，与交换链一致 = HC §6.2 workaround 成立，对捕获纹理仅 0.3% 缩放差）；**捕获/渲染解耦**（DD-044，TECHNICAL_PROPOSAL §22 落地）——WGC 回调仅刷新常驻最新帧纹理，渲染心跳（30ms DispatchQueueTimer，UI 线程）独立执行 Tick → 四 Pass 合成 → Present，`_renderGate` 串行化心跳与帧回调的全部 context 使用；**反馈稳定化**：全局不透明度 0.65（GlobalParams）——全屏捕获必然包含自身输出，α<1 使自反馈收敛为几何级数（磨砂玻璃拖尾），α=1 无界复合真机实证数秒融化；**全局淡入**：progress<0.15 合成透明（静止态隐形，无鬼影）
+- **真机验收**：selftest @1914×1074——quadTop p=0.25/0.5/0.75 = 215/483/774 vs 理论 213.5/482/773.9（≤1.5px）双向无滞回；mask 剖面（p=0.25/p=0.5）PASS；p=0 淡入隐形、p=1 几何坍缩均为预期端点；模糊铰链区边缘过渡 **1px→7px（7×）**（1:1 无降采样）；暗化铰链行与公式误差 ≤1.4；FPS 32.2（心跳设计值）
+- **三件套复验**：P0-2 点击 0.4/拖动 0.29 ✅；P0-1 透明 S1=255 delta=0 ✅（套件先归零滑块——TEST 1 自己驱动过滑块，M1.8 后折叠效果会真实改变屏幕，静止态测试前必须复位——**产品正确而非回归**）；P1-a 预览差分=0 属预期（静止态淡入隐形，内容验证已由 selftest dump 覆盖）
+- **踩坑记录**：① 全屏化首先暴露**捕获/渲染耦合**：静态屏幕无 WGC 帧 → 回调驱动渲染停摆 1 FPS → 按 §22 解耦（常驻帧 + 心跳）；② **自反馈复合**：全屏捕获含自身输出，α=1 时 fold^n(D) 数秒融化进铰链 → 全局不透明度收敛（同时就是半透明美学的来源）；③ selftest 分析列被面板递归污染 → selftest 期间折叠 Root（覆盖层隐藏后捕获纯净，swapchain 照常渲染与回读）；④ 色度分类器（除以最大通道）对暗化不敏感——绝对 RGB 分类在暗化行全军覆没
+- **产物**：`src/DuoFlow.App/`（OverlayWindow.xaml 全屏面板 + 渲染心跳、CaptureRenderer 重写：常驻帧/RenderTick/渲染门、WarpPipeline GlobalParams cbuffer 160 字节、shaders/DuoWarp.hlsl 全局不透明度）、DD-044、EXECUTION_PLAN/TODO 同步、`_test/m14/m15/m16/m17-*`（分析脚本全屏适配）
+- **遗留 / 阻塞**：**Phase 2 / M1 全部完成** ✅ → M2.1 Gradient Pass（挂心跳 Pass 链）；M2.3 视觉调优需用户真机参与（包络/透明度/maxBlur 旋钮已参数化待调）；M1.8 已知取舍：全屏自反馈拖尾（几何级数衰减，视觉=磨砂拖尾，M2 重评）
 
 ### 2026-09-19 · 效果强度包络（用户真机反馈：虚化 0.35 起可见） · Super Z (main agent)
 

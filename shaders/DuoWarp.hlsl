@@ -61,6 +61,12 @@ cbuffer WarpConstants : register(b0)
     //    (brightness = 1 - mask * BlurParams.y * x - PROJECT_SPEC 13)
     // yzw: reserved
     float4 DimParams;
+    // M1.8 fullscreen composite (DD-044):
+    // x: global effect opacity [0,1] - 0 while fully open (progress below
+    //    the fade window) so the identity mirror never ghosts on the live
+    //    desktop; ramps to 1 as the fold begins.
+    // yzw: reserved
+    float4 GlobalParams;
 };
 
 Texture2D    DesktopTexture : register(t0);
@@ -167,5 +173,9 @@ float4 PSMain(VSOutput input) : SV_Target
     // mask is zero above its width).
     rgb *= saturate(1.0 - mask * BlurParams.y * DimParams.x);
 
-    return float4(rgb * a, a);
+    // M1.8: global effect opacity - the fullscreen composite fades in as the
+    // fold begins, so a fully open desktop (progress ~0) shows NO mirror at
+    // all (no ghost of the live desktop) while mid-fold everything is up.
+    float opacity = saturate(GlobalParams.x);
+    return float4(rgb * a * opacity, a * opacity);
 }

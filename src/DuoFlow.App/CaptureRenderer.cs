@@ -16,22 +16,25 @@ using WinRT;
 namespace DuoFlow.App;
 
 /// <summary>
-/// M0.2 display path: copies every captured GPU texture into a composition
-/// swapchain bound to a SwapChainPanel. Zero CPU staging — the desktop
-/// texture is blitted and presented entirely on the GPU.
+/// Display path: renders the captured desktop through the effect pipeline
+/// (M1.4 warp + M1.5 mask + M1.6 blur + M1.7 dim - DD-039..DD-042) into a
+/// composition swapchain bound to a SwapChainPanel.
 ///
-/// M1.4 (DD-039): when a warp pipeline can be created, each frame is instead
-/// drawn through the perspective warp (shaders/DuoWarp.hlsl) driven by the
-/// M1.3 AnimationEngine's smoothed progress - GPU → GPU → GPU, no CPU
-/// staging. The engine is Tick()-ed inside the frame callback, making the
-/// capture callback the render clock (frames stop when the screen is static,
-/// which is exactly when there is nothing to animate). If the warp pipeline
-/// cannot be created (e.g. shader compile failure), the M0.2 straight blit
-/// stays as the fallback so the CI smoke keeps passing.
+/// M1.8 architecture (DD-044, TECHNICAL_PROPOSAL §22): CAPTURE and RENDER
+/// are decoupled. The WGC frame callback only refreshes a persistent GPU
+/// copy of the latest desktop frame; a render heartbeat (RenderTick, called
+/// from the UI thread) renders at its own pace from that copy - so the
+/// composite keeps animating even when the screen is static and the capture
+/// delivers no frames (a static screen produces no WGC frames, which at
+/// fullscreen froze the old render-in-callback loop at 1 FPS).
 ///
-/// The swapchain is created at the CAPTURED monitor size; the SwapChainPanel
-/// stretches it to the window, so aspect ratio may not be preserved in the
-/// demo (acceptable for M0.2; the real renderer arrives in M1).
+/// M1.8 fullscreen: the SwapChainPanel covers the whole overlay and the
+/// swapchain is sized to the panel's physical pixels (= the capture size on
+/// this machine), satisfying the DPI-scaling workaround (HC 6.2) at zero
+/// downscale. The composite is semi-transparent (GlobalOpacity): the capture
+/// contains our own previous output, and a sub-unity opacity makes that
+/// feedback converge into a stable frosted-glass blend instead of compounding
+/// without bound.
 /// </summary>
 public sealed class CaptureRenderer : IDisposable
 {
@@ -42,41 +45,53 @@ public sealed class CaptureRenderer : IDisposable
     private IDXGIFactory2? _factory;
     private IDXGISwapChain1? _swapChain;
     private ID3D11Texture2D? _backBuffer;
+    private ID3D11Texture2D? _latestFrame;
     private ID3D11DeviceContext? _context;
     private WarpPipeline? _warp;
     private readonly WarpOptions _warpOptions = new();
     private readonly HingeMaskProfile _maskProfile = HingeMask.Build();
     private readonly BlurOptions _blurOptions = new();
-    private double _maxBlurNormalized;
     private readonly DimOptions _dimOptions = new();
+    private readonly object _renderGate = new();
+    private DumpRequest? _pendingDumpRequest;
     private int _panelPixelWidth;
     private int _panelPixelHeight;
+    private double _maxBlurNormalized;
     private bool _disposed;
+
+    /// <summary>
+    /// Global opacity of the fullscreen composite (DD-044). Sub-unity ON
+    /// PURPOSE: the fullscreen capture contains our own previous output, and
+    /// an opacity below 1 turns that feedback into a converging geometric
+    /// series (the frosted-glass trail) instead of an unbounded fold-of-fold
+    /// compounding. 1.0 would melt the screen into the hinge within seconds.
+    /// </summary>
+    public const double GlobalOpacity = 0.65;
+
+    /// <summary>Progress over which the composite fades in from invisible
+    /// (progress 0 = fully open = no effect over the live desktop).</summary>
+    public const double FadeInRange = 0.15;
 
     /// <summary>Total frames presented (thread-safe counter for FPS display).</summary>
     public long PresentedFrames => Interlocked.Read(ref _presented);
     private long _presented;
 
     /// <summary>M1.4 warp pipeline state, surfaced to the console/probe
-    /// (informational; the real-machine grid check is the visual authority).</summary>
+    /// (informational; the real-machine checks are the visual authority).</summary>
     public string WarpState { get; private set; } = "starting";
 
-    /// <summary>M1.4 self-test support: request a one-shot staging readback of
-    /// the next rendered frame into a raw BGRA file. Executed on the render
-    /// thread right after the draw (before Present), so the immediate context
-    /// is never touched from two threads. Used by --warp-selftest to verify
-    /// the warp output IN-PROCESS - independent of the desktop composition
-    /// path, which currently has a machine-level issue (see HANDOFF).</summary>
     private sealed class DumpRequest
     {
         public string Path { get; init; } = "";
         public bool DebugMask { get; init; }
     }
 
-    private DumpRequest? _pendingDump;
-
+    /// <summary>M1.4/M1.5 self-test support: request a one-shot staging
+    /// readback of the next rendered frame into a raw BGRA file. Executed on
+    /// the render thread inside the render gate, so the immediate context is
+    /// never touched from two threads.</summary>
     public void RequestDump(string filePath, bool debugMask = false)
-        => Interlocked.Exchange(ref _pendingDump, new DumpRequest { Path = filePath, DebugMask = debugMask });
+        => Interlocked.Exchange(ref _pendingDumpRequest, new DumpRequest { Path = filePath, DebugMask = debugMask });
 
     public CaptureRenderer(SwapChainPanel panel, DesktopCapture capture, LidAnimationClock? clock = null)
     {
@@ -95,16 +110,25 @@ public sealed class CaptureRenderer : IDisposable
 
         SizeInt32 size = _capture.Item.Size;
 
-        // Composition swapchain sized to the PANEL'S PIXEL SIZE (2026-09-19,
-        // real-machine regression workaround - see HC §6.2): after a Windows
-        // update on this machine (KB5129195 active from 2026-09-19, DPI 125%),
-        // a composition swapchain LARGER than the panel is no longer scaled
-        // down to fit (shown 1:1, cropped) and its premultiplied alpha is not
-        // composited (content invisible). Sizing the swapchain to the panel's
-        // physical pixel size removes the scaling requirement entirely: the
-        // panel displays it 1:1, and the warp shader is resolution-independent
-        // (normalized hinge-frame coordinates), so the captured 1920x1080
-        // texture renders identically into any back-buffer size.
+        // Persistent GPU copy of the latest captured frame (M1.8: the render
+        // heartbeat samples THIS texture, decoupling render from capture rate).
+        _latestFrame = device.CreateTexture2D(new Texture2DDescription
+        {
+            Width = (uint)size.Width,
+            Height = (uint)size.Height,
+            MipLevels = 1,
+            ArraySize = 1,
+            Format = Format.B8G8R8A8_UNorm,
+            SampleDescription = new SampleDescription(1, 0),
+            Usage = ResourceUsage.Default,
+            BindFlags = BindFlags.ShaderResource,
+            CPUAccessFlags = CpuAccessFlags.None,
+            MiscFlags = ResourceOptionFlags.None,
+        });
+
+        // Composition swapchain sized to the PANEL'S PIXEL SIZE (2026-09-19
+        // DPI-scaling workaround, HC 6.2); with the fullscreen panel this
+        // coincides with the capture size (zero downscale, zero upscale).
         SizeInt32 swapSize = size;
         if (_panelPixelWidth > 0 && _panelPixelHeight > 0)
         {
@@ -160,55 +184,84 @@ public sealed class CaptureRenderer : IDisposable
         // which re-runs this method's caller flow - a restart for now).
         _maxBlurNormalized = _blurOptions.MaxBlurNormalized(size.Height);
 
-        // GPU -> GPU: every captured frame goes straight to the panel.
         _capture.FrameArrived += OnFrameArrived;
     }
 
-    private void OnFrameArrived(ID3D11Texture2D texture, SizeInt32 contentSize)
+    /// <summary>M1.8: the render heartbeat. Called from the UI thread on a
+    /// ~30ms timer - renders the composite from the persistent latest-frame
+    /// copy regardless of whether the capture delivered anything (a static
+    /// screen produces no WGC frames). Everything runs inside the gate; the
+    /// capture callback shares it.</summary>
+    public void RenderTick()
     {
-        if (_disposed || _backBuffer is null || _context is null)
+        if (_disposed || _context is null || _backBuffer is null || _latestFrame is null)
         {
             return;
         }
 
-        // Consume a pending self-test dump request BEFORE drawing: the debug
-        // flag must reach the constant buffer of the very frame that gets
-        // dumped (M1.5 mask debug visualizations).
-        DumpRequest? request = Interlocked.Exchange(ref _pendingDump, null);
-
-        if (_warp is { } warp && _clock is { } clock)
+        lock (_renderGate)
         {
-            // M1.4/M1.5: engine Tick -> smoothed progress -> warp + hinge-mask
-            // constants -> draw. The AnimationEngine is the ONLY progress
-            // source for the render side (DD-002/DD-038); the clock
-            // serializes the UI thread's Update() against this worker
-            // thread's Tick().
-            LidState state = clock.Tick();
-            WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
-            warp.Render(_context, texture, frame, _maskProfile, request?.DebugMask ?? false, _maxBlurNormalized, _blurOptions.IntensityAt(state.Progress), _dimOptions.MaxDarkness);
+            if (_disposed)
+            {
+                return;
+            }
+
+            DumpRequest? request = _pendingDumpRequest;
+            _pendingDumpRequest = null;
+
+            if (_warp is { } warp && _clock is { } clock)
+            {
+                // M1.4-M1.8: engine Tick -> smoothed progress -> warp + mask +
+                // blur + dim -> fullscreen composite. The AnimationEngine is
+                // the ONLY progress source (DD-002/DD-038); the clock
+                // serializes the UI thread's Update() against this thread.
+                LidState state = clock.Tick();
+                WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
+                double effectOpacity =
+                    Math.Clamp(state.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
+                warp.Render(_context, _latestFrame, frame, _maskProfile, request?.DebugMask ?? false,
+                    _maxBlurNormalized, _blurOptions.IntensityAt(state.Progress), _dimOptions.MaxDarkness,
+                    effectOpacity);
+            }
+            else
+            {
+                // M0.2 fallback: same-size blit on the GPU.
+                _context.CopyResource(_backBuffer, _latestFrame);
+            }
+
+            if (request is not null)
+            {
+                DumpBackBuffer(request.Path);
+            }
+
+            _swapChain?.Present(1, 0);
+            Interlocked.Increment(ref _presented);
         }
-        else
+    }
+
+    private void OnFrameArrived(ID3D11Texture2D texture, SizeInt32 contentSize)
+    {
+        if (_disposed || _latestFrame is null)
         {
-            // M0.2 fallback: same-size blit on the GPU. ContentSize can lag
-            // the pool size for one frame after a resolution change; clip
-            // defensively.
-            _context.CopyResource(_backBuffer, texture);
+            return;
         }
 
-        // Self-test dump (M1.4/M1.5): read back the just-drawn frame before it
-        // is presented. Executed here on the render thread by design.
-        if (request is not null)
+        // M1.8: refresh the persistent latest-frame copy only. Rendering
+        // happens on the heartbeat (RenderTick), decoupled from the capture
+        // rate (TECHNICAL_PROPOSAL §22).
+        lock (_renderGate)
         {
-            DumpBackBuffer(request.Path);
+            if (_disposed)
+            {
+                return;
+            }
+            _context?.CopyResource(_latestFrame, texture);
         }
-
-        _swapChain!.Present(1, 0);
-        Interlocked.Increment(ref _presented);
     }
 
     /// <summary>Staging readback of the whole back buffer into a raw BGRA
-    /// file (width×height×4 bytes, bottom-up row order reversed to top-down).
-    /// Runs on the render thread only.</summary>
+    /// file (width×height×4 bytes, top-down rows). Runs inside the render
+    /// gate only.</summary>
     private void DumpBackBuffer(string path)
     {
         try
@@ -268,10 +321,12 @@ public sealed class CaptureRenderer : IDisposable
 
         _capture.FrameArrived -= OnFrameArrived;
         try { _warp?.Dispose(); } catch { }
+        try { _latestFrame?.Dispose(); } catch { }
         try { _backBuffer?.Dispose(); } catch { }
         try { _swapChain?.Dispose(); } catch { }
         try { _factory?.Dispose(); } catch { }
         _warp = null;
+        _latestFrame = null;
         _backBuffer = null;
         _swapChain = null;
         _factory = null;

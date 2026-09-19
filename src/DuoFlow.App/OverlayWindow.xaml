@@ -5,38 +5,18 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     Title="DuoFlow Overlay">
 
-    <!-- Fully transparent root: the overlay only paints its decorations
-         (capture preview + status chips). Everything else lets the desktop
-         show through, and WS_EX_TRANSPARENT forwards mouse input below. -->
+    <!-- Fully transparent root: the overlay paints only its decorations.
+         Everything else lets the desktop show through, and
+         WS_EX_TRANSPARENT forwards mouse input below. -->
     <Grid x:Name="Root" Background="Transparent" IsHitTestVisible="False">
 
-        <!-- M0.3: the M0.2 capture preview now lives INSIDE the overlay
-             (bottom-right corner), standing in for the future effect output. -->
-        <StackPanel
-            VerticalAlignment="Bottom"
-            HorizontalAlignment="Right"
-            Margin="0,0,24,24">
-            <Border
-                Background="#CC111111"
-                CornerRadius="8"
-                Padding="10,4"
-                HorizontalAlignment="Right"
-                Margin="0,0,0,8">
-                <TextBlock
-                    x:Name="OverlayCaption"
-                    Foreground="White"
-                    FontSize="12"
-                    Text="overlay · capture starting..." />
-            </Border>
-            <Border BorderBrush="#66FFFFFF" BorderThickness="1" CornerRadius="8">
-                <!-- 800x450 DIP (2026-09-19 user feedback): the preview is the
-                     demo surface for the M1 effects - at 480x270 the blur/dim
-                     were invisible (3.2x downscale ate the detail). 800x450
-                     keeps a clear gap to the console (which ends at x=604)
-                     and halves the downscale ratio. -->
-                <SwapChainPanel x:Name="CapturePanel" Width="800" Height="450" />
-            </Border>
-        </StackPanel>
+        <!-- M1.8 fullscreen composite: the SwapChainPanel covers the WHOLE
+             overlay - the fold/blur/dim effect renders across the entire
+             screen instead of the small corner preview. The panel's pixel
+             size (1536x864 DIP x 1.25 = 1920x1080) coincides with the
+             capture size, satisfying the swapchain-size workaround
+             (HC 6.2) at zero downscale. -->
+        <SwapChainPanel x:Name="CapturePanel" />
 
         <!-- status chip (top-right; the console window sits bottom-left) -->
         <Border
@@ -51,6 +31,21 @@
                 Foreground="White"
                 FontSize="12"
                 Text="M0.3 overlay · fullscreen · topmost · click-through · no-activate" />
+        </Border>
+
+        <!-- capture/warp diagnostics (top-right, below the status chip) -->
+        <Border
+            VerticalAlignment="Top"
+            HorizontalAlignment="Right"
+            Margin="0,70,24,0"
+            Background="#CC111111"
+            CornerRadius="8"
+            Padding="10,4">
+            <TextBlock
+                x:Name="OverlayCaption"
+                Foreground="White"
+                FontSize="12"
+                Text="overlay · capture starting..." />
         </Border>
     </Grid>
 
