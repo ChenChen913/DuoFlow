@@ -1,36 +1,41 @@
 // =====================================================================
-// DuoFlow - Pass 1: Perspective Warp (M1.4, DD-039)
+// DuoFlow - fold composite (M1.8, model v2 - DD-046)
 //
-// Models the desktop as a plane hinged along one screen edge (bottom by
-// default) that rotates around that hinge as Progress goes 0 -> 1, viewed
-// through a pinhole camera. The projected image is a true projective
-// transform (a homography), NOT a scale: the far edge narrows (tilt-away)
-// or widens (tilt-toward) nonlinearly while the whole image compresses
-// toward the hinge - PROJECT_SPEC §10 / TECHNICAL_PROPOSAL §7.
+// Physical depth-of-field model, adopted from the DuoFold-Android reference
+// (studied 2026-09-19, replaces the mask+blur+dim trio of DD-040..DD-042):
+// the desktop is a plane, the screen is frosted glass tilting above it
+// around a hinge. Every pixel's GLASS-to-DESKTOP GAP drives everything:
 //
-// The pixel shader evaluates the INVERSE homography per pixel:
+//   normGap = y_dest * sin(phi)              (0 at the hinge, 1 at full fold)
+//   ease    = normGap^2                      (quadratic ease-in: hinge stays
+//                                             sharp, far edge melts)
+//   coc     = saturate(ease * 1.5 * intensity)   (circle of confusion, 0..1)
+//   radius  = coc * MaxBlurPixels            (frosted blur, device pixels)
+//   light   = saturate(1 - 0.006 * radius)   (tilted surface catches less
+//                                             light -> the shadow transition)
 //
-//     (sx, sy) = (M00·x, M11·y) / (M00 + M21·y)        (hinge frame)
+// The fold geometry itself is the same inverse homography as before
+// (DD-039): (sx, sy) = (M00·x, M11·y) / (M00 + M21·y) - at progress 0 it is
+// the identity. Outside the projected quad: premultiplied transparent.
 //
-// with (x, y) = destination position (x across [-1,1], y from the hinge
-// [0,1]) and (sx, sy) = source position in the same frame. At progress 0
-// the matrix is r·I, i.e. the identity - the panel shows the capture as-is
-// (the M0.2 behavior). Destination pixels whose inverse lands outside the
-// source quad emit PREMULTIPLIED transparent black (0,0,0,0) so the real
-// desktop shows through around the fold (the composition swapchain is
-// AlphaMode.Premultiplied).
+// Blur quality (the velvety frosted look, per the reference):
+//   - the source texture carries a full MIP chain; taps sample
+//     SampleLevel with lod = coc*3 so large radii arrive pre-filtered
+//     (no mosaic, no glow);
+//   - 16-tap Vogel spiral, EQUAL weights, NO center tap - high-contrast
+//     edges and text fully dissolve into the frost;
+//   - Interleaved Gradient Noise per-pixel rotation hides the spiral;
+//   - out-of-bounds source reads BLACK (the desktop's infinite black
+//     border) with a 1-texel soft edge.
 //
-// Coefficients are produced per frame by DuoFlow.Render.WarpGeometry
-// (pure C#, unit tested) from the M1.3 AnimationEngine's smoothed Progress
-// (DD-002: the shader knows nothing about providers; DD-038: the engine is
-// the render side's only progress source).
+// Progress enters ONLY through the matrix (phi) and the fade opacity: at
+// progress 0 the matrix is the identity and FadeParams.x = 0, so a fully
+// open desktop shows nothing at all.
 // =====================================================================
 
-cbuffer WarpConstants : register(b0)
+cbuffer FoldConstants : register(b0)
 {
     // Homography rows: [[M00, 0, 0], [0, M11, 0], [0, M21, M00]].
-    // Three float4s instead of a float3x3: no row/column-major packing
-    // ambiguity across toolchains, each register is a full row.
     float4 Row0;   // (M00, 0,   0,   -)
     float4 Row1;   // (0,   M11, 0,   -)
     float4 Row2;   // (0,   M21, M00, -)
@@ -41,32 +46,14 @@ cbuffer WarpConstants : register(b0)
     float4 SrcYRemap;
     // x: feather width in normalized units; yzw reserved.
     float4 EdgeParams;
-    // M1.5 Hinge Mask (DD-040), evaluated in the SAME hinge frame as the
-    // warp (DD-039: mask and warp share one hinge definition):
-    //   d = |y - x|;  t = saturate(d / y);  m = (1 - smoothstep(0,1,t))^z
-    // x: hinge center (normalized distance from the hinge edge)
-    // y: hinge width (mask reaches 0 at this distance)
-    // z: falloff exponent (shape of the falloff)
-    // w: debug flag (>0.5 -> output the mask heat ramp instead of the image)
-    float4 MaskParams;
-    // M1.6 Blur (DD-041):
-    // x: max blur radius, normalized to the SOURCE frame height
-    //    (CPU: MaxBlurPixels / captureHeight)
-    // y: progress (0..1) - the pass scales the mask by it
-    // z: frame height over frame width (aspect correction for round kernels)
-    // w: reserved
-    float4 BlurParams;
-    // M1.7 Dimming (DD-042):
-    // x: max darkness as a fraction of full brightness, [0,1]
-    //    (brightness = 1 - mask * BlurParams.y * x - PROJECT_SPEC 13)
-    // yzw: reserved
-    float4 DimParams;
-    // M1.8 fullscreen composite (DD-044):
-    // x: global effect opacity [0,1] - 0 while fully open (progress below
-    //    the fade window) so the identity mirror never ghosts on the live
-    //    desktop; ramps to 1 as the fold begins.
-    // yzw: reserved
-    float4 GlobalParams;
+    // M1.8 model v2 physics:
+    // x: max blur radius (device pixels, 160)
+    // y: effect intensity (the envelope-applied 0..1)
+    // z: 1 / render width
+    // w: 1 / render height
+    float4 PhysicsParams;
+    // x: global fade opacity [0,1] (0 while fully open)
+    float4 FadeParams;
 };
 
 Texture2D    DesktopTexture : register(t0);
@@ -88,6 +75,19 @@ VSOutput VSMain(uint vertexId : SV_VertexID)
     return output;
 }
 
+// Out-of-bounds reads BLACK (the desktop's infinite black border), with a
+// 1-texel soft edge so the frame line never aliases.
+float3 SampleDesktop(float2 uv, float lod)
+{
+    if (any(uv < 0.0) || any(uv > 1.0))
+    {
+        return float3(0.0, 0.0, 0.0);
+    }
+    float2 edgeTexels = min(uv, 1.0 - uv) / PhysicsParams.zw;
+    float edgeAlpha = saturate(min(edgeTexels.x, edgeTexels.y));
+    return DesktopTexture.SampleLevel(LinearClamp, uv, lod).rgb * edgeAlpha;
+}
+
 float4 PSMain(VSOutput input) : SV_Target
 {
     float x = input.TexCoord.x * 2.0 - 1.0;                              // [-1, 1]
@@ -96,9 +96,7 @@ float4 PSMain(VSOutput input) : SV_Target
     float w = Row2.y * y + Row2.z;          // M21·y + M00
     if (w < 1e-6)
     {
-        // Degenerate fold region (full fold / behind-camera side of the
-        // tilt-toward case): no image exists there - transparent.
-        return float4(0.0, 0.0, 0.0, 0.0);
+        return float4(0.0, 0.0, 0.0, 0.0);  // degenerate fold region
     }
 
     float sx = Row0.x * x / w;              // M00·x / w
@@ -111,71 +109,54 @@ float4 PSMain(VSOutput input) : SV_Target
         return float4(0.0, 0.0, 0.0, 0.0);
     }
 
-    // Feathered quad boundary (premultiplied alpha) - hides the fold's
-    // aliasing edge against the live desktop. At progress 0 the quad IS the
-    // panel, so this only softens the panel's own border over identical
-    // content (invisible).
+    // Feathered quad boundary (premultiplied alpha).
     float f = max(EdgeParams.x, 1e-5);
     float a = smoothstep(0.0, f, sy) * smoothstep(0.0, f, 1.0 - sy)
             * smoothstep(0.0, f, sx + 1.0) * smoothstep(0.0, f, 1.0 - sx);
 
-    // M1.5 Hinge Mask (DD-040): evaluated in the SAME hinge frame as the
-    // warp (the y above), peak at MaskParams.x, zero at center ± width.
-    float maskT = saturate(abs(y - MaskParams.x) / MaskParams.y);
-    float maskS = maskT * maskT * (3.0 - 2.0 * maskT);              // smoothstep
-    float mask = pow(saturate(1.0 - maskS), MaskParams.z);           // falloff
-
-    if (MaskParams.w > 0.5)
-    {
-        // Debug Mask visualization: pure heat ramp, RED = hinge (mask 1),
-        // BLUE = far (mask 0). The R channel decodes the mask exactly
-        // (m = R/A on the premultiplied output). Alpha rules unchanged.
-        return float4(float3(mask, 0.2, 1.0 - mask) * a, a);
-    }
+    // ---- Physical depth-of-field (DD-046) ----
+    // Gap height of the folded glass AT THE DISPLAYED SURFACE POINT: the
+    // inverse-mapped hinge-frame height sy (how far the source point sits
+    // from the hinge) times the tilt's sine. Source-side, not dest-side:
+    // the circle of confusion belongs to the object point - the dest-based
+    // variant under-blurs the far content ~4x at mid fold.
+    float normGap = saturate(sy * abs(Row2.y));
+    float ease = normGap * normGap;                      // quadratic ease-in
+    float coc = saturate(ease * 1.5 * PhysicsParams.y);  // circle of confusion
+    float radiusPx = coc * PhysicsParams.x;              // frosted radius, px
+    float lod = saturate(coc * 3.0);                     // mip pre-filter depth
+    float light = saturate(1.0 - 0.006 * radiusPx);      // light falloff
 
     float2 sourceUv = float2(sx * 0.5 + 0.5, SrcYRemap.x * sy + SrcYRemap.y);
-    float3 rgb = DesktopTexture.Sample(LinearClamp, sourceUv).rgb;
-
-    // M1.6 Blur (DD-041): radius = mask × progress × maxBlur, applied in the
-    // SOURCE frame (offsets map linearly through SrcYRemap). 13-tap hexagonal
-    // kernel; radius 0 collapses onto the center tap (progress 0 = no blur
-    // anywhere, hinge rows only blur as the mask rises). The mask is taken at
-    // the DEST pixel - PROJECT_SPEC §12 "blur where the fold is".
-    float radius = mask * BlurParams.y * BlurParams.x;
-    if (radius > 1e-5)
+    float3 rgb;
+    if (coc < 0.001)
     {
-        static const float2 kDirs[6] = {
-            float2( 1.00,  0.00), float2( 0.50,  0.87), float2(-0.50,  0.87),
-            float2(-1.00,  0.00), float2(-0.50, -0.87), float2( 0.50, -0.87)
-        };
-        // Aspect: sx units span half the frame width, sy units the height.
-        float aspect = BlurParams.z;
-        float3 acc = rgb * 0.25;
+        rgb = SampleDesktop(sourceUv, 0.0);              // sharp (hinge zone)
+    }
+    else
+    {
+        // 16-tap Vogel spiral, equal weights, no center tap, IGN rotation.
+        float ign = frac(52.9829189 * frac(dot(input.Position.xy,
+            float2(0.06711056, 0.00583715))));
+        float2 dir = float2(cos(ign * 6.2831853), sin(ign * 6.2831853));
+        const float C_STEP = -0.73736888;   // cos(golden angle)
+        const float S_STEP = 0.67549029;    // sin(golden angle)
+        float2 stepUv = radiusPx * PhysicsParams.zw;
+
+        float3 acc = float3(0.0, 0.0, 0.0);
         [unroll]
-        for (int k = 0; k < 6; k++)
+        for (int i = 0; i < 16; i++)
         {
-            float sxA = sx + kDirs[k].x * radius * 0.5 * aspect;
-            float syA = sy + kDirs[k].y * radius * 0.5;
-            float sxO = sx + kDirs[k].x * radius * aspect;
-            float syO = sy + kDirs[k].y * radius;
-            float2 uvA = float2(sxA * 0.5 + 0.5, SrcYRemap.x * syA + SrcYRemap.y);
-            float2 uvO = float2(sxO * 0.5 + 0.5, SrcYRemap.x * syO + SrcYRemap.y);
-            acc += DesktopTexture.Sample(LinearClamp, uvA).rgb * (0.5 / 6.0);
-            acc += DesktopTexture.Sample(LinearClamp, uvO).rgb * (0.25 / 6.0);
+            float r = sqrt((float(i) + 0.5) * 0.0625);
+            acc += SampleDesktop(sourceUv + dir * (r * stepUv), lod);
+            dir = float2(dir.x * C_STEP - dir.y * S_STEP,
+                         dir.y * C_STEP + dir.x * S_STEP);
         }
-        rgb = acc;
+        rgb = acc / 16.0;
     }
 
-    // M1.7 Dimming (DD-042): brightness = 1 - mask × progress × maxDarkness.
-    // Same mask, same progress as the blur pass (DD-040: one hinge, one
-    // mask). Uniform over the masked area - PROJECT_SPEC 13 keeps the
-    // near-hinge band progressively darker, never the whole screen (the
-    // mask is zero above its width).
-    rgb *= saturate(1.0 - mask * BlurParams.y * DimParams.x);
+    // The shadow transition: light falls as the frost deepens.
+    rgb *= light;
 
-    // M1.8: global effect opacity - the fullscreen composite fades in as the
-    // fold begins, so a fully open desktop (progress ~0) shows NO mirror at
-    // all (no ghost of the live desktop) while mid-fold everything is up.
-    float opacity = saturate(GlobalParams.x);
-    return float4(rgb * a * opacity, a * opacity);
+    return float4(rgb * a * FadeParams.x, a * FadeParams.x);
 }

@@ -33,7 +33,7 @@ namespace DuoFlow.App;
 public sealed class WarpPipeline : IDisposable
 {
     /// <summary>Constant buffer layout - must match the cbuffer in DuoWarp.hlsl
-    /// (10 × float4 = 160 bytes; three float4s instead of float3x3 leave no
+    /// (8 × float4 = 128 bytes; three float4s instead of float3x3 leave no
     /// row/column-major packing doubt).</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Constants
@@ -44,10 +44,8 @@ public sealed class WarpPipeline : IDisposable
         public Vector4 DestYRemap;
         public Vector4 SrcYRemap;
         public Vector4 EdgeParams;
-        public Vector4 MaskParams; // M1.5: x=center, y=width, z=falloff, w=debug
-        public Vector4 BlurParams; // M1.6: x=maxBlurNorm, y=progress, z=aspect, w=-
-        public Vector4 DimParams;  // M1.7: x=maxDarkness
-        public Vector4 GlobalParams; // M1.8: x=global effect opacity
+        public Vector4 PhysicsParams; // DD-046: x=maxBlurPx, y=intensity, z=1/W, w=1/H
+        public Vector4 FadeParams;    // x=global fade opacity
     }
 
     public const string ShaderFileName = "DuoWarp.hlsl";
@@ -185,8 +183,7 @@ public sealed class WarpPipeline : IDisposable
     /// after this call.
     /// </summary>
     public void Render(ID3D11DeviceContext context, ID3D11Texture2D desktopTexture, WarpFrame frame,
-        HingeMaskProfile mask, bool debugMask, double maxBlurNormalized, double progress,
-        double maxDarkness, double effectOpacity)
+        double maxBlurPixels, double intensity, double fadeOpacity)
     {
         if (_disposed || _renderTarget is null)
         {
@@ -201,26 +198,17 @@ public sealed class WarpPipeline : IDisposable
             DestYRemap = new Vector4((float)frame.DestYScale, (float)frame.DestYOffset, 0f, 0f),
             SrcYRemap = new Vector4((float)frame.SrcYScale, (float)frame.SrcYOffset, 0f, 0f),
             EdgeParams = new Vector4((float)frame.EdgeFeather, 0f, 0f, 0f),
-            // M1.5 hinge mask (DD-040): evaluated in the warp's hinge frame;
-            // w = debug flag switches the shader to the mask heat ramp.
-            MaskParams = new Vector4(
-                (float)mask.HingeCenter,
-                (float)mask.HingeWidth,
-                (float)mask.FalloffExponent,
-                debugMask ? 1f : 0f),
-            // M1.6 blur (DD-041): radius = mask × progress × maxBlur, applied
-            // in the source frame; z carries the frame aspect for round taps.
-            BlurParams = new Vector4(
-                (float)maxBlurNormalized,
-                (float)progress,
-                (float)((double)_height / _width),
-                0f),
-            // M1.7 dimming (DD-042): brightness = 1 - mask × progress × x.
-            DimParams = new Vector4((float)maxDarkness, 0f, 0f, 0f),
-            // M1.8 fullscreen composite (DD-044): global fade-in of the whole
-            // effect - 0 while fully open so the identity mirror never ghosts
-            // on the live desktop.
-            GlobalParams = new Vector4((float)effectOpacity, 0f, 0f, 0f),
+            // Model v2 physics (DD-046): the gap height drives the frosted
+            // radius and the light falloff; y carries the envelope-applied
+            // intensity; zw precompute the texel size for the disk taps.
+            PhysicsParams = new Vector4(
+                (float)maxBlurPixels,
+                (float)intensity,
+                1f / _width,
+                1f / _height),
+            // M1.8: global fade-in of the whole effect - 0 while fully open so
+            // the identity fold never ghosts on the live desktop.
+            FadeParams = new Vector4((float)fadeOpacity, 0f, 0f, 0f),
         };
         context.UpdateSubresource(constants, _constantBuffer!, 0, 0, 0, null);
 

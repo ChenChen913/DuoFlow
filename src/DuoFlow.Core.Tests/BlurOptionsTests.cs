@@ -5,78 +5,38 @@ using Xunit;
 namespace DuoFlow.Core.Tests;
 
 /// <summary>
-/// M1.6 blur knobs (DD-041): the max radius must be positive and capped (the
-/// 13-tap kernel bands above ~64 source pixels), and the normalized value is
-/// relative to the source frame height.
+/// M1.8 model-v2 frosted blur knobs (DD-046): the max radius is the single
+/// "how deep can the frost go" knob (the reference ships 160 device pixels
+/// with mip pre-filtering), and the intensity envelope must be visible from
+/// ~0.35 progress (2026-09-19 user tuning).
 /// </summary>
 public class BlurOptionsTests
 {
     [Fact]
-    public void MaxBlurNormalized_ConvertsAgainstSourceHeight()
+    public void Defaults_MatchReference()
     {
         BlurOptions o = new();
-        Assert.Equal(24.0 / 1080, o.MaxBlurNormalized(1080), 12);
-        Assert.Equal(24.0 / 720, o.MaxBlurNormalized(720), 12); // same pixels, smaller frame = stronger
+        Assert.Equal(160.0, o.MaxBlurPixels, 12);
+        Assert.Equal(0.30, o.StartProgress, 12);
+        Assert.Equal(0.60, o.FullProgress, 12);
+        o.Validate();
     }
-
-    [Fact]
-    public void MaxBlurNormalized_AcceptsTinyValue()
-    {
-        BlurOptions o = new() { MaxBlurPixels = 0.5 };
-        Assert.Equal(0.5 / 1080, o.MaxBlurNormalized(1080), 12);
-    }
-
-    [Theory]
-    [InlineData(0.0)]
-    [InlineData(-1.0)]
-    [InlineData(64.1)]
-    [InlineData(double.NaN)]
-    [InlineData(double.PositiveInfinity)]
-    public void MaxBlurNormalized_RejectsInvalidRadius(double radius)
-    {
-        BlurOptions o = new() { MaxBlurPixels = radius };
-        Assert.Throws<ArgumentOutOfRangeException>(() => o.MaxBlurNormalized(1080));
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-100)]
-    public void MaxBlurNormalized_RejectsBadFrameHeight(int height)
-    {
-        BlurOptions o = new();
-        Assert.Throws<ArgumentOutOfRangeException>(() => o.MaxBlurNormalized(height));
-    }
-
-    [Fact]
-    public void Defaults_AreSensible()
-    {
-        BlurOptions o = new();
-        Assert.Equal(BlurOptions.DefaultMaxBlurPixels, o.MaxBlurPixels, 12);
-        o.Validate(); // must not throw
-    }
-
-    // -------------------------------------------------------------
-    // M1.6 tuning (2026-09-19 user feedback): the effect envelope must make
-    // the blur visible from ~0.35 instead of only after the fold collapsed.
-    // -------------------------------------------------------------
 
     [Fact]
     public void IntensityAt_FollowsLinearEnvelope()
     {
         BlurOptions o = new(); // start 0.30, full 0.60
-        Assert.Equal(0.0, o.IntensityAt(0.0), 12);      // nothing before start
-        Assert.Equal(0.0, o.IntensityAt(0.3), 12);      // exactly at start
-        Assert.Equal(0.5, o.IntensityAt(0.45), 12);     // mid-ramp
-        Assert.Equal(1.0, o.IntensityAt(0.6), 12);      // saturated
-        Assert.Equal(1.0, o.IntensityAt(1.0), 12);      // stays saturated
-        Assert.Equal(1.0, o.IntensityAt(1.7), 12);      // clamped above 1
+        Assert.Equal(0.0, o.IntensityAt(0.0), 12);
+        Assert.Equal(0.0, o.IntensityAt(0.3), 12);
+        Assert.Equal(0.5, o.IntensityAt(0.45), 12);
+        Assert.Equal(1.0, o.IntensityAt(0.6), 12);
+        Assert.Equal(1.0, o.IntensityAt(1.0), 12);
+        Assert.Equal(1.0, o.IntensityAt(1.7), 12);
     }
 
     [Fact]
     public void IntensityAt_VisibleByPointThreeFive()
     {
-        // The user-visible requirement: at 0.35 the envelope already carries
-        // enough intensity for the blur to be perceptible (>= 0.1 of max).
         BlurOptions o = new();
         Assert.True(o.IntensityAt(0.35) >= 0.1, $"f(0.35)={o.IntensityAt(0.35)}");
         Assert.True(o.IntensityAt(0.4) >= 0.3, $"f(0.4)={o.IntensityAt(0.4)}");
@@ -93,6 +53,18 @@ public class BlurOptionsTests
             Assert.True(v >= last, $"envelope decreased at p={i / 100.0}");
             last = v;
         }
+    }
+
+    [Theory]
+    [InlineData(0.0)]
+    [InlineData(-1.0)]
+    [InlineData(400.1)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    public void Validate_RejectsInvalidRadius(double radius)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new BlurOptions { MaxBlurPixels = radius }.Validate());
     }
 
     [Theory]

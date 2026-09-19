@@ -230,27 +230,6 @@ public sealed partial class OverlayWindow : Window
                 await Task.Delay(1500); // let a rendered frame carry the dump out
             }
 
-            // M1.5: hinge-mask debug phase (DD-040). The mask is
-            // progress-independent; the debug dumps show it through the
-            // shader's heat ramp (R channel = mask value exactly).
-            //   p=0.25 -> quad covers the top of the frame; the mask profile
-            //            decodes row by row against theory (p=0 no longer
-            //            renders anything - the M1.8 global fade keeps the
-            //            fully-open desktop invisible).
-            //   p=0.5  -> the folded quad clips the mask (alpha boundary at
-            //            the known FarEdgeY) - quad/mask coupling evidence.
-            NotifyLidState(RawLidState(0.25));
-            await Task.Delay(2500);
-            _renderer?.RequestDump(Path.Combine(dir, "selftest-mask-p25.raw"), debugMask: true);
-            Trace.Log("selftest: mask debug dump @p=0.25 requested");
-            await Task.Delay(1500);
-
-            NotifyLidState(RawLidState(0.5));
-            await Task.Delay(2500);
-            _renderer?.RequestDump(Path.Combine(dir, "selftest-mask-p50.raw"), debugMask: true);
-            Trace.Log("selftest: mask debug dump @p=0.5 requested");
-            await Task.Delay(1500);
-
             Trace.Log("selftest: DONE");
         }
         catch (Exception ex)

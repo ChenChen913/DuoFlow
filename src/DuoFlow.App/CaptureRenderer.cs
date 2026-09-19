@@ -46,28 +46,24 @@ public sealed class CaptureRenderer : IDisposable
     private IDXGISwapChain1? _swapChain;
     private ID3D11Texture2D? _backBuffer;
     private ID3D11Texture2D? _latestFrame;
+    private ID3D11ShaderResourceView? _latestFrameSrv;
     private ID3D11DeviceContext? _context;
     private WarpPipeline? _warp;
     private readonly WarpOptions _warpOptions = new();
-    private readonly HingeMaskProfile _maskProfile = HingeMask.Build();
     private readonly BlurOptions _blurOptions = new();
-    private readonly DimOptions _dimOptions = new();
     private readonly object _renderGate = new();
     private DumpRequest? _pendingDumpRequest;
     private bool _sourceFrozen; // DD-045: true while the fold is on screen (capture frozen)
     private int _panelPixelWidth;
     private int _panelPixelHeight;
-    private double _maxBlurNormalized;
     private bool _disposed;
 
     /// <summary>
-    /// Global opacity of the fullscreen composite (DD-044). Sub-unity ON
-    /// PURPOSE: the fullscreen capture contains our own previous output, and
-    /// an opacity below 1 turns that feedback into a converging geometric
-    /// series (the frosted-glass trail) instead of an unbounded fold-of-fold
-    /// compounding. 1.0 would melt the screen into the hinge within seconds.
+    /// Global opacity of the fullscreen composite. 1.0 (DD-045): the fold
+    /// renders from the FROZEN clean desktop (no capture feedback), so it can
+    /// be fully opaque - no ghost, no melt.
     /// </summary>
-    public const double GlobalOpacity = 1.0; // DD-045: 1.0 - the source freeze removes the feedback, opacity < 1 ghosted
+    public const double GlobalOpacity = 1.0;
 
     /// <summary>Progress over which the composite fades in from invisible
     /// (progress 0 = fully open = no effect over the live desktop).</summary>
@@ -84,15 +80,14 @@ public sealed class CaptureRenderer : IDisposable
     private sealed class DumpRequest
     {
         public string Path { get; init; } = "";
-        public bool DebugMask { get; init; }
     }
 
-    /// <summary>M1.4/M1.5 self-test support: request a one-shot staging
-    /// readback of the next rendered frame into a raw BGRA file. Executed on
-    /// the render thread inside the render gate, so the immediate context is
-    /// never touched from two threads.</summary>
-    public void RequestDump(string filePath, bool debugMask = false)
-        => Interlocked.Exchange(ref _pendingDumpRequest, new DumpRequest { Path = filePath, DebugMask = debugMask });
+    /// <summary>M1.4 self-test support: request a one-shot staging readback of
+    /// the next rendered frame into a raw BGRA file. Executed on the render
+    /// thread inside the render gate, so the immediate context is never
+    /// touched from two threads.</summary>
+    public void RequestDump(string filePath)
+        => Interlocked.Exchange(ref _pendingDumpRequest, new DumpRequest { Path = filePath });
 
     public CaptureRenderer(SwapChainPanel panel, DesktopCapture capture, LidAnimationClock? clock = null)
     {
@@ -113,19 +108,25 @@ public sealed class CaptureRenderer : IDisposable
 
         // Persistent GPU copy of the latest captured frame (M1.8: the render
         // heartbeat samples THIS texture, decoupling render from capture rate).
+        // Model v2 (DD-046): full MIP chain + GenerateMips - the frosted blur
+        // pre-filters through mip levels (velvet, no mosaic). CopyResource
+        // cannot resize, so each capture frame lands via CopySubresourceRegion
+        // into level 0 and GenerateMips rebuilds the chain.
+        int mipLevels = (int)Math.Floor(Math.Log2(Math.Max(size.Width, size.Height))) + 1;
         _latestFrame = device.CreateTexture2D(new Texture2DDescription
         {
             Width = (uint)size.Width,
             Height = (uint)size.Height,
-            MipLevels = 1,
+            MipLevels = (uint)mipLevels,
             ArraySize = 1,
             Format = Format.B8G8R8A8_UNorm,
             SampleDescription = new SampleDescription(1, 0),
             Usage = ResourceUsage.Default,
-            BindFlags = BindFlags.ShaderResource,
+            BindFlags = BindFlags.ShaderResource | BindFlags.RenderTarget,
             CPUAccessFlags = CpuAccessFlags.None,
-            MiscFlags = ResourceOptionFlags.None,
+            MiscFlags = ResourceOptionFlags.GenerateMips,
         });
+        _latestFrameSrv = device.CreateShaderResourceView(_latestFrame, null);
 
         // Composition swapchain sized to the PANEL'S PIXEL SIZE (2026-09-19
         // DPI-scaling workaround, HC 6.2); with the fullscreen panel this
@@ -180,11 +181,6 @@ public sealed class CaptureRenderer : IDisposable
         WarpState = _warp is null ? "blit fallback (warp init failed)" : "active";
         Trace.Log($"capture renderer: warp state = {WarpState} (swapchain {swapSize.Width}×{swapSize.Height})");
 
-        // M1.6: blur radius knob, normalized to the source frame height once
-        // (the capture frame pool only changes size via RecreateFramePool,
-        // which re-runs this method's caller flow - a restart for now).
-        _maxBlurNormalized = _blurOptions.MaxBlurNormalized(size.Height);
-
         _capture.FrameArrived += OnFrameArrived;
     }
 
@@ -212,10 +208,11 @@ public sealed class CaptureRenderer : IDisposable
 
             if (_warp is { } warp && _clock is { } clock)
             {
-                // M1.4-M1.8: engine Tick -> smoothed progress -> warp + mask +
-                // blur + dim -> fullscreen composite. The AnimationEngine is
-                // the ONLY progress source (DD-002/DD-038); the clock
-                // serializes the UI thread's Update() against this thread.
+                // M1.4-M1.8 model v2: engine Tick -> smoothed progress ->
+                // warp + physical gap blur/light (DD-046) -> fullscreen
+                // composite. The AnimationEngine is the ONLY progress source
+                // (DD-002/DD-038); the clock serializes the UI thread's
+                // Update() against this thread.
                 LidState state = clock.Tick();
                 WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
 
@@ -235,11 +232,10 @@ public sealed class CaptureRenderer : IDisposable
                     Trace.Log("capture renderer: effect visible - capture source frozen (DD-045)");
                 }
 
-                double effectOpacity =
+                double fadeOpacity =
                     Math.Clamp(state.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
-                warp.Render(_context, _latestFrame, frame, _maskProfile, request?.DebugMask ?? false,
-                    _maxBlurNormalized, _blurOptions.IntensityAt(state.Progress), _dimOptions.MaxDarkness,
-                    effectOpacity);
+                warp.Render(_context, _latestFrame, frame,
+                    _blurOptions.MaxBlurPixels, _blurOptions.IntensityAt(state.Progress), fadeOpacity);
             }
             else
             {
@@ -268,15 +264,18 @@ public sealed class CaptureRenderer : IDisposable
         // effect is INVISIBLE (progress 0). Once the fold is on screen the
         // capture contains our own output - sampling it ghosts (DD-045), so
         // the source stays frozen at the last clean desktop until the fold
-        // fully opens again. Rendering happens on the heartbeat (RenderTick),
-        // decoupled from the capture rate (TECHNICAL_PROPOSAL §22).
+        // fully opens again. Level 0 only (CopyResource needs identical
+        // chains); GenerateMips rebuilds the rest for the frost pre-filter.
+        // Rendering happens on the heartbeat (RenderTick), decoupled from the
+        // capture rate (TECHNICAL_PROPOSAL §22).
         lock (_renderGate)
         {
             if (_disposed || _sourceFrozen)
             {
                 return;
             }
-            _context?.CopyResource(_latestFrame, texture);
+            _context?.CopySubresourceRegion(_latestFrame, 0, 0, 0, 0, texture, 0, null);
+            _context?.GenerateMips(_latestFrameSrv!);
         }
     }
 
@@ -342,6 +341,7 @@ public sealed class CaptureRenderer : IDisposable
 
         _capture.FrameArrived -= OnFrameArrived;
         try { _warp?.Dispose(); } catch { }
+        try { _latestFrameSrv?.Dispose(); } catch { }
         try { _latestFrame?.Dispose(); } catch { }
         try { _backBuffer?.Dispose(); } catch { }
         try { _swapChain?.Dispose(); } catch { }
