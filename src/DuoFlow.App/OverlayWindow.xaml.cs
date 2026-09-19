@@ -212,14 +212,7 @@ public sealed partial class OverlayWindow : Window
             for (int i = 0; i < steps.Length; i++)
             {
                 double p = steps[i];
-                LidState raw = new(
-                    Angle: ManualProvider.DefaultOpenAngleDegrees
-                           - (ManualProvider.DefaultOpenAngleDegrees - ManualProvider.DefaultNearClosedAngleDegrees) * p,
-                    Progress: p,
-                    Velocity: 0.0,
-                    Confidence: 1.0,
-                    Source: LidStateSource.Manual);
-                NotifyLidState(raw);
+                NotifyLidState(RawLidState(p));
 
                 await Task.Delay(2500); // engine slew (rate cap 2.0/s) + settle
 
@@ -230,6 +223,25 @@ public sealed partial class OverlayWindow : Window
                 await Task.Delay(1500); // let a rendered frame carry the dump out
             }
 
+            // M1.5: hinge-mask debug phase (DD-040). The mask is
+            // progress-independent; the debug dumps show it through the
+            // shader's heat ramp (R channel = mask value exactly).
+            //   p=0   -> identity quad: the FULL frame is mask, so the
+            //            profile can be decoded row by row against theory.
+            //   p=0.5 -> the folded quad clips the mask (alpha boundary at
+            //            the known FarEdgeY) - quad/mask coupling evidence.
+            NotifyLidState(RawLidState(0.0));
+            await Task.Delay(2500);
+            _renderer?.RequestDump(Path.Combine(dir, "selftest-mask-p0.raw"), debugMask: true);
+            Trace.Log("selftest: mask debug dump @p=0 requested");
+            await Task.Delay(1500);
+
+            NotifyLidState(RawLidState(0.5));
+            await Task.Delay(2500);
+            _renderer?.RequestDump(Path.Combine(dir, "selftest-mask-p50.raw"), debugMask: true);
+            Trace.Log("selftest: mask debug dump @p=0.5 requested");
+            await Task.Delay(1500);
+
             Trace.Log("selftest: DONE");
         }
         catch (Exception ex)
@@ -237,6 +249,14 @@ public sealed partial class OverlayWindow : Window
             Trace.Log($"selftest: FAILED: {ex.GetType().Name}: {ex.Message}");
         }
     }
+
+    private static LidState RawLidState(double p) => new(
+        Angle: ManualProvider.DefaultOpenAngleDegrees
+               - (ManualProvider.DefaultOpenAngleDegrees - ManualProvider.DefaultNearClosedAngleDegrees) * p,
+        Progress: p,
+        Velocity: 0.0,
+        Confidence: 1.0,
+        Source: LidStateSource.Manual);
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {

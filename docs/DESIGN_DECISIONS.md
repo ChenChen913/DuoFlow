@@ -1309,6 +1309,74 @@ HLSL 的编译方式、以及——本轮真机暴露的——显示合成路径
 
 ---
 
+# DD-040：M1.5 Hinge Mask 的定义、复用铰链系约束与 Debug 可视化编码
+
+**Status:** Accepted（M1.5 实现时提出，随任务指令确认登记）
+
+## 背景
+
+PROJECT_SPEC §11 要求铰链遮罩可配置（Hinge Position / Hinge Width / Falloff / Direction），
+遮罩是 M1.6 Blur（`blur = mask × progress × maxBlur`）与 M1.7 Dimming
+（`brightness = 1 − mask × progress × maxDarkness`）的公共输入。规格未定死的有四件：
+遮罩在哪个坐标系里定义、四个旋钮各自的确切语义、异常输入的防线、以及
+"可视化 Debug Mask"在显示合成路径故障的机器上如何验收。
+
+## 决定
+
+1. **坐标系 = 复用 warp 的铰链系（DD-039 迁移约束的兑现）**：遮罩在铰链系 y
+   （0 = 铰链边，1 = 远边）上定义，而该 y 由 warp 的 DestYRemap 给出——
+   **MaskOptions 刻意不含方向字段**：方向由 warp 决定，遮罩只随动，结构上杜绝错位。
+2. **旋钮语义**（`DuoFlow.Render/MaskOptions` → `HingeMaskProfile`，纯 C# 可单测）：
+   `m(y) = (1 − smoothstep(|y − center| / width))^exponent`；
+   center=0 默认与 warp 折叠轴重合（Hinge Position），width=0.35（Hinge Width），
+   exponent=2（Falloff）。**exponent 限制在 [1, 8]**：<1 时收敛端斜率无界
+   （数学上不平滑，违反 PROJECT_SPEC"过渡必须平滑"），从校验层排除。
+3. **遮罩与 Progress 解耦**：遮罩是静态几何函数，progress 缩放发生在下游 Pass
+   （M1.6/M1.7 公式）——selftest 已实证 p=0 与 p=0.5 两帧的遮罩剖面逐行一致。
+4. **Debug 可视化 = shader 热力编码**：常量缓冲加 `MaskParams`（center/width/
+   exponent/debug），debug 分支输出纯热力图 `rgb = (m, 0.2, 1−m)`（红=铰链、蓝=远端），
+   alpha 规则与图像路径完全一致（四边形外透明）。**R/A 与 B/A 通道可精确反解遮罩值**
+   （预乘下除回 alpha 即可），这使 Debug 图同时是**量化验收的编码载体**而不只是好看。
+5. **验收 = 同一条 selftest 管线**：`--warp-selftest` 增加 mask 阶段
+   （p=0 全幅剖面 + p=0.5 折叠裁剪），分析脚本解码 5 个采样行 vs 闭式解
+   ——实测全部误差 ≤0.004，B 通道交叉验证 ≤0.004，quadTop 裁剪边界 486/484.7。
+
+## 原因
+
+* 结构性复用铰链系而非"约定对齐"：M1.5 最大的风险是遮罩与折叠线错位，
+  让编译器别无选择比写注释可靠；
+* 遮罩 progress 无关 → 一次构建常驻常量，每帧只随 warp 矩阵更新 3 个标量；
+* 热力图可反解的设计让"可视化"与"可测"合一——M2.3 视觉调优时人眼看的和
+  脚本量的是同一个东西；
+* exponent 下界从校验层挡住不平滑曲线，比文档约束可靠。
+
+## 替代方案
+
+* 独立 DuoHingeMask.hlsl 第二个 Pass（第二交换链/第二次绘制）→ M1 阶段允许合并 Pass
+  （PROJECT_SPEC §9），单绘制单交换链更少状态与延迟，逻辑模块化由 Render 模块保证，放弃；
+* 高斯遮罩 → 旋钮更多、与 spec 的 smoothstep 示意不符；smoothstep^exp 一个旋钮覆盖
+  平滑家族，放弃；
+* Debug 用桌面 50/50 混合叠加 → 反解不再精确（像素值受捕获内容污染）；纯热力图才可测。
+
+## 影响
+
+* `MaskParams` 常量缓冲 96→112 字节；DuoWarp.hlsl 每 pixel 多 ~10 条指令（编译器在
+  非 debug 路径可裁剪部分）；
+* `CaptureRenderer` 持有 `HingeMaskProfile`（默认参数），M2.5 参数面板从它接线；
+* M1.6/M1.7 直接消费 `mask`（shader 内已算好），blur/dim 半径公式挂接点已就位。
+
+## 迁移方案
+
+不适用（新增）。约束两条：**M1.6 Blur / M1.7 Dimming 必须消费同一个 mask 值**
+（不要各自重算）；若未来 warp 支持非常数折叠轴（如透视后铰链弯曲），遮罩定义须同步升级。
+
+## 相关决策
+
+- DD-039（warp 几何与铰链系——本决策是其迁移约束的兑现）
+- DD-002/DD-038（遮罩同样只依赖渲染侧坐标，不读 Provider）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。

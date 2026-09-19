@@ -57,11 +57,11 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅；M1.1-M1.4 ✅） |
-| 当前小任务 | **M1.5 Hinge Mask**（Hinge Position / Hinge Width / Falloff 可调 + 可视化 Debug Mask）——数学放 DuoFlow.Render（复用 DD-039 铰链定义），渲染按 M1.4 同套路（hlsl + 常量缓冲 + --*-selftest 验收） |
-| 下一步行动 | M1.5 Hinge Mask → M1.6 Blur → M1.7 Dimming → M1.8 MVP Composite；**真机环境问题待查**（见 HC §6.2：2026-09-19 起 SwapChainPanel 屏幕内容不可见，疑与 KB5129195 重启生效有关——渲染本身已被进程内自测证明正确，不阻塞 M1.5-M1.7 的同套路开发，但 M1.8 全链路视觉验收前必须解决） |
-| 阻塞项 | 渲染无阻塞（M1.4 已按进程内自测路线验收 ✅）。**机器显示合成路径疑似被 2026-09-19 生效的 Windows 安全更新破坏**：SwapChainPanel 内容屏幕上不可见（warp/blit/基线 baaf444 三方复现），证据与排查线索见 HC §6.2 与 DD-039 §7——下一位接手若要做屏幕级视觉验证，先处理这条。CI 口径：本次 push 起以 GitHub Actions 实际 run 为准 |
-| 最后更新 | 2026-09-19 · M1.4 Perspective Warp 完成（真机 GPU 实证 + 进程内自测 9 档 ≤3px 无滞回）· Super Z |
+| 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅；M1.1-M1.5 ✅） |
+| 当前小任务 | **M1.6 Blur**（局部 Blur，由 Hinge Mask 与 Progress 控制 + 调整最大 Blur + 测试性能）——消费 DD-040 的同一个 mask 值，shader 内实现（单 Pass 合并），验收复用 --warp-selftest 套路 |
+| 下一步行动 | M1.6 Blur → M1.7 Dimming → M1.8 MVP Composite；**真机环境问题待查**（见 HC §6.2：2026-09-19 起 SwapChainPanel 屏幕内容不可见，疑与 KB5129195 重启生效有关——渲染本身已被进程内自测证明正确，不阻塞 M1.6/M1.7 的同套路开发，但 M1.8 全链路视觉验收前必须解决） |
+| 阻塞项 | 渲染无阻塞（M1.4/M1.5 已按进程内自测路线验收 ✅）。**机器显示合成路径疑似被 2026-09-19 生效的 Windows 安全更新破坏**：SwapChainPanel 内容屏幕上不可见（warp/blit/基线 baaf444 三方复现），证据与排查线索见 HC §6.2 与 DD-039 §7——下一位接手若要做屏幕级视觉验证，先处理这条。CI 口径：以 GitHub Actions 实际 run 为准 |
+| 最后更新 | 2026-09-19 · M1.4 Perspective Warp + M1.5 Hinge Mask 完成（进程内自测验收）· Super Z |
 
 ---
 
@@ -232,10 +232,15 @@
 **产物**：`shaders/DuoWarp.hlsl`、`src/DuoFlow.Render/`（新纯 net8.0 模块：WarpOptions/WarpFrame/WarpGeometry）、`src/DuoFlow.App/`（WarpPipeline.cs、LidAnimationClock.cs 新增；CaptureRenderer/OverlayWindow/MainWindow/App/OverlayProbe/csproj 接线）、`src/DuoFlow.Core.Tests/WarpGeometryTests.cs`、DD-039、`_test/m14-selftest.ps1`（仓库外验收基建）。
 **踩坑记录**：① Vortice 3.8.3 API 与常见资料差异大（`Compiler.CompileFromFile` 非 D3DCompileFromFile、`RenderTargetBlendDescription` 字段名、固定缓冲需 unsafe→改无混合方案、Blob 在 Vortice.DirectX）——反射程序集拿真实签名是唯一可靠路径；② WinUI 面板屏幕坐标在 DPI 125% 下是 DIP×1.25，屏幕采样前必须 `SetProcessDPIAware` 并换算；③ 显示合成路径故障时，**渲染正确性必须与显示正确性分开举证**（进程内回读是渲染侧的权威证据）。
 
-#### M1.5 Hinge Mask
+#### M1.5 Hinge Mask ✅（2026-09-19 完成：复用 warp 铰链系 + Debug 热力图可反解验收）
 
-* [ ] 创建 Hinge Mask（Hinge Position / Hinge Width / Falloff 可调）
-* [ ] 可视化 Debug Mask
+* [x] 创建 Hinge Mask（Hinge Position / Hinge Width / Falloff 可调——`DuoFlow.Render/HingeMask`：`m(y) = (1 − smoothstep(|y−center|/width))^exponent`，center=0 与 warp 折叠轴重合、width=0.35、exponent=2；**exponent 限 [1,8]**：<1 时收敛端斜率无界违反"过渡必须平滑"，校验层挡下）
+* [x] 可视化 Debug Mask（DuoWarp.hlsl 加 MaskParams 常量 + debug 热力分支：`rgb=(m,0.2,1−m)` 红=铰链蓝=远端，alpha 规则与图像路径一致；**R/A、B/A 通道可精确反解遮罩值**——可视化同时是量化验收的编码载体）
+
+**验收（数学层）**：HingeMaskTests 18 新用例（峰值/宽度外清零/单调/对称/中点闭式/指数生效/闭式全扫/连续性护栏/非有限 y/三类坏参数/默认值）——**合计 70/70 本地+CI 全绿** ✅。
+**验收（渲染层）**：`--warp-selftest` mask 阶段——p=0 全幅剖面 5 采样行 vs 闭式解**误差 ≤0.004**，B 通道交叉验证 ≤0.004；p=0.5 折叠四边形正确裁剪（quadTop 486/484.7）且**剖面与 p=0 逐行一致**（遮罩 progress 无关性实证）；warp 9 档回归全 PASS + 无滞回；PNG 存档（m15-mask-debug-p0/p50.png）目视红蓝过渡带与参数吻合 ✅。
+**产物**：`src/DuoFlow.Render/HingeMask.cs`（MaskOptions/HingeMaskProfile/HingeMask.Build）、`src/DuoFlow.Core.Tests/HingeMaskTests.cs`、DuoWarp.hlsl（MaskParams + debug 分支，常量缓冲 96→112 字节）、CaptureRenderer/WarpPipeline/OverlayWindow selftest 接线、DD-040、`_test/m14-selftest.ps1`（mask 分析 + PNG 导出）。
+**踩坑记录**：① 连续性护栏测试的固定步长界不能跨指数通用——exp=8 的合法斜率可达 ~0.114/步，精确性交给闭式断言、护栏只防 O(0.3+) 的真断点，两者分工写进测试注释；② PowerShell 字符串内 `$row:` 会被解析为 drive 引用，`${row}` 转义。
 
 #### M1.6 Blur
 
@@ -326,6 +331,16 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-19 · Phase 2 / M1.5 Hinge Mask（复用铰链系 + Debug 可反解热力图） · Super Z (main agent)
+
+- **完成**：`DuoFlow.Render/HingeMask`（MaskOptions → HingeMaskProfile.Build + Evaluate 纯函数）——`m(y) = (1 − smoothstep(|y−center|/width))^exponent`，Hinge Position（center，默认 0 与 warp 折叠轴重合）/ Hinge Width（width=0.35）/ Falloff（exponent=2）三旋钮齐备；**坐标系复用 warp 铰链系（DD-039 迁移约束兑现）**——MaskOptions 刻意不含方向字段，方向由 warp 的 DestYRemap 决定，结构上杜绝遮罩与折叠线错位；遮罩与 Progress 解耦（progress 缩放属 M1.6/M1.7 公式），selftest 实证 p=0/p=0.5 剖面逐行一致
+- **Debug Mask**：DuoWarp.hlsl 加 MaskParams 常量（center/width/exponent/debug，96→112 字节）+ 热力分支 `rgb=(m,0.2,1−m)`（红=铰链蓝=远端，alpha 规则同图像路径）；**R/A、B/A 可精确反解 m**——可视化和量化验收共用同一编码（DD-040）
+- **单测 18 新用例（合计 70/70 本地+CI）**：峰值/宽度外清零/单调下降/中心对称/中点闭式（exp=1→0.5、exp=2→0.25）/指数生效对比/闭式全扫/连续性护栏/非有限 y 抛错/坏 center/width/exponent 抛错/默认值
+- **真机自测验收**：`--warp-selftest` 新增 mask 阶段（p=0 全幅 + p=0.5 折叠裁剪）——5 采样行 vs 闭式解**误差 ≤0.004**、B 通道交叉验证 ≤0.004、quadTop 486/484.7、p=0/p=0.5 剖面一致；warp 9 档回归全 PASS + 无滞回；PNG 存档目视吻合（m15-mask-debug-p0/p50.png）
+- **踩坑记录**：① **FalloffExponent 限 [1,8] 的原因**：exp<1 时遮罩收敛端斜率无界（数学不平滑，违反 PROJECT_SPEC"过渡必须平滑"），校验层挡下而非文档约定；② 连续性护栏的固定步长界不跨指数通用（exp=8 合法斜率 ~0.114/步）——护栏防 O(0.3+) 真断点，精确性由闭式断言负责，分工写进注释；③ PS 字符串 `$row:` 被解析为 drive 引用需 `${row}`
+- **产物**：`src/DuoFlow.Render/HingeMask.cs`、`src/DuoFlow.Core.Tests/HingeMaskTests.cs`、`shaders/DuoWarp.hlsl`、`src/DuoFlow.App/`（CaptureRenderer mask 持有 + RequestDump(debug) 开关、WarpPipeline Render 签名、OverlayWindow selftest mask 阶段）、DD-040、本文件三件套、`_test/m14-selftest.ps1`（mask 分析 + PNG 导出）
+- **遗留 / 阻塞**：渲染无阻塞 → M1.6 Blur（消费 DD-040 同一个 mask 值，shader 内实现 + selftest 验收：blur 半径 = mask × progress × maxBlur，量化验证建议"棋盘格模糊带宽测量"）；机器显示合成路径故障待查（HC §6.2，M1.8 屏幕级验收前必须解决）
 
 ### 2026-09-19 · Phase 2 / M1.4 Perspective Warp（真机 GPU 实证 + 进程内自测验收） · Super Z (main agent)
 

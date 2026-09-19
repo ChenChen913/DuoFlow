@@ -38,14 +38,14 @@ public sealed class CaptureRenderer : IDisposable
     private readonly SwapChainPanel _panel;
     private readonly DesktopCapture _capture;
     private readonly LidAnimationClock? _clock;
-    private readonly WarpOptions _warpOptions = new();
 
     private IDXGIFactory2? _factory;
     private IDXGISwapChain1? _swapChain;
     private ID3D11Texture2D? _backBuffer;
     private ID3D11DeviceContext? _context;
     private WarpPipeline? _warp;
-    private string? _dumpRequest;
+    private readonly WarpOptions _warpOptions = new();
+    private readonly HingeMaskProfile _maskProfile = HingeMask.Build();
     private bool _disposed;
 
     /// <summary>Total frames presented (thread-safe counter for FPS display).</summary>
@@ -62,7 +62,16 @@ public sealed class CaptureRenderer : IDisposable
     /// is never touched from two threads. Used by --warp-selftest to verify
     /// the warp output IN-PROCESS - independent of the desktop composition
     /// path, which currently has a machine-level issue (see HANDOFF).</summary>
-    public void RequestDump(string filePath) => Interlocked.Exchange(ref _dumpRequest, filePath);
+    private sealed class DumpRequest
+    {
+        public string Path { get; init; } = "";
+        public bool DebugMask { get; init; }
+    }
+
+    private DumpRequest? _pendingDump;
+
+    public void RequestDump(string filePath, bool debugMask = false)
+        => Interlocked.Exchange(ref _pendingDump, new DumpRequest { Path = filePath, DebugMask = debugMask });
 
     public CaptureRenderer(SwapChainPanel panel, DesktopCapture capture, LidAnimationClock? clock = null)
     {
@@ -120,15 +129,21 @@ public sealed class CaptureRenderer : IDisposable
             return;
         }
 
+        // Consume a pending self-test dump request BEFORE drawing: the debug
+        // flag must reach the constant buffer of the very frame that gets
+        // dumped (M1.5 mask debug visualizations).
+        DumpRequest? request = Interlocked.Exchange(ref _pendingDump, null);
+
         if (_warp is { } warp && _clock is { } clock)
         {
-            // M1.4: engine Tick -> smoothed progress -> warp constants -> draw.
-            // The AnimationEngine is the ONLY progress source for the render
-            // side (DD-002/DD-038); the clock serializes the UI thread's
-            // Update() against this worker thread's Tick().
+            // M1.4/M1.5: engine Tick -> smoothed progress -> warp + hinge-mask
+            // constants -> draw. The AnimationEngine is the ONLY progress
+            // source for the render side (DD-002/DD-038); the clock
+            // serializes the UI thread's Update() against this worker
+            // thread's Tick().
             LidState state = clock.Tick();
             WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
-            warp.Render(_context, texture, frame);
+            warp.Render(_context, texture, frame, _maskProfile, request?.DebugMask ?? false);
         }
         else
         {
@@ -138,12 +153,11 @@ public sealed class CaptureRenderer : IDisposable
             _context.CopyResource(_backBuffer, texture);
         }
 
-        // Self-test dump (M1.4): read back the just-drawn frame before it is
-        // presented. Executed here on the render thread by design.
-        string? dumpPath = Interlocked.Exchange(ref _dumpRequest, null);
-        if (dumpPath is not null)
+        // Self-test dump (M1.4/M1.5): read back the just-drawn frame before it
+        // is presented. Executed here on the render thread by design.
+        if (request is not null)
         {
-            DumpBackBuffer(dumpPath);
+            DumpBackBuffer(request.Path);
         }
 
         _swapChain!.Present(1, 0);

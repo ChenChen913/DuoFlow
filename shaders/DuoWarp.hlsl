@@ -41,6 +41,14 @@ cbuffer WarpConstants : register(b0)
     float4 SrcYRemap;
     // x: feather width in normalized units; yzw reserved.
     float4 EdgeParams;
+    // M1.5 Hinge Mask (DD-040), evaluated in the SAME hinge frame as the
+    // warp (DD-039: mask and warp share one hinge definition):
+    //   d = |y - x|;  t = saturate(d / y);  m = (1 - smoothstep(0,1,t))^z
+    // x: hinge center (normalized distance from the hinge edge)
+    // y: hinge width (mask reaches 0 at this distance)
+    // z: falloff exponent (shape of the falloff)
+    // w: debug flag (>0.5 -> output the mask heat ramp instead of the image)
+    float4 MaskParams;
 };
 
 Texture2D    DesktopTexture : register(t0);
@@ -85,9 +93,6 @@ float4 PSMain(VSOutput input) : SV_Target
         return float4(0.0, 0.0, 0.0, 0.0);
     }
 
-    float2 sourceUv = float2(sx * 0.5 + 0.5, SrcYRemap.x * sy + SrcYRemap.y);
-    float3 rgb = DesktopTexture.Sample(LinearClamp, sourceUv).rgb;
-
     // Feathered quad boundary (premultiplied alpha) - hides the fold's
     // aliasing edge against the live desktop. At progress 0 the quad IS the
     // panel, so this only softens the panel's own border over identical
@@ -95,6 +100,23 @@ float4 PSMain(VSOutput input) : SV_Target
     float f = max(EdgeParams.x, 1e-5);
     float a = smoothstep(0.0, f, sy) * smoothstep(0.0, f, 1.0 - sy)
             * smoothstep(0.0, f, sx + 1.0) * smoothstep(0.0, f, 1.0 - sx);
+
+    // M1.5 Hinge Mask (DD-040): evaluated in the SAME hinge frame as the
+    // warp (the y above), peak at MaskParams.x, zero at center ± width.
+    float maskT = saturate(abs(y - MaskParams.x) / MaskParams.y);
+    float maskS = maskT * maskT * (3.0 - 2.0 * maskT);              // smoothstep
+    float mask = pow(saturate(1.0 - maskS), MaskParams.z);           // falloff
+
+    if (MaskParams.w > 0.5)
+    {
+        // Debug Mask visualization: pure heat ramp, RED = hinge (mask 1),
+        // BLUE = far (mask 0). The R channel decodes the mask exactly
+        // (m = R/A on the premultiplied output). Alpha rules unchanged.
+        return float4(float3(mask, 0.2, 1.0 - mask) * a, a);
+    }
+
+    float2 sourceUv = float2(sx * 0.5 + 0.5, SrcYRemap.x * sy + SrcYRemap.y);
+    float3 rgb = DesktopTexture.Sample(LinearClamp, sourceUv).rgb;
 
     return float4(rgb * a, a);
 }

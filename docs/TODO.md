@@ -153,13 +153,13 @@ Progress 改变时，桌面产生连续空间变形。✅ 渲染层已实证（�
 
 ---
 
-## M1.5 Hinge Mask
+## M1.5 Hinge Mask ✅（2026-09-19）
 
-* [ ] 创建 Hinge Mask
-* [ ] 支持 Hinge Position
-* [ ] 支持 Hinge Width
-* [ ] 支持 Falloff
-* [ ] 可视化 Debug Mask
+* [x] 创建 Hinge Mask（`DuoFlow.Render/HingeMask`：m(y) = (1 − smoothstep(|y−center|/width))^exponent，复用 warp 铰链系——DD-040）
+* [x] 支持 Hinge Position（center，默认 0 = warp 折叠轴）
+* [x] 支持 Hinge Width（width，默认 0.35，宽度外遮罩精确为 0）
+* [x] 支持 Falloff（exponent，默认 2，限 [1,8] 保证平滑）
+* [x] 可视化 Debug Mask（shader 热力分支 rgb=(m,0.2,1−m)，R/A 可精确反解；selftest 实测 5 采样行误差 ≤0.004 + p=0.5 折叠裁剪正确）
 
 ---
 

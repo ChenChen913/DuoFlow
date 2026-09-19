@@ -33,7 +33,7 @@ namespace DuoFlow.App;
 public sealed class WarpPipeline : IDisposable
 {
     /// <summary>Constant buffer layout - must match the cbuffer in DuoWarp.hlsl
-    /// (6 × float4 = 96 bytes; three float4s instead of float3x3 leave no
+    /// (7 × float4 = 112 bytes; three float4s instead of float3x3 leave no
     /// row/column-major packing doubt).</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Constants
@@ -44,6 +44,7 @@ public sealed class WarpPipeline : IDisposable
         public Vector4 DestYRemap;
         public Vector4 SrcYRemap;
         public Vector4 EdgeParams;
+        public Vector4 MaskParams; // M1.5: x=center, y=width, z=falloff, w=debug
     }
 
     public const string ShaderFileName = "DuoWarp.hlsl";
@@ -175,11 +176,13 @@ public sealed class WarpPipeline : IDisposable
 
     /// <summary>
     /// One warp pass: clear the back buffer to transparent, tick the constant
-    /// buffer with the frame's homography, sample the captured desktop through
-    /// the warp, draw. The SRV is unbound before returning - the captured
-    /// texture is released by the frame pool right after this call.
+    /// buffer with the frame's homography + the hinge mask parameters, sample
+    /// the captured desktop through the warp, draw. The SRV is unbound before
+    /// returning - the captured texture is released by the frame pool right
+    /// after this call.
     /// </summary>
-    public void Render(ID3D11DeviceContext context, ID3D11Texture2D desktopTexture, WarpFrame frame)
+    public void Render(ID3D11DeviceContext context, ID3D11Texture2D desktopTexture, WarpFrame frame,
+        HingeMaskProfile mask, bool debugMask)
     {
         if (_disposed || _renderTarget is null)
         {
@@ -194,6 +197,13 @@ public sealed class WarpPipeline : IDisposable
             DestYRemap = new Vector4((float)frame.DestYScale, (float)frame.DestYOffset, 0f, 0f),
             SrcYRemap = new Vector4((float)frame.SrcYScale, (float)frame.SrcYOffset, 0f, 0f),
             EdgeParams = new Vector4((float)frame.EdgeFeather, 0f, 0f, 0f),
+            // M1.5 hinge mask (DD-040): evaluated in the warp's hinge frame;
+            // w = debug flag switches the shader to the mask heat ramp.
+            MaskParams = new Vector4(
+                (float)mask.HingeCenter,
+                (float)mask.HingeWidth,
+                (float)mask.FalloffExponent,
+                debugMask ? 1f : 0f),
         };
         context.UpdateSubresource(constants, _constantBuffer!, 0, 0, 0, null);
 
