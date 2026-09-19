@@ -61,7 +61,7 @@
 | 当前小任务 | **M1.8 MVP Composite**（Warp + Hinge Mask + Blur + Dimming 组合实时运行）——四个 Pass 的 shader ingredient 已全部就位并各自定量验收；剩余工作 = 全屏化组合渲染 + M1 总验收（Manual Progress → Warp → Blur → Dimming 全链路实时运行） |
 | 下一步行动 | M1.8 MVP Composite → M2 视觉打磨（渐变/光带/调优/Demo 模式/参数面板）；显示合成回归已修复（HC §6.2），屏幕级验收可用 |
 | 阻塞项 | 无阻塞。显示合成故障已于 2026-09-19 修复（HC §6.2）；M1 收尾在望。CI 口径：以 GitHub Actions 实际 run 为准 |
-| 最后更新 | 2026-09-19 · M1.7 Dimming 完成（白窗亮度剖面误差 ≤1.4）——M1 仅剩 M1.8 合成 · Super Z |
+| 最后更新 | 2026-09-19 · M1.7 完成 + 效果强度包络（用户反馈：虚化 0.35 起可见，DD-043）· Super Z |
 
 ---
 
@@ -348,6 +348,16 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-19 · 效果强度包络（用户真机反馈：虚化 0.35 起可见） · Super Z (main agent)
+
+- **用户反馈**：滑块 0.8 时"整个屏幕几乎倒下了，根本看不到效果"，要求虚化从 ~0.35 开始可见——**M2.3 视觉调优的第一次真实输入，来自项目所有者本人**
+- **根因**：`radius = mask × progress × maxBlur` 对进度线性 → progress ≤ 0.5 时半径 <2 面板像素不可见，可见时（0.75+）几何已塌——**效果可见窗口与几何可见窗口错开**
+- **修复（DD-043）**：效果强度包络 `IntensityAt(p)` = 线性坡（Start=0.30 → Full=0.60），CPU 侧先作用于 progress 再进 shader——blur 与 dim 共用同一条包络，shader 零改动；0.3 前无效果、0.35 起可感、0.6 后最大；几何不动（合盖物理感优先）
+- **验收**：91/91 单测（+5 包络用例）；暗化预测公式同步为含包络版本——p=0.75 铰链行 54/62/80 vs 预测 54/62.6/80.9 误差 ≤0.9、p=0.5 铰链行 121/126 误差 ≤0.7、远区 255 不动；模糊铰链 3× 保持、p=0.5 铰链过渡带 1px→3px（中段模糊进入可测量区间）；FPS 47.4
+- **度量教训二则**：① 全屏纯色参考窗无法区分镜像与透底（镜像同色）——参考窗必须带结构；② 暗化会压低参考窗绝对对比度（白侧 255→62），边缘检测门限必须相对化（range ≥30 而非 ≥100）
+- **产物**：`src/DuoFlow.Render/BlurOptions.cs`（Start/Full + IntensityAt）、`src/DuoFlow.Core.Tests/BlurOptionsTests.cs`（+5）、DD-043、`_test/m17-analyze.ps1`（含包络预测公式）
+- **遗留 / 阻塞**：无 → M1.8 MVP Composite；M2.3 调优时用户再体验一轮，包络旋钮（Start/Full）届时进参数面板
 
 ### 2026-09-19 · Phase 2 / M1.6 Blur（单 Pass 13-tap 核 + 边缘宽度法定量验收） · Super Z (main agent)
 

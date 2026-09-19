@@ -50,6 +50,57 @@ public class BlurOptionsTests
     [Fact]
     public void Defaults_AreSensible()
     {
-        Assert.Equal(BlurOptions.DefaultMaxBlurPixels, new BlurOptions().MaxBlurPixels, 12);
+        BlurOptions o = new();
+        Assert.Equal(BlurOptions.DefaultMaxBlurPixels, o.MaxBlurPixels, 12);
+        o.Validate(); // must not throw
+    }
+
+    // -------------------------------------------------------------
+    // M1.6 tuning (2026-09-19 user feedback): the effect envelope must make
+    // the blur visible from ~0.35 instead of only after the fold collapsed.
+    // -------------------------------------------------------------
+
+    [Fact]
+    public void IntensityAt_FollowsLinearEnvelope()
+    {
+        BlurOptions o = new(); // start 0.30, full 0.60
+        Assert.Equal(0.0, o.IntensityAt(0.0), 12);      // nothing before start
+        Assert.Equal(0.0, o.IntensityAt(0.3), 12);      // exactly at start
+        Assert.Equal(0.5, o.IntensityAt(0.45), 12);     // mid-ramp
+        Assert.Equal(1.0, o.IntensityAt(0.6), 12);      // saturated
+        Assert.Equal(1.0, o.IntensityAt(1.0), 12);      // stays saturated
+        Assert.Equal(1.0, o.IntensityAt(1.7), 12);      // clamped above 1
+    }
+
+    [Fact]
+    public void IntensityAt_VisibleByPointThreeFive()
+    {
+        // The user-visible requirement: at 0.35 the envelope already carries
+        // enough intensity for the blur to be perceptible (>= 0.1 of max).
+        BlurOptions o = new();
+        Assert.True(o.IntensityAt(0.35) >= 0.1, $"f(0.35)={o.IntensityAt(0.35)}");
+        Assert.True(o.IntensityAt(0.4) >= 0.3, $"f(0.4)={o.IntensityAt(0.4)}");
+    }
+
+    [Fact]
+    public void IntensityAt_MonotoneAcrossRange()
+    {
+        BlurOptions o = new();
+        double last = -1;
+        for (int i = 0; i <= 100; i++)
+        {
+            double v = o.IntensityAt(i / 100.0);
+            Assert.True(v >= last, $"envelope decreased at p={i / 100.0}");
+            last = v;
+        }
+    }
+
+    [Theory]
+    [InlineData(0.5, 0.4)]  // full <= start
+    [InlineData(0.95, 1.0)] // start beyond the 0.9 cap
+    public void Validate_RejectsBadEnvelope(double start, double full)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => new BlurOptions { StartProgress = start, FullProgress = full }.Validate());
     }
 }

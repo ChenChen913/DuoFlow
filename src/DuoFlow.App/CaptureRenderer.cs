@@ -185,7 +185,7 @@ public sealed class CaptureRenderer : IDisposable
             // thread's Tick().
             LidState state = clock.Tick();
             WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
-            warp.Render(_context, texture, frame, _maskProfile, request?.DebugMask ?? false, _maxBlurNormalized, state.Progress, _dimOptions.MaxDarkness);
+            warp.Render(_context, texture, frame, _maskProfile, request?.DebugMask ?? false, _maxBlurNormalized, _blurOptions.IntensityAt(state.Progress), _dimOptions.MaxDarkness);
         }
         else
         {
