@@ -54,6 +54,7 @@ public sealed class CaptureRenderer : IDisposable
     private readonly DimOptions _dimOptions = new();
     private readonly object _renderGate = new();
     private DumpRequest? _pendingDumpRequest;
+    private bool _sourceFrozen; // DD-045: true while the fold is on screen (capture frozen)
     private int _panelPixelWidth;
     private int _panelPixelHeight;
     private double _maxBlurNormalized;
@@ -66,7 +67,7 @@ public sealed class CaptureRenderer : IDisposable
     /// series (the frosted-glass trail) instead of an unbounded fold-of-fold
     /// compounding. 1.0 would melt the screen into the hinge within seconds.
     /// </summary>
-    public const double GlobalOpacity = 0.65;
+    public const double GlobalOpacity = 1.0; // DD-045: 1.0 - the source freeze removes the feedback, opacity < 1 ghosted
 
     /// <summary>Progress over which the composite fades in from invisible
     /// (progress 0 = fully open = no effect over the live desktop).</summary>
@@ -217,6 +218,23 @@ public sealed class CaptureRenderer : IDisposable
                 // serializes the UI thread's Update() against this thread.
                 LidState state = clock.Tick();
                 WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
+
+                // M1.8 feedback kill (DD-045): the fullscreen capture contains
+                // our own previous output - sampling it while the effect is
+                // visible ghosts (folds the fold, every frame). Freeze the
+                // source at the last progress-0 capture (taken while the
+                // overlay was invisible = clean desktop) and render the fold
+                // from THAT until the fold returns to fully open.
+                if (state.Progress <= 0.001)
+                {
+                    _sourceFrozen = false;
+                }
+                else if (!_sourceFrozen)
+                {
+                    _sourceFrozen = true;
+                    Trace.Log("capture renderer: effect visible - capture source frozen (DD-045)");
+                }
+
                 double effectOpacity =
                     Math.Clamp(state.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
                 warp.Render(_context, _latestFrame, frame, _maskProfile, request?.DebugMask ?? false,
@@ -246,12 +264,15 @@ public sealed class CaptureRenderer : IDisposable
             return;
         }
 
-        // M1.8: refresh the persistent latest-frame copy only. Rendering
-        // happens on the heartbeat (RenderTick), decoupled from the capture
-        // rate (TECHNICAL_PROPOSAL §22).
+        // M1.8: refresh the persistent latest-frame copy only while the
+        // effect is INVISIBLE (progress 0). Once the fold is on screen the
+        // capture contains our own output - sampling it ghosts (DD-045), so
+        // the source stays frozen at the last clean desktop until the fold
+        // fully opens again. Rendering happens on the heartbeat (RenderTick),
+        // decoupled from the capture rate (TECHNICAL_PROPOSAL §22).
         lock (_renderGate)
         {
-            if (_disposed)
+            if (_disposed || _sourceFrozen)
             {
                 return;
             }
