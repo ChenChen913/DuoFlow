@@ -46,6 +46,8 @@ public sealed class CaptureRenderer : IDisposable
     private WarpPipeline? _warp;
     private readonly WarpOptions _warpOptions = new();
     private readonly HingeMaskProfile _maskProfile = HingeMask.Build();
+    private int _panelPixelWidth;
+    private int _panelPixelHeight;
     private bool _disposed;
 
     /// <summary>Total frames presented (thread-safe counter for FPS display).</summary>
@@ -80,19 +82,36 @@ public sealed class CaptureRenderer : IDisposable
         _clock = clock;
     }
 
-    public void Initialize()
+    public void Initialize(int panelPixelWidth = 0, int panelPixelHeight = 0)
     {
+        _panelPixelWidth = panelPixelWidth;
+        _panelPixelHeight = panelPixelHeight;
+
         ID3D11Device device = _capture.Device;
         _context = device.ImmediateContext;
 
         SizeInt32 size = _capture.Item.Size;
 
-        // Composition swapchain sized to the captured monitor.
+        // Composition swapchain sized to the PANEL'S PIXEL SIZE (2026-09-19,
+        // real-machine regression workaround - see HC §6.2): after a Windows
+        // update on this machine (KB5129195 active from 2026-09-19, DPI 125%),
+        // a composition swapchain LARGER than the panel is no longer scaled
+        // down to fit (shown 1:1, cropped) and its premultiplied alpha is not
+        // composited (content invisible). Sizing the swapchain to the panel's
+        // physical pixel size removes the scaling requirement entirely: the
+        // panel displays it 1:1, and the warp shader is resolution-independent
+        // (normalized hinge-frame coordinates), so the captured 1920x1080
+        // texture renders identically into any back-buffer size.
+        SizeInt32 swapSize = size;
+        if (_panelPixelWidth > 0 && _panelPixelHeight > 0)
+        {
+            swapSize = new SizeInt32(_panelPixelWidth, _panelPixelHeight);
+        }
         _factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>().QueryInterface<IDXGIFactory2>();
         var description = new SwapChainDescription1
         {
-            Width = (uint)size.Width,
-            Height = (uint)size.Height,
+            Width = (uint)swapSize.Width,
+            Height = (uint)swapSize.Height,
             Format = Format.B8G8R8A8_UNorm,
             Stereo = false,
             SampleDescription = new SampleDescription(1, 0),
@@ -115,8 +134,23 @@ public sealed class CaptureRenderer : IDisposable
         // captured texture can be sampled directly). Falls back to the M0.2
         // blit when it cannot be created; TryCreate traces the reason.
         _warp = WarpPipeline.TryCreate(device, _backBuffer);
+        if (_warp is null && swapSize.Width != size.Width)
+        {
+            // Shader path unavailable: restore the M0.2 arrangement - the
+            // blit fallback uses CopyResource, which requires the back buffer
+            // and the captured texture to be the SAME size, so the swapchain
+            // moves back to the capture size.
+            Trace.Log("capture renderer: recreating swapchain at capture size for the blit fallback");
+            _backBuffer.Dispose();
+            _swapChain.Dispose();
+            var fallbackDescription = description with { Width = (uint)size.Width, Height = (uint)size.Height };
+            _swapChain = _factory.CreateSwapChainForComposition(device, fallbackDescription, null);
+            using var panelNative2 = new Vortice.WinUI.ISwapChainPanelNative(_panel);
+            panelNative2.SetSwapChain(_swapChain);
+            _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
+        }
         WarpState = _warp is null ? "blit fallback (warp init failed)" : "active";
-        Trace.Log($"capture renderer: warp state = {WarpState}");
+        Trace.Log($"capture renderer: warp state = {WarpState} (swapchain {swapSize.Width}×{swapSize.Height})");
 
         // GPU -> GPU: every captured frame goes straight to the panel.
         _capture.FrameArrived += OnFrameArrived;

@@ -266,8 +266,18 @@ public sealed partial class OverlayWindow : Window
             _capture = new DesktopCapture();
             _capture.Start();
 
+            // Panel pixel size (2026-09-19 workaround, HC §6.2): the swapchain
+            // must match the panel's PHYSICAL pixel size - after the Windows
+            // update on this machine, larger composition swapchains are shown
+            // unscaled (cropped) with broken alpha. ActualWidth is in DIPs;
+            // RasterizationScale is the live monitor scale factor.
+            double scale = CapturePanel.XamlRoot?.RasterizationScale ?? 1.0;
+            int pw = Math.Max(1, (int)Math.Round(CapturePanel.ActualWidth * scale));
+            int ph = Math.Max(1, (int)Math.Round(CapturePanel.ActualHeight * scale));
+            Trace.Log($"overlay: panel pixel size {pw}×{ph} (scale {scale:0.00})");
+
             _renderer = new CaptureRenderer(CapturePanel, _capture, Clock);
-            _renderer.Initialize();
+            _renderer.Initialize(pw, ph);
 
             SizeInt32 size = _capture.Item.Size;
             OverlayCaption.Text =

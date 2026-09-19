@@ -60,8 +60,8 @@
 | 当前 Phase | **Phase 2 — M1 Rendering MVP**（Phase 1 / M0 全部完成 ✅；M1.1-M1.5 ✅） |
 | 当前小任务 | **M1.6 Blur**（局部 Blur，由 Hinge Mask 与 Progress 控制 + 调整最大 Blur + 测试性能）——消费 DD-040 的同一个 mask 值，shader 内实现（单 Pass 合并），验收复用 --warp-selftest 套路 |
 | 下一步行动 | M1.6 Blur → M1.7 Dimming → M1.8 MVP Composite；**真机环境问题待查**（见 HC §6.2：2026-09-19 起 SwapChainPanel 屏幕内容不可见，疑与 KB5129195 重启生效有关——渲染本身已被进程内自测证明正确，不阻塞 M1.6/M1.7 的同套路开发，但 M1.8 全链路视觉验收前必须解决） |
-| 阻塞项 | 渲染无阻塞（M1.4/M1.5 已按进程内自测路线验收 ✅）。**机器显示合成路径疑似被 2026-09-19 生效的 Windows 安全更新破坏**：SwapChainPanel 内容屏幕上不可见（warp/blit/基线 baaf444 三方复现），证据与排查线索见 HC §6.2 与 DD-039 §7——下一位接手若要做屏幕级视觉验证，先处理这条。CI 口径：以 GitHub Actions 实际 run 为准 |
-| 最后更新 | 2026-09-19 · M1.4 Perspective Warp + M1.5 Hinge Mask 完成（进程内自测验收）· Super Z |
+| 阻塞项 | 无阻塞。~~机器显示合成路径故障~~ **已于 2026-09-19 修复**（交换链尺寸改为面板像素尺寸，绕过 KB5129195 引入的 DPI 缩放回归，根因/实验链/代价见 HC §6.2）。屏幕级验收能力恢复。CI 口径：以 GitHub Actions 实际 run 为准 |
+| 最后更新 | 2026-09-19 · M1.4 + M1.5 完成；显示合成回归修复（P1-a 预览差分 0→122.71）· Super Z |
 
 ---
 
@@ -331,6 +331,13 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-09-19 · 显示合成回归修复（SwapChainPanel 内容不可见 → 已解决） · Super Z (main agent)
+
+- **现象与排查**：本机自 9/19 起 SwapChainPanel 内容不上屏（透底），warp/blit/基线 baaf444 三方复现（非 M1.4 回归）。排除链：① WinAppSDK 1.8.* 还原版本两日完全一致（排除包浮动升级）；② DXGI 查询双输出 SDR 8bit（排除 HDR/高级颜色）；③ **决定性实验 AlphaMode=Ignore**：内容出现但按 1:1 裁切显示、未拉伸到面板（600×338）——定位根因 = **"合成交换链尺寸 ≠ 面板像素尺寸"时的 DPI 缩放路径被 KB5129195（9/19 重启生效）破坏**，premultiplied alpha 合成一并失效（#1247 家族新变体）
+- **修复**：交换链尺寸改为面板物理像素尺寸（`ActualWidth/Height × RasterizationScale`，本机 600×338）——面板 1:1 显示无缩放需求，premultiplied alpha 恢复；warp/mask shader 归一化坐标天然分辨率无关，捕获纹理照常采样；blit 回退路径（CopyResource 需同尺寸）在 shader 初始化失败时自动重建捕获尺寸交换链
+- **回归验证**：色带窗截图确认镜像可见且缩放精确（10 条带每条 ~34px = 108×0.3125）；selftest 全量重跑（raw 变为 600×338，分析脚本改为按文件大小推导宽高）——warp 9 档 quadTop ≤1px + 无滞回，mask 剖面误差 ≤0.009、折叠裁剪 152/152；三件套 **P1-a 预览差分 0 → 122.71**，透明 delta=0、穿透 0.4/0.29 全绿——屏幕级验收能力恢复
+- **遗留**：面板像素尺寸只在启动取一次，DPI/显示器变更需重建交换链（挂 SizeChanged/ScaleChanged 监听，M1.8 前做）；HC §6.2 已更新为"已修复"条目（根因/实验链/代价全记录）
 
 ### 2026-09-19 · Phase 2 / M1.5 Hinge Mask（复用铰链系 + Debug 可反解热力图） · Super Z (main agent)
 
