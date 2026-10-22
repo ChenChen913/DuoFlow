@@ -13,7 +13,7 @@ Windows 11 笔记本开合视觉特效系统<br>
 
 <p align="center">
 <a href="https://github.com/ChenChen913/DuoFlow/actions/workflows/m0-windows-build.yml"><img src="https://github.com/ChenChen913/DuoFlow/actions/workflows/m0-windows-build.yml/badge.svg" alt="CI"></a>
-<img src="https://img.shields.io/badge/status-M1%20complete-green" alt="status">
+<img src="https://img.shields.io/badge/status-M2%20in%20progress-orange" alt="status">
 <img src="https://img.shields.io/badge/platform-Windows%2011-lightgrey" alt="platform">
 <img src="https://img.shields.io/badge/tech-C%23%20%2B%20D3D11%20%2B%20HLSL-purple" alt="tech">
 </p>
@@ -68,12 +68,14 @@ DuoFlow 是一个运行于 Windows 11 上的桌面视觉特效程序：
 4. 用下方「渲染参数」面板实时改折叠角度 / 相机距离 / 方向 / 铰链边 / 模糊与包络 /
    渐变色相 / 光带扫过（渐变与光带默认关闭，两者正交：渐变改色相，光带加亮度）
 
-- 单元测试 96/96 通过（`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`）
+- 单元测试 134/134 通过（`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`）
 - 渲染采用物理景深模型：缝隙高度驱动磨砂半径与光衰减，mip 预过滤 + Vogel 螺旋采样
 - 透明度、点击穿透（click-through）、折叠几何均已真机验证
 - 真机量化验收脚本在 `scripts/acceptance/`：几何/光影方向/模糊方向/无滞回（9/9）、
   P0 三件套、参数面板接线（20/20）、演示模式（9/9）、光带位置与幅度（14/14），
   退出码可直接判
+- 渲染参数自动保存到 `%LOCALAPPDATA%\DuoFlow\tuning.json`，重启后保留（DD-051）
+- 特效不可见时渲染心跳自动静默：静止桌面下不再每秒 33 帧空转（DD-051）
 
 ## 快速开始
 
@@ -196,4 +198,4 @@ DuoFlow/
 
 ## License
 
-暂未确定，正式发布前补充。
+[MIT](LICENSE) © 2026 ChenChen913

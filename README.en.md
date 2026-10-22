@@ -13,7 +13,7 @@ Make the desktop picture bend with the hinge as the laptop opens and closes — 
 
 <p align="center">
 <a href="https://github.com/ChenChen913/DuoFlow/actions/workflows/m0-windows-build.yml"><img src="https://github.com/ChenChen913/DuoFlow/actions/workflows/m0-windows-build.yml/badge.svg" alt="CI"></a>
-<img src="https://img.shields.io/badge/status-M1%20complete-green" alt="status">
+<img src="https://img.shields.io/badge/status-M2%20in%20progress-orange" alt="status">
 <img src="https://img.shields.io/badge/platform-Windows%2011-lightgrey" alt="platform">
 <img src="https://img.shields.io/badge/tech-C%23%20%2B%20D3D11%20%2B%20HLSL-purple" alt="tech">
 </p>
@@ -66,9 +66,11 @@ A demo you can run today:
 2. Drag the progress slider on the console at the bottom-left
 3. The whole desktop folds in real time: sharp and bright at the hinge, progressively frosted and shadowed toward the far edge
 
-- Unit tests 63/63 passing (`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`)
+- Unit tests 134/134 passing (`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`)
 - Rendering uses a physical depth-of-field model: the gap height drives the frost radius and the light falloff, with mip pre-filtering and Vogel-spiral sampling
 - Transparency, click-through and the fold geometry are all verified on real hardware
+- Render tuning is saved to `%LOCALAPPDATA%\DuoFlow\tuning.json` and restored on the next launch (DD-051)
+- The render heartbeat goes quiet while the effect is off screen: no 33 FPS idle spin on a static desktop (DD-051)
 
 ## Quick start
 
@@ -184,4 +186,4 @@ The camera is used only to detect the state of the laptop screen: nothing is upl
 
 ## License
 
-To be decided before the first official release.
+[MIT](LICENSE) © 2026 ChenChen913

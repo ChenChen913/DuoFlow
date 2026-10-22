@@ -7,10 +7,10 @@
 
 | 文档信息 | 值 |
 | --- | --- |
-| 文档版本 | v1.0 |
+| 文档版本 | v1.1 |
 | 创建日期 | 2026-09-15 |
-| 最后更新 | 2026-09-16 |
-| 当前阶段 | Phase 2 — M1 Rendering MVP（Phase 1 / M0 已全部完成，见 §2） |
+| 最后更新 | 2026-10-22 |
+| 当前阶段 | Phase 3 — M2 Visual Refinement（M0 / M1 已完成，见 §2 / §3） |
 | 维护者 | 执行当前阶段的 Agent（随阶段交接） |
 
 ---
@@ -57,10 +57,10 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前 Phase | **Phase 3 — M2 Visual Refinement**（M1 ✅；执行顺序 M2.0→M2.5→M2.4→M2.1→M2.2→M2.3） |
-| 当前小任务 | **M2.3 Visual Tuning**（M2.0 ✅、M2.5 ✅、M2.4 ✅、M2.1 ✅、M2.2 ✅ 2026-10-22） |
+| 当前 Phase | **Phase 3 — M2 Visual Refinement**（M1 ✅；执行顺序 M2.0→M2.5→M2.4→M2.1→M2.2→M2.6→M2.3） |
+| 当前小任务 | **M2.3 Visual Tuning**（M2.0 ✅、M2.5 ✅、M2.4 ✅、M2.1 ✅、M2.2 ✅、M2.6 ✅ 2026-10-22） |
 | 阻塞项 | 无阻塞。DD-045 源冻结经用户真机确认"没问题"，M2 不再为它留工期（需要时可插队） |
-| 最后更新 | 2026-10-22 · M2.2 光带（剩余空间归一化的中性高光 + 位置量化验收），真机 14/14 + 面板 20/20 全绿 · 八弟 |
+| 最后更新 | 2026-10-22 · M2.6 运行期自愈 + 参数持久化（DD-051）：单测 134/134、真机几何复算误差 ≤0.5 px、空闲渲染计数停在 1 帧 · 八弟 |
 
 ---
 
@@ -502,6 +502,18 @@ Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）
 `light-sweep-verify` **14/14**（exit 0）；`tuning-panel-verify` **20/20**（新增 6 步，exit 0）；
 `warp-selftest` 9/9（关闭态，exit 0）。
 
+#### M2.6 运行期自愈与参数持久化（补做，DD-051）✅ 2026-10-22
+
+* [x] 重建失败不再是一次性尝试：`_rebuildPending` 保留到成功 + 指数退避（≤3.6 s）+ 失败次数进 `WarpState`
+* [x] 设备丢失可识别可恢复：`DeviceHealth` 分类 HRESULT，`CaptureRenderer` 停止并报告，`OverlayWindow` 重启捕获链一次
+* [x] 帧级故障就地隔离：`RenderTick` 内部 try/catch，异常不再变成 30 Hz 未处理异常流
+* [x] 空闲跳过渲染：特效不可见且已 present 透明帧时不再 33 FPS 空转（保留 DD-045 冻结记账与 dump 请求通道）
+* [x] 参数持久化：`TuningPreset`（纯 C#）+ `%LOCALAPPDATA%\DuoFlow\tuning.json`，防抖写、关闭 flush、验收脚本 hermetic
+* [x] 单测 +38（`TuningPresetTests` / `DeviceHealthTests`），合计 134/134
+* [x] 顺带：blit 回退改 `CopySubresourceRegion`、不捕获光标、渐变默认强度 0.08、trace 4 MB 上限、面板错误去重
+* **验收**：构建 0 warning；真机启动无 crash 且预设落盘；静止 14 s 帧计数停在 1；
+  `--warp-selftest` 九帧几何误差 ≤0.5 px、无滞回、p=0 alpha 全 0；smoke JSON 通过 CI 全部断言
+
 #### M2.3 Visual Tuning
 
 * [ ] 六种操作 × 五项检查（慢/快/慢开/快开/中途停/中途反向 × 跳变/闪烁/过糊/过暗/过彩）
@@ -575,6 +587,50 @@ Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-10-22 · M2.6 运行期自愈 + 参数持久化（DD-051：三条"静默死亡"与两个调优阻塞） · 八弟
+
+- **背景**：M2.2 之后对 M0～M2 已完成功能做了一次代码级审查（5405 行全读 + 真机运行）。
+  结论：渲染内核与验收方法学是第一梯队，但有**三条会让特效静默消失、不报错、不复原**的路径，
+  外加两个直接妨碍 M2.3 调优的工程问题。本轮按"能弄死特效 → 妨碍调优 → 打磨"的顺序全修。
+- **P1-1 重建失败 = 永久黑屏**：`_rebuildPending` 原来在重建**之前**就被清掉，一次瞬时失败
+  （切分辨率/插拔显示器/DPI 变化）之后每个 tick 都在 `_latestFrame is null` 处静默返回，再也不重试。
+  改为保持置位直到重建**成功**，失败按 tick 指数退避（2/4/…/120 tick，≈3.6 s 上限），
+  失败次数进 `WarpState`（`rebuild failed (attempt N)`）——控制台能看见。
+- **P1-2 `Present` 结果被丢弃 / 无设备丢失恢复**：这台机器是 780M + 4060 混合显卡，
+  驱动更新或 GPU 偏好切换都可能让 D3D11 设备被移除，而 `Present` 的 `Result` 被直接丢掉，
+  渲染器静默停画、控制台照常显示帧数。新增 `DuoFlow.Render/DeviceHealth`（纯 int，可单测）
+  分类 `DEVICE_REMOVED`/`DEVICE_RESET`/`DRIVER_INTERNAL_ERROR`；`CaptureRenderer` 判定后停止并
+  置 `ChainBroken`；`OverlayWindow`（设备的所有者）重启整条捕获链**一次**。渲染器不重建自己不拥有的设备。
+- **P1-3 渲染心跳没有 try/catch**：App 层"吞 50 次未处理异常"的兜底在 30 Hz 故障源下只有 **1.7 秒**，
+  一次坏帧就变成进程死亡。`RenderTick` 内部隔离，异常进 `WarpState`，trace 只在第 1 次与每 120 次写一行。
+- **P2-4 空闲仍 33 FPS 满屏渲染**：直接违反 PROJECT_SPEC §2.1。改为 `visible = progress > 0.001`
+  与 DD-045 同一阈值；不可见且已 present 过一帧透明帧时跳过 GPU 工作。
+  **踩坑**：DD-045 的 `_sourceFrozen = false` 必须放在跳过之前，否则一次跳过会让捕获源永久冻结，
+  下一次折叠回放几分钟前的桌面；重建后必须清 `_idlePresented`，否则新交换链永远不 present。
+- **P2-5 参数无持久化**：`TuningPreset`（纯 record + System.Text.Json）+ `TuningStore`
+  写 `%LOCALAPPDATA%\DuoFlow\tuning.json`。600 ms 防抖、关闭 flush、**只写"被 SetOptions 接受"的那一版**。
+  抽出 `OptionSet.ValidateOrThrow/ValidateAll`，让面板推送与文件加载共用同一套校验（原来两边各一份）。
+  **验收脚本 hermetic**：`automation = smoke || selfTest || lightSweep` 时既不读也不写——`warp-selftest`
+  的预测公式写死 r=2.5/MaxFold=90，一份用户预设会让它静默跑偏。
+- **P2-6 勾选渐变什么都不发生**：强度默认 0 而光带默认 0.08。`GradientOptions.DefaultStrength = 0.08`，
+  XAML 初值同步；"恢复默认"改走与启动恢复同一条 seed 路径（`ApplyPresetToPanel(TuningPreset.Default)`）。
+- **P2-7 blit 回退是颗地雷**：回退路径的 `CopyResource` 在源纹理带 11 级 mip 链时形状不一致，
+  而 CI 断言 `WarpState=active` 意味着这条路从未被执行过。改 `CopySubresourceRegion`（level 0）。
+- **P2-8 折叠里印着光标**：`IsCursorCaptureEnabled = true` + DD-045 冻结 = 活光标 + 烤进磨砂的第二个光标。改 false。
+- **P3 小债**：trace 4 MB 上限；面板被拒后只在错误文本变化时写 trace（原来每秒 4 行）。
+- **验收**：构建 0 warning 0 error；**单测 134/134**（+38：预设 21 条含 JSON 往返/未知字段/损坏/越界/枚举名，
+  设备分类 3 条）。真机：启动无 crash，trace 走完 `no saved preset → preset saved`，`tuning.json` 内容与默认值逐项一致；
+  **静止 14 秒 frames 停在 1**（改动前 ≈30/秒）；`--warp-selftest` 跑完 0→1→0，九帧全部落盘（8,222,544 B/帧）、
+  累计 913 帧、无 `DEVICE LOST`/`tick failed`；对 dump 直接复算（不依赖脚本）：
+  quadTop 214/482/774 对理论 213.5/482.0/773.9（**≤0.5 px**）、上下行同值（无滞回）、
+  p=0.25→0.50→0.75 远端亮度 216→56→3.5（远端沉入阴影）、铰链侧 34→36 不变、p=0 alpha 最大 0；
+  `--overlay-smoke` 的 JSON 通过 workflow 全部断言（本地预演 `CI GATE WOULD PASS`）。
+- **未验证（诚实标注）**：设备丢失后的捕获链重启路径无法在本机触发（需要真的移除设备），
+  只有代码审查与分类单测背书；重建退避同理（需要真的改分辨率触发失败）。
+- **产物**：`DuoFlow.Render/TuningPreset.cs`、`DeviceHealth.cs`、`DuoFlow.App/TuningStore.cs`、
+  `TuningPresetTests.cs`、`DeviceHealthTests.cs`、`CaptureRenderer`/`OverlayWindow`/`MainWindow`/
+  `DesktopCapture`/`Trace`/`App`/`GradientOptions`/`MainWindow.xaml`/`README` 双语、DD-051、本文件三件套。
 
 ### 2026-10-22 · M2.4 演示模式（DemoPlayer + 控件 + 验收） · 八弟
 

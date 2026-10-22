@@ -2088,6 +2088,143 @@ if (SweepParams.z > 0.0)
 
 ---
 
+# DD-051：运行期自愈与参数持久化——把三条"静默死亡"变成有状态、可观测、能恢复
+
+**Status:** Accepted（2026-10-22，M2.6 补做）
+
+## 背景
+
+M2.2 完成后对 M0～M2 已完成功能做了一次代码级审查（5405 行全读 + 真机运行），
+发现三个**不会报错、只会让特效安静地消失**的缺口，外加两个直接妨碍 M2.3 调优的工程问题：
+
+| # | 问题 | 后果 |
+|---|---|---|
+| 1 | `_rebuildPending` 在重建**之前**被清掉 | 一次瞬时失败 = 永久黑屏，不再重试 |
+| 2 | `Present` 的 `Result` 被丢弃 | 设备被移除（混合显卡切换/驱动更新）后静默停画，控制台仍显示正常 |
+| 3 | 渲染心跳没有任何 try/catch | 帧级故障 → 30 Hz 未处理异常 → 50 次吞异常预算在 **1.7 秒**内耗尽 → 进程死 |
+| 4 | 没有任何持久化 | 每次重启参数全丢，M2.3 调优等于每次重调 |
+| 5 | 空闲时仍 33 FPS 全屏 Pass | 直接违反 PROJECT_SPEC §2.1"CPU/GPU 占用应尽可能低" |
+
+## 决定
+
+### 1. 重建失败是一个**状态**，不是一次尝试
+
+`_rebuildPending` 保持置位直到重建**成功**，失败按 tick 指数退避
+（2/4/8/…/120 tick，上限 ~3.6 s）。失败次数进 `WarpState`（`rebuild failed (attempt N)`），
+控制台可见。
+
+### 2. 设备丢失由**所有者**恢复，渲染器只负责报告
+
+`DuoFlow.Render/DeviceHealth`（纯 C#，可单测）把 HRESULT 分类为"设备已消失"
+（`DEVICE_REMOVED` / `DEVICE_RESET` / `DRIVER_INTERNAL_ERROR`）。
+`CaptureRenderer` 一旦判定即停止绘制、置 `ChainBroken` 并记录原因；
+`OverlayWindow`（捕获设备的真正所有者）在心跳末尾看到标记后**重启整条捕获链一次**。
+渲染器不去重建自己不拥有的设备——这是所有权边界，不是偷懒。
+
+**为什么不无限重试**：设备重建要重新创建 WGC item 与整个 D3D11 设备，
+在真故障下无限重启只会把资源耗尽；一次自动恢复 + 明确的可读状态，比"永远在重试"
+更接近产品行为。
+
+### 3. 帧级故障就地隔离
+
+`RenderTick` 内部 try/catch，异常进 `WarpState = "tick failed (T)"`，
+trace 只在第 1 次与每 120 次写一行。App 层"吞 50 次异常"的兜底保留，
+但它不再是帧级容错的唯一防线。
+
+### 4. 空闲跳过渲染，但冻结/解冻记账必须照常跑
+
+`visible = progress > 0.001`（与 DD-045 解冻阈值同一个数）。
+`!visible && 已 present 过一帧透明 && 没有 dump 请求` → 直接 return。
+**关键细节**：DD-045 的 `_sourceFrozen = false` 必须在跳过之前执行，
+否则一次跳过会让捕获源永远冻结，下一次折叠回放的是几分钟前的桌面。
+另外"进入可见"那一刻必须重新渲染，因此 `_idlePresented` 在重建后清零。
+
+### 5. 参数持久化 = 面板的**已接受**快照
+
+`TuningPreset`（纯 C# record + `System.Text.Json`）是唯一线格式；
+`OptionSet.ValidateOrThrow/ValidateAll` 让**面板推送**与**文件加载**走同一套校验。
+写入走 600 ms 防抖（拖一次滑块几十次 ValueChanged），窗口关闭时强制 flush。
+**验收脚本运行时不读也不写**（`automation = smoke || selfTest || lightSweep`）：
+`warp-selftest` 的预测公式写死 r=2.5 / MaxFold=90，一份用户预设会让它静默跑偏。
+
+### 6. 顺带修掉的具体缺陷
+
+* blit 回退路径的 `CopyResource` → `CopySubresourceRegion`：源纹理带 11 级 mip 链，
+  `CopyResource` 要求整资源形状一致，那条"安全网"本身是颗地雷；
+* `IsCursorCaptureEnabled = false`：DD-045 冻结会把光标烤进折叠画面（活光标 + 印在磨砂里的光标）；
+* 渐变默认强度 0 → 0.08：勾选"启用渐变色相"原本什么都不发生，与光带默认 0.08 不一致；
+* trace 文件单次写入前检 4 MB 上限（原来无上限增长）；
+* 控制台面板被拒后每秒重试并刷 4 行 trace → 只在错误文本变化时写一次。
+
+## 原因
+
+* **静默失败是这类全屏常驻程序最贵的缺陷**：用户不会看到异常，只会看到"特效偶尔不出现"，
+  而开发者在 CI 里永远复现不到；
+* 恢复逻辑必须放在**拥有该资源的那一层**（`OverlayWindow` 拥有捕获设备），否则会写出
+  "渲染器偷偷 new 一个 device"这种更难维护的结构；
+* 持久化必须**跟在已接受值之后**，否则一个被拒绝的面板状态会被写进文件，下次启动直接坏；
+* 空闲跳过是把 PROJECT_SPEC 的明文要求落地，不是性能优化——它同时是电池与风扇问题。
+
+## 替代方案
+
+* **重建失败无限重试（每 tick）**：真故障下 30 Hz 创建/销毁 GPU 资源，噪音大且无收益；
+* **渲染器自己重建 device**：越过所有权边界，且 WGC item 也要重建，必然写歪；
+* **设备丢失后直接退出进程**：体验更差；丢失后控制台仍可用，重启一次就能救回来；
+* **持久化写在 UI 事件里（不防抖）**：拖一次滑块几十次文件写入，UI 线程被 IO 打断；
+* **持久化"面板当前值"**：被拒绝的非法组合会进文件，下次启动被判无效 → 回默认，
+  看起来像"设置丢了"；
+* **空闲时把定时器整个停掉**：再启动有首帧延迟，且心跳停了引擎不再 Tick，反而更脆；
+  只跳过 GPU 工作是可逆且零延迟的。
+
+## 影响
+
+* `DuoFlow.Render/TuningPreset.cs`（新）：线格式 + `OptionSet` 校验入口；
+* `DuoFlow.Render/DeviceHealth.cs`（新）：HRESULT 分类（纯 int，可在无 GPU 环境断言）；
+* `DuoFlow.App/TuningStore.cs`（新）：`%LOCALAPPDATA%\DuoFlow\tuning.json` 读写，失败只 trace；
+* `CaptureRenderer`：`ChainBroken`/`ChainBrokenReason`、重建退避、心跳隔离、空闲跳过、
+  `Present` 结果分类、回退改成 `CopySubresourceRegion`；
+* `OverlayWindow`：`BuildCaptureChain()` 抽出（启动与重启共用）、`OnRenderTick()`、
+  `RestartCaptureChain()`（每进程一次）；
+* `MainWindow`：启动恢复 + 防抖保存 + 关闭 flush + `automation` 保护；
+  "恢复默认"改走同一条 seed 路径；
+* `DesktopCapture`：不捕获光标；
+* `GradientOptions.DefaultStrength`；`MainWindow.xaml` 强度初值 0.08；
+* `Trace`：4 MB 上限。
+
+## 验证
+
+* **单测 134/134**（+38）：`TuningPresetTests` 21 条（JSON 往返/缺省字段/未知字段/大小写/
+  损坏/越界/枚举名）、`DeviceHealthTests` 3 条（3 个致命码 + 5 个非致命码 + 常量核对）；
+  渐变默认值断言同步为 0.08；
+* **构建**：0 warning 0 error；
+* **真机启动**：无 crash log；trace 出现 `preset persistence on` → `no saved preset` →
+  `preset saved`；`tuning.json` 落盘内容与面板默认值逐项一致；
+* **空闲跳过**：静止 14 秒，`frames` 停在 **1**（改动前约为 30/秒）；
+* **可见态未受影响**：`--warp-selftest` 跑完整 0→1→0，9 帧全部落盘（1914×1074×4 =
+  8,222,544 B），累计 **913** 帧渲染，无 `DEVICE LOST` / `tick failed` / crash；
+* **几何/光影独立复算**（直接测 dump，不依赖脚本）：
+  quadTop = 214/482/774 对理论 213.5/482.0/773.9（**误差 ≤0.5 px**）；
+  上行下行逐档同值（**无滞回**）；p=0.25（包络未启动）远端亮度 216、
+  p=0.50 降至 56、p=0.75 降至 3.5（**远端沉入阴影**），铰链侧保持内容亮度 34→36；
+  p=0 全帧 alpha 最大 **0**（静止态完全透明，无鬼影）；
+* **CI 门禁本地预演**：`--overlay-smoke` 的 JSON 通过 workflow 的全部断言
+  （9 个布尔 + MonitorCount + HitTest + `WarpState=active`）。
+
+## 迁移方案
+
+* 无故障时行为不变：设备不丢失、不重建，渲染输出与 M2.2 逐像素相同（几何复算已证）；
+* 首次启动会**新建** `tuning.json`（默认值），旧版本用户无迁移成本；
+* 验收脚本不受影响：automation 运行既不读也不写预设，仍以编译默认值为基准。
+
+## 相关决策
+
+- DD-045（源冻结——空闲跳过必须保留它的解冻记账）
+- DD-046（物理景深模型——回退路径的 mip 形状约束来自这里的 mip 链）
+- DD-048（参数运行时可替换——持久化保存的是"已被 SetOptions 接受"的那一版）
+- DD-049 / DD-050（渐变的默认强度、光带的默认值）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。
