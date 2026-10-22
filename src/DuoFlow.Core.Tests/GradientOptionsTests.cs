@@ -26,7 +26,10 @@ public class GradientOptionsTests
     {
         GradientOptions o = new();
         Assert.False(o.Enabled);
-        Assert.Equal(0.0, o.Strength, 12);
+        // DD-051: a freshly enabled gradient must DO something (it used to
+        // default to 0 while the sweep defaulted to 0.08, which read as
+        // "the gradient is broken"). Still a no-op while disabled.
+        Assert.Equal(0.08, o.Strength, 12);
         Assert.Equal(0.0, o.EffectiveStrength, 12);   // off wins over Strength
         Assert.Equal(205.0, o.HueStartDegrees, 12);
         Assert.Equal(275.0, o.HueEndDegrees, 12);

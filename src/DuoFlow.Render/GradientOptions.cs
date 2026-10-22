@@ -28,6 +28,16 @@ public sealed class GradientOptions
     public const double DefaultHueStartDegrees = 205.0;
     public const double DefaultHueEndDegrees = 275.0;
 
+    /// <summary>
+    /// Strength a freshly enabled gradient gets (DD-051). It used to default to
+    /// 0 while the sweep defaulted to 0.08, so ticking "启用渐变色相" produced
+    /// no visible change at all - a first-run papercut that reads as "the
+    /// gradient is broken". The shader still treats <c>Enabled = false</c> as
+    /// an exact no-op (<see cref="EffectiveStrength"/> returns 0.0), so this
+    /// only affects what happens the moment the box is ticked.
+    /// </summary>
+    public const double DefaultStrength = 0.08;
+
     /// <summary>Off by default: M2.1 must ship as a no-op so the M2.0
     /// acceptance numbers (which measure the v2 render) stay valid until
     /// M2.3 decides otherwise.</summary>
@@ -41,7 +51,7 @@ public sealed class GradientOptions
     public double HueEndDegrees { get; init; } = DefaultHueEndDegrees;
 
     /// <summary>Mix amount in [0, <see cref="MaxStrengthLimit"/>].</summary>
-    public double Strength { get; init; }
+    public double Strength { get; init; } = DefaultStrength;
 
     /// <summary>The strength the shader should actually receive: 0 when
     /// disabled, otherwise clamped. Returning exactly 0.0 (not 1e-9) is what
