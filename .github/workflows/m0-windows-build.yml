@@ -175,6 +175,18 @@ jobs:
             Write-Host "HitTest probe detail: class=$($j.HitTest.WindowFromPointClass) note=$($j.HitTest.Note)"
             $fail += 'HitTest.Pass'
           }
+          # M1.4+ RENDER gate (added 2026-10-22): the warp pipeline must be
+          # ACTIVE. TryCreate never throws - a shader that fails to compile
+          # silently falls back to the M0.2 blit, the app keeps running, the
+          # overlay stays transparent and click-through, and before this line
+          # the whole job stayed GREEN while the screen showed a plain mirror.
+          # The renderer's own diagnostics still explain the failure (trace:
+          # "warp: init FAILED: ..."), so a red run is actionable.
+          if ($j.WarpState -ne 'active') {
+            Write-Host "WarpState detail: '$($j.WarpState)' (expected 'active')"
+            Write-Host "  -> see the APP TRACE above for 'warp: init FAILED' / 'not found'"
+            $fail += "WarpState=$($j.WarpState)"
+          }
           if ($fail.Count -gt 0) {
             Write-Error "M0.3 overlay checks FAILED: $($fail -join ', ')"
             exit 1

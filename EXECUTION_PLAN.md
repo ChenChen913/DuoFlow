@@ -57,11 +57,10 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前 Phase | **Phase 2 — M1 ✅**；渲染模型 v2（DD-046 物理景深，DuoFold 参照）已上线 |
+| 当前 Phase | **Phase 2 — M1 ✅**；渲染模型 v2（DD-046 物理景深，DuoFold 参照）已上线；M1 工程债已清理（2026-10-22） |
 | 当前小任务 | **M2.1 Gradient Pass**（颜色/强度可配置，随 Progress 调整）——挂心跳渲染 Pass 链 |
-| 阻塞项 | 无阻塞 |
 | 阻塞项 | 无阻塞。显示合成故障已于 2026-09-19 修复（HC §6.2）。CI 口径：以 GitHub Actions 实际 run 为准 |
-| 最后更新 | 2026-09-19 · 渲染模型 v2（DD-046 物理景深，DuoFold 参照）+ 面板放大 + M1 收官 · Super Z |
+| 最后更新 | 2026-10-22 · M1 工程债清理（显示拓扑自适应 / 帧预算降级 / CI 渲染门禁 / 验收脚本入库 / 文档漂移修正） · 八弟 |
 
 ---
 
@@ -71,7 +70,7 @@
 | --- | --- | --- | --- |
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
 | Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ✅ 已完成（M0.1-M0.3 云端；M0.4 真机实测 2026-09-16 回填） |
-| Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ⏳ 进行中 |
+| Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ✅ 已完成（M1.1-M1.8；Mask/Blur/Dim 三件套随后被 DD-046 物理景深模型取代） |
 | Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | ⬜ |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
 | Phase 5 | M4 | Sensor Provider：传感器接入 / Provider Manager | ⬜ |
@@ -233,6 +232,8 @@
 **踩坑记录**：① Vortice 3.8.3 API 与常见资料差异大（`Compiler.CompileFromFile` 非 D3DCompileFromFile、`RenderTargetBlendDescription` 字段名、固定缓冲需 unsafe→改无混合方案、Blob 在 Vortice.DirectX）——反射程序集拿真实签名是唯一可靠路径；② WinUI 面板屏幕坐标在 DPI 125% 下是 DIP×1.25，屏幕采样前必须 `SetProcessDPIAware` 并换算；③ 显示合成路径故障时，**渲染正确性必须与显示正确性分开举证**（进程内回读是渲染侧的权威证据）。
 
 #### M1.5 Hinge Mask ✅（2026-09-19 完成：复用 warp 铰链系 + Debug 热力图可反解验收）
+> ⚠️ **已被 DD-046 取代（2026-09-19）**：`DuoFlow.Render/HingeMask.cs` 与其测试已删除，
+> 遮罩职责并入物理景深模型。本节保留作历史记录。
 
 * [x] 创建 Hinge Mask（Hinge Position / Hinge Width / Falloff 可调——`DuoFlow.Render/HingeMask`：`m(y) = (1 − smoothstep(|y−center|/width))^exponent`，center=0 与 warp 折叠轴重合、width=0.35、exponent=2；**exponent 限 [1,8]**：<1 时收敛端斜率无界违反"过渡必须平滑"，校验层挡下）
 * [x] 可视化 Debug Mask（DuoWarp.hlsl 加 MaskParams 常量 + debug 热力分支：`rgb=(m,0.2,1−m)` 红=铰链蓝=远端，alpha 规则与图像路径一致；**R/A、B/A 通道可精确反解遮罩值**——可视化同时是量化验收的编码载体）
@@ -242,12 +243,9 @@
 **产物**：`src/DuoFlow.Render/HingeMask.cs`（MaskOptions/HingeMaskProfile/HingeMask.Build）、`src/DuoFlow.Core.Tests/HingeMaskTests.cs`、DuoWarp.hlsl（MaskParams + debug 分支，常量缓冲 96→112 字节）、CaptureRenderer/WarpPipeline/OverlayWindow selftest 接线、DD-040、`_test/m14-selftest.ps1`（mask 分析 + PNG 导出）。
 **踩坑记录**：① 连续性护栏测试的固定步长界不能跨指数通用——exp=8 的合法斜率可达 ~0.114/步，精确性交给闭式断言、护栏只防 O(0.3+) 的真断点，两者分工写进测试注释；② PowerShell 字符串内 `$row:` 会被解析为 drive 引用，`${row}` 转义。
 
-#### M1.6 Blur
-
-* [ ] 创建 Blur Pass（局部 Blur，由 Hinge Mask 与 Progress 控制）
-* [ ] 调整最大 Blur；测试性能
-
 #### M1.6 Blur ✅（2026-09-19 完成：单 Pass 13-tap 核 + 边缘过渡宽度法定量验收）
+> ⚠️ 本节记录的 13-tap 核与 Hinge Mask 已在同日被 **DD-046（渲染模型 v2）** 取代并删除；
+> 保留作历史记录，产物清单里的 `HingeMask.cs` / `DimOptions.cs` **已不存在**。
 
 * [x] 创建 Blur Pass（局部 Blur，由 Hinge Mask 与 Progress 控制——DuoWarp.hlsl 内实现：`radius = mask × progress × maxBlur`，13-tap 六边形核，源空间半径经 SrcYRemap 线性映射；radius→0 恒等收敛=全开零模糊硬保证；`DuoFlow.Render/BlurOptions` 校验 MaxBlurPixels ∈ (0,64]）
 * [x] 调整最大 Blur（MaxBlurPixels 默认 24 源像素，M2.5 参数面板暴露；核形状/半径定义全参数化——DD-041）
@@ -260,6 +258,8 @@
 **附带**：控制台关闭 → 全应用退出（`Environment.Exit(0)`；`Application.Exit()` 只停 DispatcherQueue 不杀进程——WinUI 3 非打包已知行为，trace+进程双重验证），解决"关控制台后覆盖层+黄框无路可关"的真实用户问题。
 
 #### M1.7 Dimming ✅（2026-09-19 完成：公式逐字落地 + 白窗亮度剖面误差 ≤1.4）
+> ⚠️ **已被 DD-046 取代（2026-09-19）**：`DimOptions.cs` 与独立 Dim Pass 已删除，
+> 暗化改由模糊半径派生的光衰减承担。本节保留作历史记录（度量教训仍有效）。
 
 * [x] 创建 Dimming Pass（由 Hinge Mask 与 Progress 控制，调整最大暗化程度——shader 一行乘法：`rgb *= 1 − mask × progress × maxDarkness`，mask/progress 复用 BlurParams 现值，四 Pass 共享同一常量流；`DuoFlow.Render/DimOptions` 校验 MaxDarkness ∈ [0,1]，默认 0.8 = PROJECT_SPEC §13 示例值）
 
@@ -269,6 +269,9 @@
 **产物**：`shaders/DuoWarp.hlsl`（DimParams，cbuffer 144 字节）、`src/DuoFlow.Render/DimOptions.cs`、`src/DuoFlow.Core.Tests/DimOptionsTests.cs`、CaptureRenderer/WarpPipeline 接线、DD-042、`_test/m17-dim-verify.ps1`/`m17-analyze.ps1`。
 
 #### M1.8 MVP Composite ✅（2026-09-19 完成：全屏合成实时运行 + 捕获/渲染解耦架构）
+> ⚠️ 本节描述的"四 Pass 合成 + 全局不透明度 0.65"是 **DD-044 时期**的形态，
+> 随后被 DD-045（源冻结，不透明度改 1.0）与 DD-046（单 Pass 物理景深）取代。
+> 仍然有效的是架构部分：**捕获/渲染解耦 + 30ms 渲染心跳**。
 
 * [x] Warp + Hinge Mask + Blur + Dimming 组合实时运行——SwapChainPanel 全屏化（面板像素=窗口客户区 1914×1074），四 Pass 在同一 shader/常量流下全屏实时合成；**捕获/渲染解耦**（DD-044，TECHNICAL_PROPOSAL §22 落地）：WGC 回调仅刷新常驻最新帧纹理，渲染心跳（30ms，UI 线程）独立执行 Tick→合成→Present——修复全屏下"静态屏幕无捕获帧→渲染停摆 1 FPS"的问题；**反馈稳定化**：全局不透明度 0.65 使全屏自反馈收敛为磨砂玻璃稳态（α=1 时无界复合真机实证数秒融化）；**全局淡入**：progress<0.15 合成透明=静止态隐形（无鬼影）
 
@@ -353,6 +356,18 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-10-22 · M1 工程债清理（显示拓扑自适应 / 帧预算 / CI 渲染门禁 / 验收脚本入库 / 文档漂移） · 八弟
+
+- **背景**：对 M1 已完成功能做全面审查（代码级 + 实测），发现的问题按 P1/P2/P3 分级处理。**本轮不改渲染模型，不动 DD-045/DD-046 的视觉决策。**
+- **P1-1 显示拓扑自适应**：`GraphicsCaptureItem` 在本投影里**没有 SizeChanged 事件**（编译期实证 CS1061），改为在 `OnFrameArrived` 比较 `frame.ContentSize` 与池尺寸——检测到变化时丢弃该帧、`RecreateFramePool`、抛 `SizeChanged`；`CaptureRenderer` 把重建**延迟到渲染心跳内、持锁执行**（`_rebuildPending` → `RebuildTargets`），一次性重建常驻帧（含 mip 链）、交换链、后备缓冲与 WarpPipeline。DPI 变化时重读 `XamlRoot.RasterizationScale`。**之前 `RecreateFramePool` 有定义零调用点，改分辨率/拔插显示器会尺寸失配。**
+- **P1-2 帧预算**：`RenderTick` 在 UI 线程，加 EMA 帧耗时测量；超过 25ms 预算时把磨砂半径按 0.05/帧下调（下限 0.5×），低于 60% 预算时按 0.02/帧回升。**是降质不是跳帧**（跳帧会破坏动画连续性）。`AverageFrameMs`/`QualityScale` 进 smoke JSON 与控制台状态行。
+- **P2-3 CI 渲染门禁**：workflow 断言新增 `WarpState -eq 'active'`。此前 shader 编译失败会静默回退 blit，**CI 全绿而屏幕只剩镜像**——这是最大的绿灯盲区。
+- **P2-4 验收脚本入库**：`scripts/acceptance/warp-selftest.ps1`（来自 `_test/m14-selftest.ps1`，参数化 RepoRoot/OutputDir/Exe/Timeout）+ README。**同时修掉三个真问题**：① dump 宽度硬编码 1914/600（历史变过两次，行号会全错）→ 改为解析 trace 里的 `selftest: dumped (WxH)`；② mask 分析整段是死代码（DD-046 已删遮罩）→ 删除；③ 滞回检查比较的是模型 v2 之后**恒为空的 Boundaries 表**，`HYSTERESIS OK` 是空断言 → 改为比较 `quadTop`（±2px）。
+- **P2-5 小债**：`WarpPipeline` 的 SRV 改为缓存（原来每帧 new/dispose，30-47 次/秒 COM 分配）；`CaptureRenderer.Dispose` 进入 `_renderGate`（避免在帧回调持有时拆纹理）；关闭控制台先 `_overlay.Close()` 走 `Cleanup()` 再 `Environment.Exit(0)`（原为直接 Exit，跳过全部释放）；CA1416 用 `OperatingSystem.IsWindowsVersionAtLeast(10,0,19041)` 显式守卫（构建回到 0 警告）。
+- **P3 文档漂移**：`PROJECT_SPEC` §2.2/§2.3/§12/§13 的模糊与暗化方向**与 DD-046 相反**（原文"铰链附近模糊"），已加修订说明并保留原文引用；DD-040/041/042 补 `Superseded by DD-046` 状态；`EXECUTION_PLAN` 删掉重复的 M1.6 未勾选段、重复的"阻塞项"行、Phase 2 状态改 ✅，M1.5~M1.8 补"已被 DD-046 取代"标注；README"半透明预算"改为与 `GlobalOpacity = 1.0` 一致；新增 `LICENSE`（MIT）。
+- **未处理（需产品决策，不是代码问题）**：**DD-045 源冻结**——折叠期间桌面是效果出现前的静帧，视频/指针不跟随。这是物理模型自洽的取舍（玻璃盖住了桌面，看到的只能是盖住前的桌面），硬改会退回重影；DD-045 已登记 M2 可用覆盖掩码重建部分实时化。**本轮不动。**
+- **验收**：`dotnet build -p:Platform=x64` 0 错 0 警；`dotnet test` 63/63；`--overlay-smoke` 真机跑通且 `WarpState=active`。
 
 ### 2026-09-19 · Phase 2 / M1.8 MVP Composite（全屏合成 + 捕获/渲染解耦——M1 收官） · Super Z (main agent)
 

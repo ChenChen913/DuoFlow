@@ -60,6 +60,8 @@ public sealed class WarpPipeline : IDisposable
     private ID3D11SamplerState? _sampler;
     private ID3D11RasterizerState? _rasterizer;
     private ID3D11RenderTargetView? _renderTarget;
+    private ID3D11Texture2D? _sourceTexture;
+    private ID3D11ShaderResourceView? _sourceSrv;
     private bool _firstFrameTraced;
     private bool _disposed;
 
@@ -222,8 +224,17 @@ public sealed class WarpPipeline : IDisposable
         context.PSSetConstantBuffers(0, new[] { _constantBuffer! });
         context.PSSetSamplers(0, new[] { _sampler! });
 
-        using ID3D11ShaderResourceView srv = _device.CreateShaderResourceView(desktopTexture, null);
-        context.PSSetShaderResources(0, new[] { srv });
+        // The source is the renderer's PERSISTENT capture copy, so its SRV can
+        // be cached: creating one per frame meant 30-47 COM allocations per
+        // second for nothing. Recreate only when the texture identity changes
+        // (geometry rebuild swaps in a new one).
+        if (!ReferenceEquals(_sourceTexture, desktopTexture) || _sourceSrv is null)
+        {
+            _sourceSrv?.Dispose();
+            _sourceSrv = _device.CreateShaderResourceView(desktopTexture, null);
+            _sourceTexture = desktopTexture;
+        }
+        context.PSSetShaderResources(0, new[] { _sourceSrv });
         context.Draw(3, 0);
 
         // The WGC frame texture is disposed by DesktopCapture the moment this
@@ -290,12 +301,15 @@ public sealed class WarpPipeline : IDisposable
         _disposed = true;
 
         try { _renderTarget?.Dispose(); } catch { }
+        try { _sourceSrv?.Dispose(); } catch { }
         try { _rasterizer?.Dispose(); } catch { }
         try { _sampler?.Dispose(); } catch { }
         try { _constantBuffer?.Dispose(); } catch { }
         try { _pixelShader?.Dispose(); } catch { }
         try { _vertexShader?.Dispose(); } catch { }
         _renderTarget = null;
+        _sourceSrv = null;
+        _sourceTexture = null;
         _rasterizer = null;
         _sampler = null;
         _constantBuffer = null;

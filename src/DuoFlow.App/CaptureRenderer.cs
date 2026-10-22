@@ -58,6 +58,26 @@ public sealed class CaptureRenderer : IDisposable
     private int _panelPixelHeight;
     private bool _disposed;
 
+    // Display-topology handling (2026-10-22): the capture surface and the
+    // panel can change size at runtime (resolution change, DPI change,
+    // docking/undocking). Every GPU target sized to the old geometry must be
+    // rebuilt; the flag defers the work to the render heartbeat so the
+    // rebuild happens inside the render gate, never mid-frame.
+    private bool _rebuildPending;
+    private int _swapWidth;
+    private int _swapHeight;
+
+    // Frame-budget guard (2026-10-22): RenderTick runs on the UI thread, so a
+    // frame that overruns the heartbeat interval stalls input. The renderer
+    // measures its own frame time and scales the frosted radius down when the
+    // average overruns the budget (never below MinQualityScale) - graceful
+    // degradation instead of a frozen console.
+    private const double FrameBudgetMs = 25.0;
+    private const double MinQualityScale = 0.5;
+    private readonly System.Diagnostics.Stopwatch _frameWatch = new();
+    private double _avgFrameMs = 8.0;
+    private double _qualityScale = 1.0;
+
     /// <summary>
     /// Global opacity of the fullscreen composite. 1.0 (DD-045): the fold
     /// renders from the FROZEN clean desktop (no capture feedback), so it can
@@ -94,7 +114,32 @@ public sealed class CaptureRenderer : IDisposable
         _panel = panel;
         _capture = capture;
         _clock = clock;
+
+        // Runtime geometry changes: WGC reports the new capture size on its
+        // own thread, the panel reports DIP size changes on the UI thread.
+        // Both funnel into one deferred rebuild.
+        _capture.SizeChanged += OnCaptureSizeChanged;
+        _panel.SizeChanged += OnPanelSizeChanged;
     }
+
+    private void OnCaptureSizeChanged(SizeInt32 size)
+    {
+        // SwapChainPanel interop is UI-thread affine: marshal, then let the
+        // heartbeat perform the actual rebuild inside the render gate.
+        _panel.DispatcherQueue?.TryEnqueue(() => _rebuildPending = true);
+    }
+
+    private void OnPanelSizeChanged(object sender, Microsoft.UI.Xaml.SizeChangedEventArgs e)
+        => _rebuildPending = true;
+
+    /// <summary>
+    /// Average render frame time (ms, exponential moving average) and the
+    /// quality scale currently applied - surfaced for diagnostics/M8.
+    /// </summary>
+    public double AverageFrameMs => _avgFrameMs;
+
+    /// <summary>Frosted-radius multiplier the frame budget has settled on (0.5~1.0).</summary>
+    public double QualityScale => _qualityScale;
 
     public void Initialize(int panelPixelWidth = 0, int panelPixelHeight = 0)
     {
@@ -104,6 +149,20 @@ public sealed class CaptureRenderer : IDisposable
         ID3D11Device device = _capture.Device;
         _context = device.ImmediateContext;
 
+        CreateTargets();
+
+        _capture.FrameArrived += OnFrameArrived;
+    }
+
+    /// <summary>
+    /// Allocates every GPU target sized to the current capture/panel
+    /// geometry: the persistent capture copy (with its mip chain), the
+    /// composition swapchain, its back buffer and the warp pipeline.
+    /// Called once at startup and again on every geometry change.
+    /// </summary>
+    private void CreateTargets()
+    {
+        ID3D11Device device = _capture.Device;
         SizeInt32 size = _capture.Item.Size;
 
         // Persistent GPU copy of the latest captured frame (M1.8: the render
@@ -136,7 +195,7 @@ public sealed class CaptureRenderer : IDisposable
         {
             swapSize = new SizeInt32(_panelPixelWidth, _panelPixelHeight);
         }
-        _factory = DXGI.CreateDXGIFactory1<IDXGIFactory1>().QueryInterface<IDXGIFactory2>();
+        _factory ??= DXGI.CreateDXGIFactory1<IDXGIFactory1>().QueryInterface<IDXGIFactory2>();
         var description = new SwapChainDescription1
         {
             Width = (uint)swapSize.Width,
@@ -154,10 +213,14 @@ public sealed class CaptureRenderer : IDisposable
 
         // Bind to the WinUI SwapChainPanel via the WinUI 3 interop wrapper
         // (QI 'ISwapChainPanelNative' {63aad0b8-...} from microsoft.ui.xaml dxinterop).
-        using var panelNative = new Vortice.WinUI.ISwapChainPanelNative(_panel);
-        panelNative.SetSwapChain(_swapChain);
+        using (var panelNative = new Vortice.WinUI.ISwapChainPanelNative(_panel))
+        {
+            panelNative.SetSwapChain(_swapChain);
+        }
 
         _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
+        _swapWidth = swapSize.Width;
+        _swapHeight = swapSize.Height;
 
         // M1.4: warp pipeline on the capture device (same device => the
         // captured texture can be sampled directly). Falls back to the M0.2
@@ -174,14 +237,54 @@ public sealed class CaptureRenderer : IDisposable
             _swapChain.Dispose();
             var fallbackDescription = description with { Width = (uint)size.Width, Height = (uint)size.Height };
             _swapChain = _factory.CreateSwapChainForComposition(device, fallbackDescription, null);
-            using var panelNative2 = new Vortice.WinUI.ISwapChainPanelNative(_panel);
-            panelNative2.SetSwapChain(_swapChain);
+            using (var panelNative2 = new Vortice.WinUI.ISwapChainPanelNative(_panel))
+            {
+                panelNative2.SetSwapChain(_swapChain);
+            }
             _backBuffer = _swapChain.GetBuffer<ID3D11Texture2D>(0);
+            _swapWidth = size.Width;
+            _swapHeight = size.Height;
         }
         WarpState = _warp is null ? "blit fallback (warp init failed)" : "active";
-        Trace.Log($"capture renderer: warp state = {WarpState} (swapchain {swapSize.Width}×{swapSize.Height})");
+        Trace.Log($"capture renderer: warp state = {WarpState} (capture {size.Width}×{size.Height}, swapchain {_swapWidth}×{_swapHeight})");
+    }
 
-        _capture.FrameArrived += OnFrameArrived;
+    /// <summary>
+    /// Releases every geometry-bound target and rebuilds them for the new
+    /// capture/panel size. Runs inside the render gate only.
+    /// </summary>
+    private void RebuildTargets()
+    {
+        try
+        {
+            _warp?.Dispose();
+            _latestFrameSrv?.Dispose();
+            _latestFrame?.Dispose();
+            _backBuffer?.Dispose();
+            _swapChain?.Dispose();
+            _warp = null;
+            _latestFrameSrv = null;
+            _latestFrame = null;
+            _backBuffer = null;
+            _swapChain = null;
+
+            // Re-read the panel's PHYSICAL size: a DPI change moves
+            // RasterizationScale without necessarily changing ActualWidth.
+            double scale = _panel.XamlRoot?.RasterizationScale ?? 1.0;
+            _panelPixelWidth = Math.Max(1, (int)Math.Round(_panel.ActualWidth * scale));
+            _panelPixelHeight = Math.Max(1, (int)Math.Round(_panel.ActualHeight * scale));
+
+            CreateTargets();
+
+            // The frozen source belongs to the OLD geometry - start clean.
+            _sourceFrozen = false;
+            Trace.Log($"capture renderer: rebuilt for new geometry (panel {_panelPixelWidth}×{_panelPixelHeight}, scale {scale:0.00})");
+        }
+        catch (Exception ex)
+        {
+            WarpState = "rebuild failed";
+            Trace.Log($"capture renderer: rebuild FAILED: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     /// <summary>M1.8: the render heartbeat. Called from the UI thread on a
@@ -202,6 +305,23 @@ public sealed class CaptureRenderer : IDisposable
             {
                 return;
             }
+
+            // Deferred geometry rebuild (resolution/DPI/topology change).
+            // Done here so it always lands inside the gate, between frames.
+            if (_rebuildPending)
+            {
+                _rebuildPending = false;
+                RebuildTargets();
+                if (_backBuffer is null || _latestFrame is null)
+                {
+                    return; // rebuild failed - next tick retries nothing, stay dark
+                }
+            }
+
+            // Frame-budget guard (measure THIS tick's work, not the gap
+            // between ticks - the heartbeat interval is 30ms by design and
+            // must not be mistaken for render cost).
+            _frameWatch.Restart();
 
             DumpRequest? request = _pendingDumpRequest;
             _pendingDumpRequest = null;
@@ -235,7 +355,8 @@ public sealed class CaptureRenderer : IDisposable
                 double fadeOpacity =
                     Math.Clamp(state.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
                 warp.Render(_context, _latestFrame, frame,
-                    _blurOptions.MaxBlurPixels, _blurOptions.IntensityAt(state.Progress), fadeOpacity);
+                    _blurOptions.MaxBlurPixels * _qualityScale,
+                    _blurOptions.IntensityAt(state.Progress), fadeOpacity);
             }
             else
             {
@@ -250,6 +371,22 @@ public sealed class CaptureRenderer : IDisposable
 
             _swapChain?.Present(1, 0);
             Interlocked.Increment(ref _presented);
+
+            // Frame budget: elapsed covers this tick's shader work + Present
+            // (the vsync wait IS UI-thread time and must count). Above budget
+            // the frosted radius shrinks step by step; well below it, it
+            // recovers. Degrade quality, never skip frames - skipping would
+            // break the "continuous Progress" guarantee.
+            double workMs = _frameWatch.Elapsed.TotalMilliseconds;
+            _avgFrameMs = _avgFrameMs * 0.9 + workMs * 0.1;
+            if (_avgFrameMs > FrameBudgetMs)
+            {
+                _qualityScale = Math.Max(MinQualityScale, _qualityScale - 0.05);
+            }
+            else if (_avgFrameMs < FrameBudgetMs * 0.6)
+            {
+                _qualityScale = Math.Min(1.0, _qualityScale + 0.02);
+            }
         }
     }
 
@@ -337,20 +474,30 @@ public sealed class CaptureRenderer : IDisposable
         {
             return;
         }
-        _disposed = true;
 
         _capture.FrameArrived -= OnFrameArrived;
-        try { _warp?.Dispose(); } catch { }
-        try { _latestFrameSrv?.Dispose(); } catch { }
-        try { _latestFrame?.Dispose(); } catch { }
-        try { _backBuffer?.Dispose(); } catch { }
-        try { _swapChain?.Dispose(); } catch { }
-        try { _factory?.Dispose(); } catch { }
-        _warp = null;
-        _latestFrame = null;
-        _backBuffer = null;
-        _swapChain = null;
-        _factory = null;
-        _context = null; // owned by the device
+        _capture.SizeChanged -= OnCaptureSizeChanged;
+        _panel.SizeChanged -= OnPanelSizeChanged;
+
+        // Serialize against an in-flight capture callback: it holds the gate
+        // while copying into _latestFrame, so disposing outside the lock
+        // could pull the texture out from under it.
+        lock (_renderGate)
+        {
+            _disposed = true;
+            try { _warp?.Dispose(); } catch { }
+            try { _latestFrameSrv?.Dispose(); } catch { }
+            try { _latestFrame?.Dispose(); } catch { }
+            try { _backBuffer?.Dispose(); } catch { }
+            try { _swapChain?.Dispose(); } catch { }
+            try { _factory?.Dispose(); } catch { }
+            _warp = null;
+            _latestFrameSrv = null;
+            _latestFrame = null;
+            _backBuffer = null;
+            _swapChain = null;
+            _factory = null;
+            _context = null; // owned by the device
+        }
     }
 }

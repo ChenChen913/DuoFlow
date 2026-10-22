@@ -30,6 +30,15 @@ public sealed class DesktopCapture : IDisposable
     /// </summary>
     public event Action<ID3D11Texture2D, SizeInt32>? FrameArrived;
 
+    /// <summary>
+    /// Raised AFTER the capture surface changed size (monitor resolution,
+    /// display scaling or display topology change) and the frame pool has
+    /// been recreated. Consumers must rebuild everything sized to the old
+    /// frame - the persistent capture copy and the composition swapchain
+    /// both become invalid the moment the size changes.
+    /// </summary>
+    public event Action<SizeInt32>? SizeChanged;
+
     /// <summary>D3D11 device shared with the renderer (CopyResource needs sameness).</summary>
     public ID3D11Device Device { get; private set; } = null!;
 
@@ -45,6 +54,7 @@ public sealed class DesktopCapture : IDisposable
     private IDirect3DDevice? _winrtDevice;
     private Direct3D11CaptureFramePool? _framePool;
     private GraphicsCaptureSession? _session;
+    private SizeInt32 _poolSize;
     private bool _disposed;
 
     public void Start()
@@ -93,13 +103,24 @@ public sealed class DesktopCapture : IDisposable
             2,
             Item.Size);
         _framePool.FrameArrived += OnFrameArrived;
+        _poolSize = Item.Size;
 
         // 5. Session. Cosmetic options are best-effort (permission-gated on some builds).
         _session = _framePool.CreateCaptureSession(Item);
-        TrySet(_session, session => session.IsCursorCaptureEnabled = true);
+        // IsCursorCaptureEnabled needs 19041+; the TFM allows 17763, so the
+        // guard must sit INSIDE the lambda (the analyzer treats it as its own
+        // method and does not inherit an outer guard).
+        TrySet(_session, session =>
+        {
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+            {
+                session.IsCursorCaptureEnabled = true;
+            }
+        });
         // IsBorderRequired requires a 22000+ TFM projection and special permission;
         // skipped for M0.2 (border/outline does not affect the feasibility result).
         _session.StartCapture();
+
 
         bool supported;
         try { supported = GraphicsCaptureSession.IsSupported(); }
@@ -107,7 +128,9 @@ public sealed class DesktopCapture : IDisposable
         DriverInfo = $"{driverType} · IsSupported={supported}";
     }
 
-    /// <summary>Resize the frame pool when the monitor resolution changes.</summary>
+    /// <summary>
+    /// Resize the frame pool when the monitor resolution changes.
+    /// </summary>
     public void RecreateFramePool(SizeInt32 newSize)
         => _framePool?.Recreate(_winrtDevice, DirectXPixelFormat.B8G8R8A8UIntNormalized, 2, newSize);
 
@@ -115,6 +138,7 @@ public sealed class DesktopCapture : IDisposable
     {
         // Never let an exception escape a capture callback: it would kill the
         // app. Record it for the status bar instead.
+        SizeInt32? resized = null;
         try
         {
             using Direct3D11CaptureFrame? frame = sender.TryGetNextFrame();
@@ -123,7 +147,17 @@ public sealed class DesktopCapture : IDisposable
                 return;
             }
 
-            if (!_disposed && FrameArrived is not null)
+            // Resolution / DPI / display-topology change: the item reports a
+            // new ContentSize and every buffer sized to the old geometry is
+            // stale. Detect it HERE (GraphicsCaptureItem exposes no
+            // SizeChanged in this projection), skip this one odd frame, and
+            // recreate the pool after the frame has been released.
+            if (frame.ContentSize.Width != _poolSize.Width
+                || frame.ContentSize.Height != _poolSize.Height)
+            {
+                resized = frame.ContentSize;
+            }
+            else if (!_disposed && FrameArrived is not null)
             {
                 using ID3D11Texture2D texture = Direct3D11Helper.GetD3DTexture(frame.Surface);
                 FrameArrived.Invoke(texture, frame.ContentSize);
@@ -132,6 +166,21 @@ public sealed class DesktopCapture : IDisposable
         catch (Exception ex)
         {
             LastError = $"{ex.GetType().Name}: {ex.Message}";
+        }
+
+        if (resized is { } size)
+        {
+            _poolSize = size;
+            try
+            {
+                RecreateFramePool(size);
+                LastError = null;
+                SizeChanged?.Invoke(size);
+            }
+            catch (Exception ex)
+            {
+                LastError = $"SizeChanged: {ex.GetType().Name}: {ex.Message}";
+            }
         }
     }
 

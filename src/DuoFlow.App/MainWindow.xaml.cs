@@ -61,12 +61,18 @@ public sealed partial class MainWindow : Window
         // The console is the app's only visible surface with a close button:
         // closing it must take the (borderless, click-through, Alt+Tab-hidden)
         // overlay down with it, or the overlay lingers with no way to close
-        // it except Task Manager (2026-09-19, real user hit). WinUI 3
-        // unpackaged: Application.Exit() only stops the DispatcherQueue (the
-        // process lingers - verified 2026-09-19); Environment.Exit actually
-        // terminates. Graceful D3D cleanup is skipped - the OS reclaims
-        // everything; a proper shutdown flow is M5 territory.
-        Closed += (_, _) => Environment.Exit(0);
+        // it except Task Manager (2026-09-19, real user hit).
+        //
+        // 2026-10-22: close the overlay FIRST so OverlayWindow.Cleanup() runs
+        // and the capture session / D3D targets are released. Environment.Exit
+        // stays as the hard backstop because WinUI 3 unpackaged
+        // Application.Exit() only stops the DispatcherQueue (the process
+        // lingered - verified 2026-09-19).
+        Closed += (_, _) =>
+        {
+            try { _overlay?.Close(); } catch { /* already closed */ }
+            Environment.Exit(0);
+        };
         ((FrameworkElement)Content).Loaded += OnLoaded;
     }
 
@@ -280,5 +286,5 @@ public sealed partial class MainWindow : Window
         $"DWM 透明                {Mark(r.TransparentDwm)}\n" +
         $"多显示器枚举            {r.MonitorCount} 台    {r.Monitors}\n" +
         $"─────────────────────────────────────\n" +
-        $"捕获·渲染（迁入 overlay）  {r.CaptureState} · warp={r.WarpState} · {_lastFps:0} FPS · 累计 {r.CaptureFrames} 帧（GPU→GPU→Warp）";
+        $"捕获·渲染（迁入 overlay）  {r.CaptureState} · warp={r.WarpState} · {_lastFps:0} FPS · {r.RenderFrameMs:0.0}ms · 画质 {r.QualityScale:0.00} · 累计 {r.CaptureFrames} 帧（GPU→GPU→Warp）";
 }

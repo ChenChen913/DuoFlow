@@ -1311,7 +1311,9 @@ HLSL 的编译方式、以及——本轮真机暴露的——显示合成路径
 
 # DD-040：M1.5 Hinge Mask 的定义、复用铰链系约束与 Debug 可视化编码
 
-**Status:** Accepted（M1.5 实现时提出，随任务指令确认登记）
+**Status:** ⚠️ **Superseded by DD-046（2026-09-19）** — 原 Accepted（M1.5 实现时提出，随任务指令确认登记）。
+铰链遮罩已从实现中删除，其职责由 DD-046 的缝隙高度物理耦合承担。本文保留作历史记录，
+**不要按本文实现**。
 
 ## 背景
 
@@ -1379,7 +1381,9 @@ PROJECT_SPEC §11 要求铰链遮罩可配置（Hinge Position / Hinge Width / F
 
 # DD-041：M1.6 Blur 的单 Pass 十三 tap 核、源空间半径与度量方法
 
-**Status:** Accepted（M1.6 实现时提出，随任务指令确认登记）
+**Status:** ⚠️ **Superseded by DD-046（2026-09-19）** — 原 Accepted（M1.6 实现时提出，随任务指令确认登记）。
+13-tap 中心加权核已被 16-tap Vogel 螺旋 + mip 预过滤取代。本文保留作历史记录，
+**不要按本文实现**。
 
 ## 背景
 
@@ -1448,7 +1452,9 @@ PROJECT_SPEC §12：`blur = hingeMask × progress × maxBlur`，"正常打开几
 
 # DD-042：M1.7 Dimming 的公式落地与递归污染度量教训
 
-**Status:** Accepted（M1.7 实现时提出，随任务指令确认登记）
+**Status:** ⚠️ **Superseded by DD-046（2026-09-19）** — 原 Accepted（M1.7 实现时提出，随任务指令确认登记）。
+独立暗化 Pass 已删除，暗化改为由模糊半径派生的光衰减。本文的**递归污染度量教训**（§5）
+仍然有效，保留作历史记录；实现部分不要按本文做。
 
 ## 背景
 
@@ -1755,6 +1761,65 @@ bokeh.frag / BokehProjection 后发现：双方几何同构，**分歧在模糊/
 - DD-043（强度包络——v2 的 intensity 输入）
 - DD-045（源冻结——v2 无重影的前提）
 - DD-040..DD-042（被取代的遮罩/旧核/独立暗化）
+
+---
+
+# DD-047：M1 工程债的处置口径——拓扑自适应、帧预算降级与 CI 渲染门禁
+
+**Status:** Accepted（2026-10-22，M1 审查后清理）
+
+## 背景
+
+M1 收官一个月后对已完成功能做代码级审查，发现三类问题：显示拓扑变化无处理（`RecreateFramePool`
+有定义零调用点）、渲染无帧预算（30ms 心跳跑在 UI 线程）、CI 不校验渲染管线状态（shader 编译失败
+静默回退 blit 仍全绿）。另有一批文档与 DD-045/046 脱节。
+
+## 决定
+
+1. **拓扑变化走"捕获回调检测 + 心跳内重建"**：`GraphicsCaptureItem` 在 WinAppSDK 1.8 的 C# 投影里
+   **没有 SizeChanged 事件**（编译期 CS1061 实证），因此在 `OnFrameArrived` 比较 `frame.ContentSize`
+   与帧池尺寸；变化时丢弃该帧 → `RecreateFramePool` → 抛 `SizeChanged`。消费方（`CaptureRenderer`）
+   只置 `_rebuildPending`，真正重建放在 `RenderTick` 内、持 `_renderGate` 执行——**重建永不发生在
+   一帧的中间，也不与捕获线程并发**。
+2. **帧预算采用"降质不跳帧"**：EMA 帧耗时超 25ms 时按步长下调磨砂半径（下限 0.5×），低于 60%
+   预算时回升。理由：跳帧会破坏"Progress 连续变化"的核心体验，而降半径只损失磨砂深度。
+3. **`WarpState` 升级为 CI 门禁**：`TryCreate` 的"永不抛异常、失败回退 blit"是好的运行时策略，
+   但必须有一个地方证明 shader 真的跑了——否则渲染回归完全隐形。回退仍是运行时行为，
+   **门禁只负责让 CI 红**。
+4. **验收脚本必须入库**：`scripts/acceptance/warp-selftest.ps1` 是 M1.4 量化验收的执行器，
+   放在仓库外等于下一个人无法复现结论。脚本内的几何尺寸一律从应用 trace 读取，不硬编码。
+
+## 原因
+
+* 显示拓扑变化是真实用户场景（改分辨率、拔插外接屏、RDP 重连），失配会导致画面错乱而非报错；
+* UI 线程是单点：渲染一卡，控制台就失去响应，用户会以为程序挂了；
+* "CI 绿但功能不在"比 CI 红危险得多——它会让后续所有里程碑建立在错误的信心上。
+
+## 替代方案
+
+* 拓扑变化用轮询 `Item.Size`：可行但需要额外定时器，且仍要解决重建时机，收益为零；
+* 渲染搬到独立线程：SwapChainPanel 的绑定与 `Present` 有 UI 线程亲和性，M1 阶段迁移风险
+  远大于收益（M8 性能阶段再评估）；
+* 帧预算用"跳过 Present"：会停掉 `PresentedFrames` 计数与合成心跳，控制台 FPS 显示失真。
+
+## 影响
+
+* `DesktopCapture`：新增 `SizeChanged` 事件与帧尺寸检测；CA1416 用 `IsWindowsVersionAtLeast` 守卫。
+* `CaptureRenderer`：`Initialize` 拆出 `CreateTargets`，新增 `RebuildTargets`、帧预算字段；
+  `Dispose` 进入 `_renderGate`。
+* `WarpPipeline`：SRV 缓存（原为每帧创建/释放）。
+* `.github/workflows/m0-windows-build.yml`：新增 `WarpState` 断言。
+* smoke JSON 新增 `RenderFrameMs` / `QualityScale`（信息性，M8 才做性能门禁）。
+
+## 迁移方案
+
+不适用（向后兼容的增量修复）。
+
+## 相关决策
+
+- DD-039（warp 管线与进程内验收路线）
+- DD-044（捕获/渲染解耦——帧预算挂在这条心跳上）
+- DD-045 / DD-046（本轮**不改**的视觉决策：源冻结与物理景深）
 
 ---
 

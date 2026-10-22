@@ -130,9 +130,17 @@ public sealed class OverlayReport
     public double CaptureFps { get; set; }
     public string CaptureState { get; set; } = "unknown";
 
-    /// <summary>M1.4 warp pipeline state (informational only - the CI gate
-    /// does not assert on it; the real-machine grid check is the authority).</summary>
+    /// <summary>M1.4 warp pipeline state. ASSERTED by the CI gate since
+    /// 2026-10-22: "blit fallback" means the shader never ran, and before
+    /// this assertion a broken shader left CI green while the screen showed
+    /// a plain mirror.</summary>
     public string WarpState { get; set; } = "unknown";
+
+    /// <summary>Average render frame time in ms (exponential moving average)
+    /// and the frame-budget quality scale currently applied. Informational -
+    /// the performance gate belongs to M8.</summary>
+    public double RenderFrameMs { get; set; }
+    public double QualityScale { get; set; } = 1.0;
 
     public List<string> Warnings { get; set; } = new();
 }
@@ -252,6 +260,8 @@ public static class OverlayProbe
             report.CaptureFrames = overlay.Renderer?.PresentedFrames ?? 0;
             report.CaptureState = overlay.CaptureState;
             report.WarpState = overlay.WarpState;
+            report.RenderFrameMs = overlay.Renderer?.AverageFrameMs ?? 0;
+            report.QualityScale = overlay.Renderer?.QualityScale ?? 1.0;
             report.Warnings.AddRange(overlay.Warnings);
         }
         catch (Exception ex)
