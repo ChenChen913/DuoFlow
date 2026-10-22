@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Window
     x:Class="DuoFlow.App.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -242,7 +242,7 @@
                 Minimum="0"
                 Maximum="0.2"
                 StepFrequency="0.01"
-                Value="0"
+                Value="0.08"
                 ValueChanged="OnTuningValueChanged" />
             <TextBlock
                 FontSize="11.5"

@@ -110,11 +110,16 @@ public sealed class DesktopCapture : IDisposable
         // IsCursorCaptureEnabled needs 19041+; the TFM allows 17763, so the
         // guard must sit INSIDE the lambda (the analyzer treats it as its own
         // method and does not inherit an outer guard).
+        //
+        // The cursor is captured OFF (DD-051): DD-045 freezes the source while
+        // the effect is on screen, so a captured cursor would be baked into
+        // the frozen frame forever - one live pointer plus one printed on the
+        // frosted glass. The effect is about the desktop, not the pointer.
         TrySet(_session, session =>
         {
             if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
             {
-                session.IsCursorCaptureEnabled = true;
+                session.IsCursorCaptureEnabled = false;
             }
         });
         // IsBorderRequired requires a 22000+ TFM projection and special permission;

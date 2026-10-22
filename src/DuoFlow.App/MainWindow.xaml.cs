@@ -48,11 +48,34 @@ public sealed partial class MainWindow : Window
     // DispatcherQueue, which is only meaningful once the window exists.
     private DemoPlayer? _demo;
 
-    public MainWindow(OverlayWindow? overlay, bool smoke, bool lightSweep = false)
+    // M2.6 / DD-051: the panel is the EDITOR, tuning.json is the MEMORY.
+    // _pendingPreset + a one-shot timer debounce a drag (dozens of
+    // ValueChanged per second) into one write.
+    private DispatcherQueueTimer? _saveTimer;
+    private TuningPreset? _pendingPreset;
+
+    // The last rejection text, so a panel that stays invalid logs once instead
+    // of retrying (and re-logging) every second forever.
+    private string? _lastTuningError;
+
+    // DD-051: acceptance runs must be HERMETIC - they measure against the
+    // compiled-in defaults (warp-selftest predicts rows from r=2.5 /
+    // MaxFold=90), so a saved preset must neither seed them nor be overwritten
+    // by them. automation = launched by a script, UI changes are test input.
+    private readonly bool _persistTuning;
+
+    public MainWindow(OverlayWindow? overlay, bool smoke, bool lightSweep = false, bool automation = false)
     {
         _overlay = overlay;
         _smoke = smoke;
+        _persistTuning = !automation;
         InitializeComponent();
+
+        // DD-051: restore the last tuning session before anything can be
+        // pushed to the renderer. Seeded under _syncingTuning so the widget
+        // write-backs do not fire a half-built ApplyTuning.
+        ApplyPresetToPanel(_persistTuning ? TuningStore.Load() : TuningPreset.Default);
+        Trace.Log($"tuning: preset persistence {(_persistTuning ? "on" : "off (automation run)")}");
 
         // M2.2 acceptance hook (--light-sweep): start with the sweep on so
         // warp-selftest can measure the band without a temporary source edit.
@@ -98,6 +121,8 @@ public sealed partial class MainWindow : Window
         // Nothing may outlive the window: detach the handler and stop the
         // provider (it only flips its lifecycle flag - no async work).
         _demo?.Pause();
+        _saveTimer?.Stop();
+        FlushPreset();   // DD-051: a change made just before closing still lands
         _manualProvider.StateChanged -= OnManualStateChanged;
         _ = _manualProvider.StopAsync();
         Trace.Log("console: manual provider detached + stopped");
@@ -401,6 +426,83 @@ public sealed partial class MainWindow : Window
     // moment is what the renderer should start with.
     private bool _tuningPushed;
 
+    /// <summary>
+    /// Write a preset into the widgets. Used at startup (restore) and by the
+    /// reset button (defaults). Guarded so the resulting ValueChanged /
+    /// SelectionChanged / Checked events do not re-enter ApplyTuning while the
+    /// panel is half-populated.
+    /// </summary>
+    private void ApplyPresetToPanel(TuningPreset preset)
+    {
+        _syncingTuning = true;
+        try
+        {
+            MaxFoldSlider.Value = preset.MaxFoldDegrees;
+            CameraSlider.Value = preset.CameraDistanceRatio;
+            MaxBlurSlider.Value = preset.MaxBlurPixels;
+            EnvelopeStartSlider.Value = preset.StartProgress;
+            EnvelopeFullSlider.Value = preset.FullProgress;
+            TiltCombo.SelectedIndex = preset.TiltAwayFromViewer ? 0 : 1;
+            HingeCombo.SelectedIndex = preset.HingeAtTop ? 1 : 0;
+            GradientCheck.IsChecked = preset.GradientEnabled;
+            HueStartSlider.Value = preset.HueStartDegrees;
+            HueEndSlider.Value = preset.HueEndDegrees;
+            GradientStrengthSlider.Value = preset.GradientStrength;
+            SweepCheck.IsChecked = preset.SweepEnabled;
+            SweepPositionSlider.Value = preset.SweepPosition;
+            SweepWidthSlider.Value = preset.SweepWidth;
+            SweepStrengthSlider.Value = preset.SweepStrength;
+            SweepDirectionCombo.SelectedIndex =
+                preset.SweepDirection == SweepDirection.FarToHinge ? 1 : 0;
+        }
+        finally
+        {
+            _syncingTuning = false;
+        }
+    }
+
+    /// <summary>
+    /// Debounce the preset write: a slider drag raises ValueChanged dozens of
+    /// times per second, and the file is a few hundred bytes - one write per
+    /// pause is enough, and it keeps file IO off the drag path.
+    /// </summary>
+    private void SchedulePresetSave(TuningPreset preset)
+    {
+        if (!_persistTuning)
+        {
+            return; // automation run: the file is not ours to touch
+        }
+
+        _pendingPreset = preset;
+
+        if (_saveTimer is null)
+        {
+            _saveTimer = DispatcherQueue.CreateTimer();
+            _saveTimer.Interval = TimeSpan.FromMilliseconds(600);
+            _saveTimer.IsRepeating = false;
+            _saveTimer.Tick += (_, _) => FlushPreset();
+        }
+
+        _saveTimer.Stop();
+        _saveTimer.Start();
+    }
+
+    /// <summary>Write any pending preset now (timer tick / window close).</summary>
+    private void FlushPreset()
+    {
+        TuningPreset? pending = _pendingPreset;
+        _pendingPreset = null;
+        if (pending is null)
+        {
+            return;
+        }
+
+        TuningStore.Save(pending);
+        Trace.Log($"tuning: preset saved (maxFold={pending.MaxFoldDegrees:0} " +
+                  $"r={pending.CameraDistanceRatio:0.00} maxBlur={pending.MaxBlurPixels:0} " +
+                  $"gradient={pending.GradientEnabled} sweep={pending.SweepEnabled})");
+    }
+
     private void OnTuningValueChanged(object sender, RangeBaseValueChangedEventArgs e)
         => ApplyTuning();
 
@@ -415,32 +517,10 @@ public sealed partial class MainWindow : Window
 
     private void OnResetTuning(object sender, RoutedEventArgs e)
     {
-        _syncingTuning = true;
-        try
-        {
-            // Re-seed from the compiled-in defaults, never from a copy: if a
-            // default changes in DuoFlow.Render, "restore defaults" follows.
-            MaxFoldSlider.Value = WarpOptions.DefaultMaxFoldDegrees;
-            CameraSlider.Value = WarpOptions.DefaultCameraDistanceRatio;
-            MaxBlurSlider.Value = BlurOptions.DefaultMaxBlurPixels;
-            EnvelopeStartSlider.Value = BlurOptions.DefaultStartProgress;
-            EnvelopeFullSlider.Value = BlurOptions.DefaultFullProgress;
-            TiltCombo.SelectedIndex = 0;    // away
-            HingeCombo.SelectedIndex = 0;   // bottom
-            GradientCheck.IsChecked = false;
-            HueStartSlider.Value = GradientOptions.DefaultHueStartDegrees;
-            HueEndSlider.Value = GradientOptions.DefaultHueEndDegrees;
-            GradientStrengthSlider.Value = 0.0;
-            SweepCheck.IsChecked = false;
-            SweepPositionSlider.Value = LightSweepOptions.DefaultPosition;
-            SweepWidthSlider.Value = LightSweepOptions.DefaultWidth;
-            SweepStrengthSlider.Value = LightSweepOptions.DefaultStrength;
-            SweepDirectionCombo.SelectedIndex = 0;   // hinge -> far
-        }
-        finally
-        {
-            _syncingTuning = false;
-        }
+        // Re-seed from the compiled-in defaults through the SAME path the
+        // startup restore uses, so "restore defaults" and "first launch"
+        // cannot drift apart (DD-051).
+        ApplyPresetToPanel(TuningPreset.Default);
         ApplyTuning();
     }
 
@@ -500,6 +580,15 @@ public sealed partial class MainWindow : Window
         if (error is null)
         {
             _tuningPushed = true;
+            _lastTuningError = null;
+            // DD-051: persist exactly what the renderer ACCEPTED, never what
+            // the widgets claim - a rejected set must not be written.
+            SchedulePresetSave(TuningPreset.FromOptions(warp, blur, gradient, sweep));
+        }
+        else if (error != _lastTuningError)
+        {
+            _lastTuningError = error;
+            Trace.Log($"tuning: panel rejected by the renderer ({error}) - keeping the last accepted set");
         }
         TuningStatus.Text = error is null
             ? $"生效：MaxFold {warp.MaxFoldDegrees:0}° · r {warp.CameraDistanceRatio:0.00} · " +

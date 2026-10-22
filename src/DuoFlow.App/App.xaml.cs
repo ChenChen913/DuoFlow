@@ -106,7 +106,9 @@ public partial class App : Application
         try
         {
             Trace.Log("console: constructing...");
-            _console = new MainWindow(_overlay, smoke, lightSweep);
+            // automation: the three test hooks below change UI state on
+            // purpose; DD-051 keeps those runs hermetic (no preset read/write).
+            _console = new MainWindow(_overlay, smoke, lightSweep, smoke || selfTest || lightSweep);
             Trace.Log("console: constructed OK");
             _console.Activate();
             Trace.Log("console: activated OK");

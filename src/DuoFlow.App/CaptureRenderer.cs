@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using SharpGen.Runtime;
 using DuoFlow.Capture;
 using DuoFlow.Capture.Interop;
 using DuoFlow.Render;
@@ -73,6 +74,35 @@ public sealed class CaptureRenderer : IDisposable
     private int _panelPixelHeight;
     private bool _disposed;
 
+    // ------------------------------------------------------------------
+    // Runtime self-healing (DD-051). Three ways the chain used to die
+    // silently, and the state each one now has:
+    //   - a failed rebuild cleared its own flag, leaving the overlay black
+    //     forever        -> _rebuildPending stays set, retried with backoff;
+    //   - Present's result was discarded, so a removed GPU device was
+    //     invisible        -> classified by DeviceHealth, surfaced to the
+    //                         overlay, which restarts the capture chain once;
+    //   - a fault in the heartbeat was a 30 Hz unhandled-exception stream
+    //                      -> contained per tick, rate-limited trace.
+    // ------------------------------------------------------------------
+    private bool _idlePresented;   // a fully transparent frame is already on screen
+    private int _rebuildFailures;
+    private int _rebuildRetryInTicks;
+    private bool _deviceLost;
+    private int _tickFaults;
+
+    /// <summary>Progress at or below this counts as "effect not on screen" -
+    /// the same threshold DD-045 uses to unfreeze the capture source.</summary>
+    private const double VisibleProgressEpsilon = 0.001;
+
+    /// <summary>true once the render chain can no longer be trusted (device
+    /// removed/reset). The overlay watches this and restarts capture once;
+    /// the renderer itself never rebuilds a device it no longer owns.</summary>
+    public bool ChainBroken { get; private set; }
+
+    /// <summary>Why <see cref="ChainBroken"/> went true (trace/presentation).</summary>
+    public string? ChainBrokenReason { get; private set; }
+
     // Display-topology handling (2026-10-22): the capture surface and the
     // panel can change size at runtime (resolution change, DPI change,
     // docking/undocking). Every GPU target sized to the old geometry must be
@@ -126,26 +156,14 @@ public sealed class CaptureRenderer : IDisposable
     public string? SetOptions(WarpOptions warp, BlurOptions blur, GradientOptions gradient,
         LightSweepOptions sweep)
     {
-        if (warp is null) { return "warp options null"; }
-        if (blur is null) { return "blur options null"; }
-        if (gradient is null) { return "gradient options null"; }
-        if (sweep is null) { return "sweep options null"; }
-
-        try
+        // DD-051: the SAME rule set the preset loader uses (OptionSet), so a
+        // saved file and a hand-driven panel can never accept different
+        // values. Both sweep ends are checked, exactly as before.
+        string? reason = OptionSet.ValidateAll(warp, blur, gradient, sweep);
+        if (reason is not null)
         {
-            // Both validators are the ones the render path uses - call them
-            // with the same arguments the renderer would, at both sweep ends
-            // so a combination that only breaks at progress 1 is caught too.
-            WarpGeometry.Compute(0.0, warp);
-            WarpGeometry.Compute(1.0, warp);
-            blur.Validate();
-            gradient.Validate();
-            sweep.Validate();
-        }
-        catch (Exception ex)
-        {
-            Trace.Log($"tuning: REJECTED ({ex.GetType().Name}: {ex.Message})");
-            return ex.Message;
+            Trace.Log($"tuning: REJECTED ({reason})");
+            return reason;
         }
 
         _warpOptions = warp;
@@ -330,7 +348,9 @@ public sealed class CaptureRenderer : IDisposable
     /// Releases every geometry-bound target and rebuilds them for the new
     /// capture/panel size. Runs inside the render gate only.
     /// </summary>
-    private void RebuildTargets()
+    /// <returns>true when every target is usable again. The caller retries on
+    /// false (DD-051) - a failed rebuild is not a terminal state.</returns>
+    private bool RebuildTargets()
     {
         try
         {
@@ -355,13 +375,38 @@ public sealed class CaptureRenderer : IDisposable
 
             // The frozen source belongs to the OLD geometry - start clean.
             _sourceFrozen = false;
+            // A brand-new swapchain has nothing on screen yet: it must be
+            // presented once even if the effect is open (DD-051 idle skip).
+            _idlePresented = false;
             Trace.Log($"capture renderer: rebuilt for new geometry (panel {_panelPixelWidth}×{_panelPixelHeight}, scale {scale:0.00})");
+            return _backBuffer is not null && _latestFrame is not null;
         }
         catch (Exception ex)
         {
-            WarpState = "rebuild failed";
             Trace.Log($"capture renderer: rebuild FAILED: {ex.GetType().Name}: {ex.Message}");
+            return false;
         }
+    }
+
+    /// <summary>Heartbeat ticks to wait before retrying a failed rebuild:
+    /// 2, 4, 8, ... capped at 120 ticks (~3.6 s at the 30 ms cadence).</summary>
+    private static int RetryDelayTicks(int failures)
+        => Math.Min(1 << Math.Min(failures, 7), 120);
+
+    /// <summary>Stop drawing and tell the overlay to restart the chain. Only
+    /// the OWNER of the capture device may re-create it, so this renderer
+    /// never tries.</summary>
+    private void MarkDeviceLost(string reason)
+    {
+        if (_deviceLost)
+        {
+            return;
+        }
+        _deviceLost = true;
+        ChainBroken = true;
+        ChainBrokenReason = reason;
+        WarpState = "device lost";
+        Trace.Log($"capture renderer: DEVICE LOST ({reason}) - chain stopped, overlay will restart capture");
     }
 
     /// <summary>M1.8: the render heartbeat. Called from the UI thread on a
@@ -371,54 +416,97 @@ public sealed class CaptureRenderer : IDisposable
     /// capture callback shares it.</summary>
     public void RenderTick()
     {
-        if (_disposed || _context is null || _backBuffer is null || _latestFrame is null)
+        if (_disposed || _context is null)
         {
             return;
         }
 
+        // DD-051: a fault inside a DispatcherQueueTimer tick is a PER-FRAME
+        // fault. The app-level handler swallows 50 unhandled exceptions, which
+        // at 30 Hz is 1.7 s before the process dies - so one bad frame used to
+        // become a crash. Contain it here instead: the effect stops updating,
+        // the process and the console stay alive, and the reason lands in the
+        // trace and in WarpState.
+        try
+        {
+            RenderTickCore();
+        }
+        catch (Exception ex)
+        {
+            _tickFaults++;
+            WarpState = $"tick failed ({ex.GetType().Name})";
+            if (_tickFaults == 1 || _tickFaults % 120 == 0)
+            {
+                Trace.Log($"capture renderer: render tick FAILED x{_tickFaults}: " +
+                          $"{ex.GetType().Name}: {ex.Message}");
+            }
+            if (DeviceHealth.IsFatalLoss(ex.HResult))
+            {
+                MarkDeviceLost($"tick exception {ex.GetType().Name} hr=0x{ex.HResult:X8}");
+            }
+        }
+    }
+
+    private void RenderTickCore()
+    {
         lock (_renderGate)
         {
-            if (_disposed)
+            if (_disposed || _deviceLost)
             {
                 return;
             }
 
-            // Deferred geometry rebuild (resolution/DPI/topology change).
-            // Done here so it always lands inside the gate, between frames.
+            // Deferred geometry rebuild (resolution/DPI/topology change). Done
+            // here so it always lands inside the gate, between frames.
+            //
+            // DD-051: the flag used to be cleared BEFORE the attempt, so one
+            // transient failure left the overlay permanently black with no
+            // retry. It now stays set until a rebuild SUCCEEDS, with a capped
+            // exponential backoff so a genuinely broken chain does not retry
+            // at 30 Hz forever.
             if (_rebuildPending)
             {
-                _rebuildPending = false;
-                RebuildTargets();
-                if (_backBuffer is null || _latestFrame is null)
+                if (_rebuildRetryInTicks > 0)
                 {
-                    return; // rebuild failed - next tick retries nothing, stay dark
+                    _rebuildRetryInTicks--;
+                }
+                else if (RebuildTargets())
+                {
+                    _rebuildPending = false;
+                    _rebuildFailures = 0;
+                }
+                else
+                {
+                    _rebuildFailures++;
+                    _rebuildRetryInTicks = RetryDelayTicks(_rebuildFailures);
+                    WarpState = $"rebuild failed (attempt {_rebuildFailures})";
                 }
             }
 
-            // Frame-budget guard (measure THIS tick's work, not the gap
-            // between ticks - the heartbeat interval is 30ms by design and
-            // must not be mistaken for render cost).
-            _frameWatch.Restart();
+            ID3D11DeviceContext? context = _context;
+            ID3D11Texture2D? backBuffer = _backBuffer;
+            ID3D11Texture2D? latestFrame = _latestFrame;
+            IDXGISwapChain1? swapChain = _swapChain;
+            if (context is null || backBuffer is null || latestFrame is null)
+            {
+                return; // no usable targets (a failed rebuild retries above)
+            }
 
             DumpRequest? request = _pendingDumpRequest;
             _pendingDumpRequest = null;
 
-            if (_warp is { } warp && _clock is { } clock)
+            LidState? state = null;
+            bool visible = false;
+            if (_warp is not null && _clock is { } clock)
             {
                 // M1.4-M1.8 model v2: engine Tick -> smoothed progress ->
                 // warp + physical gap blur/light (DD-046) -> fullscreen
                 // composite. The AnimationEngine is the ONLY progress source
                 // (DD-002/DD-038); the clock serializes the UI thread's
                 // Update() against this thread.
-                LidState state = clock.Tick();
-
-                // Read the tuning options ONCE per frame (see the field
-                // comment): a swap mid-frame can then never mix two sets.
-                WarpOptions warpOptions = _warpOptions;
-                BlurOptions blurOptions = _blurOptions;
-                GradientOptions gradientOptions = _gradientOptions;
-                LightSweepOptions sweepOptions = _sweepOptions;
-                WarpFrame frame = WarpGeometry.Compute(state.Progress, warpOptions);
+                LidState ticked = clock.Tick();
+                state = ticked;
+                visible = ticked.Progress > VisibleProgressEpsilon;
 
                 // M1.8 feedback kill (DD-045): the fullscreen capture contains
                 // our own previous output - sampling it while the effect is
@@ -426,7 +514,11 @@ public sealed class CaptureRenderer : IDisposable
                 // source at the last progress-0 capture (taken while the
                 // overlay was invisible = clean desktop) and render the fold
                 // from THAT until the fold returns to fully open.
-                if (state.Progress <= 0.001)
+                //
+                // This bookkeeping runs even when the tick is skipped below:
+                // a thaw that never happened would make the NEXT fold replay
+                // a stale desktop.
+                if (!visible)
                 {
                     _sourceFrozen = false;
                 }
@@ -436,17 +528,51 @@ public sealed class CaptureRenderer : IDisposable
                     Trace.Log("capture renderer: effect visible - capture source frozen (DD-045)");
                 }
 
+                // DD-051 idle skip: while the effect is fully open the
+                // composite is a fully transparent frame, so presenting
+                // another one 33 times a second costs GPU and battery for zero
+                // visible output - and PROJECT_SPEC §2.1 explicitly asks for a
+                // near-idle background. One transparent frame is presented on
+                // the way out of the effect; after that the heartbeat stays
+                // quiet until progress, a rebuild or a dump request needs it.
+                if (!visible && _idlePresented && request is null)
+                {
+                    return;
+                }
+            }
+
+            // Frame-budget guard (measure THIS tick's work, not the gap
+            // between ticks - the heartbeat interval is 30ms by design and
+            // must not be mistaken for render cost).
+            _frameWatch.Restart();
+
+            if (_warp is { } warp && state is { } lid)
+            {
+                // Read the tuning options ONCE per frame (see the field
+                // comment): a swap mid-frame can then never mix two sets.
+                WarpOptions warpOptions = _warpOptions;
+                BlurOptions blurOptions = _blurOptions;
+                GradientOptions gradientOptions = _gradientOptions;
+                LightSweepOptions sweepOptions = _sweepOptions;
+                WarpFrame frame = WarpGeometry.Compute(lid.Progress, warpOptions);
+
                 double fadeOpacity =
-                    Math.Clamp(state.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
-                warp.Render(_context, _latestFrame, frame,
+                    Math.Clamp(lid.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
+                warp.Render(context, latestFrame, frame,
                     blurOptions.MaxBlurPixels * _qualityScale,
-                    blurOptions.IntensityAt(state.Progress), fadeOpacity, state.Progress,
+                    blurOptions.IntensityAt(lid.Progress), fadeOpacity, lid.Progress,
                     gradientOptions, sweepOptions);
+
+                _idlePresented = !visible;
             }
             else
             {
-                // M0.2 fallback: same-size blit on the GPU.
-                _context.CopyResource(_backBuffer, _latestFrame);
+                // M0.2 fallback: same-size blit on the GPU. Uses
+                // CopySubresourceRegion, not CopyResource: the source carries
+                // the DD-046 MIP chain, and CopyResource requires identical
+                // resource shape (mip count included) - it was a latent
+                // exception on the one path nobody exercises (DD-051).
+                context.CopySubresourceRegion(backBuffer, 0, 0, 0, 0, latestFrame, 0, null);
             }
 
             if (request is not null)
@@ -454,7 +580,19 @@ public sealed class CaptureRenderer : IDisposable
                 DumpBackBuffer(request.Path);
             }
 
-            _swapChain?.Present(1, 0);
+            if (swapChain is not null)
+            {
+                Result present = swapChain.Present(1, 0);
+                if (present.Failure && DeviceHealth.IsFatalLoss(present.Code))
+                {
+                    // DD-051: this result used to be discarded, so a removed
+                    // device simply stopped drawing while the console kept
+                    // reporting a healthy frame counter.
+                    MarkDeviceLost($"Present 0x{present.Code:X8}");
+                    return;
+                }
+            }
+
             Interlocked.Increment(ref _presented);
 
             // Frame budget: elapsed covers this tick's shader work + Present

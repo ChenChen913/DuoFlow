@@ -41,6 +41,11 @@ public sealed partial class OverlayWindow : Window
     private bool _cleanupDone;
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? _renderTimer;
 
+    // DD-051: one automatic capture-chain restart per process. The renderer
+    // detects a removed device but cannot re-create it (it does not own the
+    // device); this window does.
+    private bool _chainRestartTried;
+
     /// <summary>
     /// M1.4: the smoothed lid clock (AnimationEngine behind a small lock).
     /// The console forwards ManualProvider states here (UI thread); the
@@ -255,27 +260,7 @@ public sealed partial class OverlayWindow : Window
         Trace.Log("overlay: loaded");
         try
         {
-            _capture = new DesktopCapture();
-            _capture.Start();
-
-            // Panel pixel size (2026-09-19 workaround, HC §6.2): the swapchain
-            // must match the panel's PHYSICAL pixel size - after the Windows
-            // update on this machine, larger composition swapchains are shown
-            // unscaled (cropped) with broken alpha. ActualWidth is in DIPs;
-            // RasterizationScale is the live monitor scale factor.
-            double scale = CapturePanel.XamlRoot?.RasterizationScale ?? 1.0;
-            int pw = Math.Max(1, (int)Math.Round(CapturePanel.ActualWidth * scale));
-            int ph = Math.Max(1, (int)Math.Round(CapturePanel.ActualHeight * scale));
-            Trace.Log($"overlay: panel pixel size {pw}×{ph} (scale {scale:0.00})");
-
-            _renderer = new CaptureRenderer(CapturePanel, _capture, Clock);
-            _renderer.Initialize(pw, ph);
-
-            SizeInt32 size = _capture.Item.Size;
-            OverlayCaption.Text =
-                $"overlay · {_capture.MonitorDescription} · {size.Width}×{size.Height} · GPU→GPU";
-            CaptureState = "running";
-            Trace.Log("overlay: capture running");
+            BuildCaptureChain();
 
             // M1.8 render heartbeat (TECHNICAL_PROPOSAL §22): the composite
             // renders at its own ~30 FPS from the persistent latest-frame
@@ -284,7 +269,7 @@ public sealed partial class OverlayWindow : Window
             // 1 FPS at fullscreen). The engine Tick rides the heartbeat.
             _renderTimer = DispatcherQueue.CreateTimer();
             _renderTimer.Interval = TimeSpan.FromMilliseconds(30);
-            _renderTimer.Tick += (_, _) => _renderer?.RenderTick();
+            _renderTimer.Tick += (_, _) => OnRenderTick();
             _renderTimer.Start();
             Trace.Log("overlay: render heartbeat started (30ms)");
 
@@ -298,6 +283,95 @@ public sealed partial class OverlayWindow : Window
             CaptureState = $"failed: {ex.GetType().Name}: {ex.Message}";
             OverlayCaption.Text = "capture failed (see console)";
             Trace.Log($"overlay: capture FAILED: {CaptureState}");
+        }
+    }
+
+    /// <summary>
+    /// Creates the capture chain (device + WGC item + renderer). Shared by the
+    /// first start and by the DD-051 restart, so a restart cannot drift from
+    /// the startup sequence. Throws on failure - the caller reports.
+    /// </summary>
+    private void BuildCaptureChain()
+    {
+        _capture = new DesktopCapture();
+        _capture.Start();
+
+        // Panel pixel size (2026-09-19 workaround, HC §6.2): the swapchain
+        // must match the panel's PHYSICAL pixel size - after the Windows
+        // update on this machine, larger composition swapchains are shown
+        // unscaled (cropped) with broken alpha. ActualWidth is in DIPs;
+        // RasterizationScale is the live monitor scale factor.
+        double scale = CapturePanel.XamlRoot?.RasterizationScale ?? 1.0;
+        int pw = Math.Max(1, (int)Math.Round(CapturePanel.ActualWidth * scale));
+        int ph = Math.Max(1, (int)Math.Round(CapturePanel.ActualHeight * scale));
+        Trace.Log($"overlay: panel pixel size {pw}×{ph} (scale {scale:0.00})");
+
+        _renderer = new CaptureRenderer(CapturePanel, _capture, Clock);
+        _renderer.Initialize(pw, ph);
+
+        SizeInt32 size = _capture.Item.Size;
+        OverlayCaption.Text =
+            $"overlay · {_capture.MonitorDescription} · {size.Width}×{size.Height} · GPU→GPU";
+        CaptureState = "running";
+        Trace.Log("overlay: capture running");
+    }
+
+    /// <summary>
+    /// One heartbeat. RenderTick contains its own faults; this wrapper also
+    /// keeps a fault that escapes it away from the DispatcherQueue (an
+    /// unhandled exception in a timer tick is a 30 Hz crash source, DD-051),
+    /// and turns a broken chain into exactly one restart attempt.
+    /// </summary>
+    private void OnRenderTick()
+    {
+        CaptureRenderer? renderer = _renderer;
+        if (renderer is null)
+        {
+            return;
+        }
+
+        try
+        {
+            renderer.RenderTick();
+        }
+        catch (Exception ex)
+        {
+            Trace.Log($"overlay: render tick ESCAPED: {ex.GetType().Name}: {ex.Message}");
+        }
+
+        if (!renderer.ChainBroken || _chainRestartTried)
+        {
+            return;
+        }
+
+        _chainRestartTried = true;
+        RestartCaptureChain(renderer.ChainBrokenReason ?? "unknown");
+    }
+
+    /// <summary>
+    /// DD-051: rebuild the whole capture chain once after a device loss. The
+    /// swapchain, the WGC session and every GPU target belong to the old
+    /// device, so nothing short of re-creating them can recover.
+    /// </summary>
+    private void RestartCaptureChain(string reason)
+    {
+        Trace.Log($"overlay: restarting capture chain (reason: {reason})");
+        CaptureState = "restarting";
+        try
+        {
+            _renderer?.Dispose();
+            _renderer = null;
+            _capture?.Dispose();
+            _capture = null;
+
+            BuildCaptureChain();
+            Trace.Log("overlay: capture chain restarted OK");
+        }
+        catch (Exception ex)
+        {
+            CaptureState = $"restart failed: {ex.GetType().Name}: {ex.Message}";
+            OverlayCaption.Text = "capture failed (restart failed - relaunch DuoFlow)";
+            Trace.Log($"overlay: capture chain restart FAILED: {CaptureState}");
         }
     }
 
