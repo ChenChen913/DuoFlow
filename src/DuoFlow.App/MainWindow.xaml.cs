@@ -70,7 +70,9 @@ public sealed partial class MainWindow : Window
         // lingered - verified 2026-09-19).
         Closed += (_, _) =>
         {
+            Trace.Log("console: CLOSED event -> closing overlay + Environment.Exit(0)");
             try { _overlay?.Close(); } catch { /* already closed */ }
+            Trace.Log("console: overlay closed, exiting process");
             Environment.Exit(0);
         };
         ((FrameworkElement)Content).Loaded += OnLoaded;

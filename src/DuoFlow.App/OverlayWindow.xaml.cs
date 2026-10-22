@@ -308,6 +308,7 @@ public sealed partial class OverlayWindow : Window
             return;
         }
         _cleanupDone = true;
+        Trace.Log("overlay: Cleanup (disposing renderer + capture)");
 
         _renderTimer?.Stop();
         _renderer?.Dispose();

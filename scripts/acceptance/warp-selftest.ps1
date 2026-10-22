@@ -1,22 +1,39 @@
 ﻿# =====================================================================
 # DuoFlow - in-process warp self-test (run + analyze).  [scripts/acceptance]
 #
-# WHAT IT PROVES: "changing Progress produces a continuous spatial
-# deformation of the desktop" - measured against the WarpGeometry
-# homography, not eyeballed.
+# WHAT IT PROVES:
+#   1. GEOMETRY  - changing Progress produces a continuous spatial
+#      deformation of the desktop, measured against the WarpGeometry
+#      homography, not eyeballed.
+#   2. LIGHT     - the DD-046 light falloff points the right way: the
+#      hinge side is the bright end, the far edge is the dark end, and the
+#      profile is monotone between them.
+#   3. BLUR      - the DD-046 frost points the right way: high-frequency
+#      content survives at the hinge and is gone at the far edge.
+#   4. HYSTERESIS- the 0->1 and 1->0 sweeps land on the same numbers.
 #
-# HOW: the app (--warp-selftest) drives the AnimationEngine through 0->1->0
-# and dumps the RENDERED back buffer (BGRA raw, alpha included) at each
-# step; this script paints a fullscreen 10-band reference window, launches
-# the app, then measures the band-boundary rows in the dumped frames and
-# compares them against the prediction:
+# HOW: the app (--warp-selftest) drives the AnimationEngine through
+# 0->1->0 and dumps the RENDERED back buffer (BGRA raw, alpha included) at
+# each step; this script paints a fullscreen reference window, launches the
+# app, then measures the dumped frames.
 #
-#     boundary sy=k/10  ->  dest row = H * (1 - Y(sy))
-#     Y(sy) = r*cos(phi)*sy / (r + sin(phi)*sy),  r=2.5, phi=90deg*p
-#     quad top edge    ->  dest row = H * (1 - FarEdgeY)
+#     geometry: boundary sy=k/10  ->  dest row = H * (1 - Y(sy))
+#               Y(sy) = r*cos(phi)*sy / (r + sin(phi)*sy),  r=2.5, phi=90deg*p
+#               quad top edge    ->  dest row = H * (1 - FarEdgeY)
 #
-# Tolerance +/-5 px (linear-sampler color blend ~2px, alpha feather ~4px).
-# Hysteresis check: up-step and down-step at the same p must match (+/-2px).
+# REFERENCE PATTERN: uniform WHITE with BLACK tick lines (8px every 80px).
+#   Why not the old 10-band palette? Band luminances span 29 (blue) to 255
+#   (white), i.e. a 9x swing that swamps the light falloff completely - the
+#   falloff signal is ~4x across the quad, so a coloured reference cannot
+#   measure it. A uniform field makes luminance(y) == 255 * light(y)
+#   directly, and the ticks are the high-frequency probe for the blur
+#   direction (they stay razor sharp at the hinge and dissolve into the
+#   frost at the far edge). Band classification is gone with the palette:
+#   model v2 (DD-046) deliberately sinks the far bands into shadow, so
+#   colour classification there was already meaningless.
+#
+# Tolerance +/-5 px on quadTop (linear-sampler color blend ~2px, alpha
+# feather ~4px). Hysteresis +/-2 px on quadTop, +/-0.05 on falloff depth.
 #
 # This harness was developed outside the repo during M1.4 (the machine's
 # desktop-composition path hid SwapChainPanel content on screen at the time,
@@ -29,8 +46,9 @@
 #   .\scripts\acceptance\warp-selftest.ps1 -OutputDir D:\tmp\run
 #
 # EXIT CODE: 0 = all steps within tolerance, 1 = a step failed.
-# NOTE: this opens a fullscreen topmost band window and a fullscreen overlay
-# for ~1 minute. Do not run it while doing something else on the machine.
+# NOTE: this opens a fullscreen topmost reference window and a fullscreen
+# overlay for ~1 minute. Do not run it while doing something else on the
+# machine.
 # =====================================================================
 
 param(
@@ -94,46 +112,50 @@ public static class W {
 # ---------------------------------------------------------------------
 # Analysis
 # ---------------------------------------------------------------------
-$script:colors = @(
-    @(255,0,0),@(0,160,0),@(0,0,255),@(255,255,0),@(255,0,255),
-    @(0,255,255),@(255,128,0),@(128,0,255),@(0,80,160),@(255,255,255)
-)
 
-function Classify([byte]$r, [byte]$g, [byte]$b, [byte]$a) {
-    if ($a -lt 120) { return -1 }   # outside the folded quad (transparent)
-    # Chromaticity classification (normalize by the max channel): invariant
-    # to the dimming pass, which scales all channels equally. The old
-    # absolute-RGB matcher broke on dimmed rows (white 255 -> 54 etc.).
-    $mx = [math]::Max($r, [math]::Max($g, $b))
-    if ($mx -lt 40) { return -2 }    # too dark for a reliable hue
-    $rn = $r / $mx; $gn = $g / $mx; $bn = $b / $mx
-    $best = -1; $bestD = [double]::MaxValue
-    for ($i = 0; $i -lt 10; $i++) {
-        $pr = $script:colors[$i][0] / 255.0; $pg = $script:colors[$i][1] / 255.0; $pb = $script:colors[$i][2] / 255.0
-        $pm = [math]::Max($pr, [math]::Max($pg, $pb))
-        $pr /= $pm; $pg /= $pm; $pb /= $pm
-        $d = ($rn - $pr) * ($rn - $pr) + ($gn - $pg) * ($gn - $pg) + ($bn - $pb) * ($bn - $pb)
-        if ($d -lt $bestD) { $bestD = $d; $best = $i }
-    }
-    if ($bestD -gt 0.08) { return -2 }   # not a band chromaticity (blend/artifact)
-    return $best
+# Reference window geometry - kept in sync with the paint handler below.
+$script:TickThickness = 8
+$script:TickSpacing = 80
+
+# BlurOptions.StartProgress. Below this progress the model deliberately has
+# NO blur and NO light falloff (the envelope has not opened yet), so a flat,
+# fully sharp render there is CORRECT - asserting "far edge is darker" below
+# the envelope would be a false failure. Keep in sync with
+# src/DuoFlow.Render/BlurOptions.cs (a mismatch shows up here as a spurious
+# "falloff present below the envelope").
+$script:BlurStartProgress = 0.30
+
+# Dest-row period of the reference window's tick lines, at one destination
+# row. The blur cannot erase a periodic pattern whose period is small, so
+# the ticks survive as a sinusoidal ripple in the luminance profile - and a
+# bin that spans only half a period would report the ripple's phase instead
+# of the falloff (measured: +/-20 units of pure artefact). Averaging over
+# EXACTLY one local period removes it without touching the smooth ramp.
+#   destRow = h*(1 - Y),  Y = M00*sy/(M11 - M21*sy)  =>  dRow/dsy = h*dY/dsy
+#   source row = (1 - sy)*h_src  =>  one tick spacing covers
+#   TickSpacing * (h*dY/dsy) / h_src destination rows, and h ~= h_src
+#   (render 1914x1074 vs capture 1920x1080, a 0.3% difference).
+function Get-RipplePeriod([double]$p, [double]$yFrame) {
+    $r = 2.5; $phi = $p * [math]::PI / 2.0
+    $c = [math]::Cos($phi); $s = [math]::Sin($phi)
+    $M00 = $r * $c; $M11 = $r; $M21 = -$s
+    $w = $M00 + $M21 * $yFrame
+    if ($w -lt 1e-6) { return 2.0 }
+    $sy = ($M11 * $yFrame) / $w
+    $d = $M11 - $M21 * $sy
+    if ($d -lt 1e-6) { return 2.0 }
+    $dYdsy = ($M00 * $M11) / ($d * $d)
+    return [math]::Max(2.0, $script:TickSpacing * $dYdsy)
 }
 
-# Predicted boundary rows (back-buffer pixel rows, top-down) for progress p.
-# Boundary k=1..9 separates band k-1 (above) and band k (below) in the DEST.
+# Predicted quad-top row (back-buffer pixel row, top-down) for progress p.
 # All row predictions are derived from the dump's ACTUAL height (the back
 # buffer is the panel's pixel size, which depends on DPI and window size).
 function Predict([double]$p, [int]$h) {
     $r = 2.5; $phi = $p * [math]::PI / 2.0
     $c = [math]::Cos($phi); $s = [math]::Sin($phi)
-    $rows = @{}
-    for ($k = 1; $k -le 9; $k++) {
-        $sy = $k / 10.0
-        $Y = ($r * $c * $sy) / ($r + $s * $sy)
-        $rows[[string]$k] = [math]::Round($h * (1.0 - $Y), 1)
-    }
     $Yfar = ($r * $c) / ($r + $s)
-    return @{ Boundaries = $rows; QuadTop = [math]::Round($h * (1.0 - $Yfar), 1) }
+    return [math]::Round($h * (1.0 - $Yfar), 1)
 }
 
 # Read only the part of the trace written by THIS run (see $script:traceOffset).
@@ -177,6 +199,137 @@ function Get-DumpSize([string]$path) {
     throw "no 'selftest: dumped $leaf (WxH)' line in $trace - run the sweep first"
 }
 
+# Per-row luminance of the rendered frame, averaged across a horizontal
+# span that is guaranteed INSIDE the projected quad at every progress.
+#
+# Why a span and not the single center column: the reference field is
+# uniform horizontally, so averaging 16% of the width kills sensor/dither
+# noise without touching the vertical signal we are after.
+# Why un-premultiply: the shader writes rgb*a*fade with a*fade in alpha, so
+# the raw RGB is already scaled by coverage - dividing by alpha recovers
+# the true surface luminance (and makes the feather rows usable instead of
+# looking like a shadow).
+function Get-RowProfile([byte[]]$bytes, [int]$w, [int]$h) {
+    $x0 = [int]($w * 0.42); $x1 = [int]($w * 0.58)
+    $lum = New-Object 'double[]' $h
+    for ($y = 0; $y -lt $h; $y++) {
+        $row = $y * $w
+        $sum = 0.0; $n = 0
+        for ($x = $x0; $x -lt $x1; $x += 2) {
+            $o = ($row + $x) * 4
+            $a = [int]$bytes[$o + 3]
+            if ($a -lt 8) { continue }                     # outside the quad
+            $l = 0.114 * $bytes[$o] + 0.587 * $bytes[$o + 1] + 0.299 * $bytes[$o + 2]
+            $sum += $l * 255.0 / $a; $n++
+        }
+        $lum[$y] = if ($n -gt 0) { $sum / $n } else { -1.0 }
+    }
+    return $lum
+}
+
+# Light-falloff + blur-direction metrics over the projected quad.
+#
+# The quad occupies rows quadTop..h-1. In the destination the HINGE is the
+# BOTTOM row (HingeAtTop=false: dest y = 1 - v) and the FAR EDGE is quadTop.
+# Expected luminance with a white reference: L(y) = 255 * light(y), and
+# light = saturate(1 - 0.006 * coc*MaxBlurPixels) grows monotonically as y
+# approaches the hinge.
+function Measure-Physics([double[]]$lum, [int]$quadTop, [int]$h, [double]$p) {
+    if ($quadTop -lt 0) { return $null }
+    $bot = $h - 1
+    $qh = $bot - $quadTop + 1
+    # Trim the alpha feather rows at both quad edges (EdgeFeather=0.004 plus
+    # the 1-texel source border) - they are legitimately dark and would
+    # otherwise be read as "extra falloff".
+    $pad = [math]::Max(4, [int]($qh * 0.03))
+    $a0 = $quadTop + $pad           # first analyzed row (far-edge side)
+    $a1 = $bot - $pad               # last analyzed row  (hinge side)
+    $n = $a1 - $a0 + 1
+    if ($n -lt 40) { return $null }
+
+    # ---- step 1: remove the tick ripple with a local-period box filter.
+    # The filter window may read BEYOND the binned range (f0..f1 is the whole
+    # quad minus 1 row): clipping it at a0/a1 would make the first and last
+    # few rows a partial average, biasing the far end bright and the hinge
+    # end dark - measured as a systematic ~0.09 under-report of the depth.
+    $f0 = $quadTop + 1; $f1 = $bot - 1
+    $sm = New-Object 'double[]' $h
+    for ($y = $a0; $y -le $a1; $y++) {
+        $pw = [int][math]::Round((Get-RipplePeriod $p (1.0 - $y / [double]$h)))
+        if ($pw -lt 2) { $pw = 2 }
+        $lo = $y - [int][math]::Floor($pw / 2)
+        $acc = 0.0; $cnt = 0
+        for ($k = $lo; $k -lt ($lo + $pw); $k++) {
+            if ($k -lt $f0 -or $k -gt $f1) { continue }
+            if ($lum[$k] -lt 0) { continue }
+            $acc += $lum[$k]; $cnt++
+        }
+        $sm[$y] = if ($cnt -gt 0) { $acc / $cnt } else { -1.0 }
+    }
+
+    # ---- step 2: 10-bin vertical profile. bin 0 = far edge, bin 9 = hinge.
+    # 10 bins (not 20): each bin must span at least one ripple period, or
+    # the profile reports the ripple instead of the ramp (that is exactly
+    # what the 20-bin first version did - 1 spurious "drop" of 9-11 units on
+    # every step above the envelope). The filter in step 1 does the heavy
+    # lifting; the bin size is the belt to that braces.
+    $NB = 10
+    $bins = New-Object 'double[]' $NB
+    for ($i = 0; $i -lt $NB; $i++) {
+        $s = $a0 + [int][math]::Floor($n * $i / $NB)
+        $e = $a0 + [int][math]::Floor($n * ($i + 1) / $NB) - 1
+        if ($e -lt $s) { $e = $s }
+        $acc = 0.0; $cnt = 0
+        for ($y = $s; $y -le $e; $y++) { if ($sm[$y] -ge 0) { $acc += $sm[$y]; $cnt++ } }
+        $bins[$i] = if ($cnt -gt 0) { $acc / $cnt } else { -1.0 }
+    }
+
+    $hingeL = 0.0; $c = 0
+    for ($i = $NB - 2; $i -lt $NB; $i++) { if ($bins[$i] -ge 0) { $hingeL += $bins[$i]; $c++ } }
+    if ($c -gt 0) { $hingeL = $hingeL / $c }
+    $farL = 0.0; $c = 0
+    for ($i = 0; $i -le 1; $i++) { if ($bins[$i] -ge 0) { $farL += $bins[$i]; $c++ } }
+    if ($c -gt 0) { $farL = $farL / $c }
+
+    # Monotonicity: luminance must NOT fall as we walk toward the hinge.
+    # 6 luminance units of slack absorbs dithering/rounding; a real
+    # direction inversion in this profile is tens of units.
+    $violations = 0; $worstDrop = 0.0
+    for ($i = 0; $i -lt $NB - 1; $i++) {
+        if ($bins[$i] -lt 0 -or $bins[$i + 1] -lt 0) { continue }
+        $drop = $bins[$i] - $bins[$i + 1]
+        if ($drop -gt 6) { $violations++; if ($drop -gt $worstDrop) { $worstDrop = $drop } }
+    }
+
+    # Blur direction: the biggest single-row luminance step inside a window.
+    # Sharp tick edge at the hinge -> ~85-255; fully frosted far edge -> a
+    # few units (only the smooth falloff gradient remains). Measured on the
+    # RAW profile, not the smoothed one - smoothing would erase the very
+    # high-frequency content this metric is about.
+    $win = [math]::Max(8, [int]($n * 0.15))
+    $hfFar = 0.0; $hfHinge = 0.0
+    for ($y = $a0 + 1; $y -lt $a0 + $win; $y++) {
+        if ($lum[$y] -lt 0 -or $lum[$y - 1] -lt 0) { continue }
+        $d = [math]::Abs($lum[$y] - $lum[$y - 1]); if ($d -gt $hfFar) { $hfFar = $d }
+    }
+    for ($y = $a1 - $win + 1; $y -le $a1; $y++) {
+        if ($lum[$y] -lt 0 -or $lum[$y - 1] -lt 0) { continue }
+        $d = [math]::Abs($lum[$y] - $lum[$y - 1]); if ($d -gt $hfHinge) { $hfHinge = $d }
+    }
+
+    $depth = if ($hingeL -gt 1.0) { 1.0 - ($farL / $hingeL) } else { -1.0 }
+    return @{
+        HingeL = [math]::Round($hingeL, 2)
+        FarL   = [math]::Round($farL, 2)
+        Depth  = [math]::Round($depth, 4)
+        MonoViolations = $violations
+        WorstDrop = [math]::Round($worstDrop, 2)
+        HfHinge = [math]::Round($hfHinge, 2)
+        HfFar   = [math]::Round($hfFar, 2)
+        Bins    = ($bins | ForEach-Object { [math]::Round($_, 1) })
+    }
+}
+
 function Analyze-Raw([string]$path, [double]$p) {
     if (-not (Test-Path $path)) { throw "missing dump: $path" }
     $bytes = [IO.File]::ReadAllBytes($path)
@@ -185,19 +338,7 @@ function Analyze-Raw([string]$path, [double]$p) {
     if ($bytes.Length -ne ($w * $h * 4)) {
         throw "dump size mismatch for $path : $($bytes.Length) bytes, expected $($w)x$($h)x4"
     }
-    $cx = [int]($w / 2)   # center column - the overlay UI is collapsed during
-                           # the selftest, so the capture contains ONLY the
-                           # reference window (no recursion, console or chip)
-                # the console (moved off-screen) and the status chip (rows<40)
-
-    # walk the analysis column: class per row. Rows 0..44 skipped - the
-    # overlay's own status chip (white text) sits there in the capture and
-    # would classify as band 9 (white).
-    $classes = New-Object 'int[]' $h
-    for ($y = 0; $y -lt $h; $y++) {
-        $off = ($y * $w + $cx) * 4
-        if ($y -lt 45) { $classes[$y] = -99 } else { $classes[$y] = Classify $bytes[$off + 2] $bytes[$off + 1] $bytes[$off] $bytes[$off + 3] }
-    }
+    $cx = [int]($w / 2)
 
     # quad top edge = first row with alpha >= 200 (feather ramps ~4px)
     $quadTop = -1
@@ -206,22 +347,12 @@ function Analyze-Raw([string]$path, [double]$p) {
         if ($bytes[$off + 3] -ge 120) { $quadTop = $y; break }
     }
 
-    # band boundaries: transition band a -> band b (both >= 0, a != b).
-    # Boundary sy=k/10 separates band (9-k) ABOVE and band (10-k) BELOW in
-    # the destination, so the prediction key is k = 10 - max(a, b).
-    $measured = @{}
-    $prev = -99
-    for ($y = 0; $y -lt $h; $y++) {
-        $cls = $classes[$y]
-        if ($cls -ge 0 -and $prev -ge 0 -and $cls -ne $prev) {
-            $key = [string](10 - [math]::Max($prev, $cls))
-            if (-not $measured.ContainsKey($key)) { $measured[$key] = $y }
-        }
-        if ($cls -ge 0) { $prev = $cls }
+    $predTop = Predict $p $h
+    $result = [ordered]@{
+        File = (Split-Path $path -Leaf); Progress = $p
+        QuadTopMeasured = $quadTop; QuadTopPredicted = $predTop
+        Light = $null; Blur = $null; Pass = $true; Notes = @()
     }
-
-    $pred = Predict $p $h
-    $result = [ordered]@{ File = (Split-Path $path -Leaf); Progress = $p; QuadTopMeasured = $quadTop; QuadTopPredicted = $pred.QuadTop; Boundaries = @{}; Pass = $true; Notes = @() }
 
     # quad top comparison. Two special cases at the sweep endpoints:
     #   p=1: at MaxFold=90 the plane is edge-on - the quad collapses to zero
@@ -235,29 +366,63 @@ function Analyze-Raw([string]$path, [double]$p) {
         if ($quadTop -ne -1) { $result.Pass = $false; $result.Notes += "expected fade-in invisible (no opaque rows), got quadTop=$quadTop" }
         else { $result.Notes += "fully open: effect faded out (no opaque rows) - expected" }
     } else {
-        $d = [math]::Abs($quadTop - $pred.QuadTop)
+        $d = [math]::Abs($quadTop - $predTop)
         if ($d -gt 5) { $result.Pass = $false; $result.Notes += "quadTop off by $d px" }
     }
 
-    # NOTE: the old band-boundary sweep is gone (model v2). The physical
-    # light falloff (DD-046) intentionally sinks the far bands into shadow,
-    # where color classification cannot see - measuring those boundaries by
-    # color is meaningless by design. The shadow transition is verified by
-    # m16 (frost edge width) and m17 (light profile); this script verifies
-    # the GEOMETRY (quadTop) and the fade endpoints.
-    if ($false) {
-        $okCount = 0; $detected = 0
-        for ($k = 1; $k -le 9; $k++) {
-            $pr = $pred.Boundaries[[string]$k]
-            $m = if ($measured.ContainsKey([string]$k)) { $measured[[string]$k] } else { -1 }
-            $result.Boundaries[[string]$k] = @{ predicted = $pr; measured = $m }
-            if ($m -ge 0) {
-                $detected++
-                $d = [math]::Abs($m - $pr)
-                if ($d -le 5) { $okCount++ } else { $result.Notes += "boundary $k off by $d px" }
+    # ---- physics (DD-046): light-falloff direction + blur direction ----
+    # Only meaningful while the quad has opaque area (0 < p < 1).
+    if ($quadTop -ge 0) {
+        $lum = Get-RowProfile $bytes $w $h
+        $phy = Measure-Physics $lum $quadTop $h $p
+        if ($phy) {
+            $result.Light = [ordered]@{
+                HingeL = $phy.HingeL; FarL = $phy.FarL; Depth = $phy.Depth
+                MonoViolations = $phy.MonoViolations; WorstDrop = $phy.WorstDrop
+                Profile = $phy.Bins
             }
+            $result.Blur = [ordered]@{
+                HingeMaxStep = $phy.HfHinge; FarMaxStep = $phy.HfFar
+                Ratio = $(if ($phy.HfFar -gt 0.01) { [math]::Round($phy.HfHinge / $phy.HfFar, 2) } else { 999.0 })
+            }
+
+            # The reference ticks must be visible SOMEWHERE, at every
+            # progress. If the reference window failed to paint (or was
+            # covered), every physics number below becomes meaningless.
+            if ($phy.HfHinge -lt 20.0) {
+                $result.Pass = $false
+                $result.Notes += "reference ticks not visible (max row step $($phy.HfHinge)) - did the reference window paint?"
+            } elseif ($p -le $script:BlurStartProgress + 0.01) {
+                # Below the blur envelope: no frost, no falloff, everything
+                # sharp. A flat profile here is the CORRECT render - this is
+                # an assertion too (it catches an envelope that opens too
+                # early), just the mirror image of the one below.
+                if ($phy.Depth -gt 0.05) {
+                    $result.Pass = $false
+                    $result.Notes += "falloff present below the blur envelope (p=$p depth=$($phy.Depth))"
+                } else {
+                    $result.Notes += "below the blur envelope (p <= $($script:BlurStartProgress)): flat + sharp - expected"
+                }
+            } else {
+                # 1) direction: the hinge end must be the bright end.
+                if (-not ($phy.FarL -lt $phy.HingeL)) {
+                    $result.Pass = $false
+                    $result.Notes += "light falloff direction inverted: hinge=$($phy.HingeL) far=$($phy.FarL)"
+                }
+                # 2) shape: no shadow band in the middle of the ramp.
+                if ($phy.MonoViolations -gt 0) {
+                    $result.Pass = $false
+                    $result.Notes += "light profile not monotone ($($phy.MonoViolations) drops, worst $($phy.WorstDrop))"
+                }
+                # 3) direction: the hinge must be the sharp end.
+                if ($phy.HfHinge -lt 4.0 * $phy.HfFar) {
+                    $result.Pass = $false
+                    $result.Notes += "blur direction weak: hinge step $($phy.HfHinge) vs far step $($phy.HfFar)"
+                }
+            }
+        } else {
+            $result.Notes += "quad too short for the physics profile ($($h - $quadTop) rows)"
         }
-        if ($okCount -lt 6) { $result.Pass = $false; $result.Notes += "only $okCount/9 boundaries within tolerance ($detected detected)" }
     }
     return $result
 }
@@ -270,9 +435,7 @@ if ($AnalyzeOnly) {
         $all += Analyze-Raw "$selftestDir\selftest-$($tags[$i]).raw" $ps[$i]
     }
     # hysteresis: up vs down at the same p, measured on the metric this
-    # script actually measures (quadTop). The old band-boundary comparison
-    # became vacuous once model v2 stopped emitting classifiable far bands -
-    # it compared two always-empty tables and printed "HYSTERESIS OK".
+    # script actually measures (quadTop) plus the falloff depth.
     $pairs = @(,@(1,7)) + @(,@(2,6)) + @(,@(3,5))
     $hysteresisOk = $true
     foreach ($pair in $pairs) {
@@ -282,24 +445,64 @@ if ($AnalyzeOnly) {
             $hysteresisOk = $false
             Write-Host "HYSTERESIS: p=$($a.Progress) quadTop up=$ma down=$mb"
         }
+        if ($a.Light -and $b.Light -and [math]::Abs($a.Light.Depth - $b.Light.Depth) -gt 0.05) {
+            $hysteresisOk = $false
+            Write-Host "HYSTERESIS: p=$($a.Progress) falloffDepth up=$($a.Light.Depth) down=$($b.Light.Depth)"
+        }
     }
-    # (The M1.5 mask-debug phase is gone - model v2 (DD-046) replaced the
-    # hinge mask with the physical gap/blur/light coupling.)
+
+    # ---- cross-progress: the falloff must DEEPEN as the fold closes ----
+    # depth(p) = 1 - farL/hingeL, sampled only ABOVE the blur envelope
+    # (BlurOptions.StartProgress = 0.30) - below it the model has no frost
+    # at all, so p=0.25 is legitimately flat and cannot be part of a
+    # "growing" series.
+    # Reference expectation at qualityScale=1:
+    #   p=.50 -> .35   p=.75 -> .85     (measured 2026-10-22, 1914x1074)
+    # Note the depth is computed from the mean over the top/bottom two bins,
+    # so it is the depth of the band AROUND sy=0.9 / sy=0.1, not of the exact
+    # edge (which is feathered). It is therefore a few percent below the
+    # value at sy=1; that is fine - this is a direction/shape check.
+    # If the frame budget degrades the blur (qualityScale=0.5) the radii
+    # halve: roughly .20 / .55 - still strictly growing, so the assertion is
+    # deliberately about ORDER and a loose floor, not about exact values.
+    $physicsOk = $true
+    $d50 = if ($all[2].Light) { $all[2].Light.Depth } else { $null }
+    $d75 = if ($all[3].Light) { $all[3].Light.Depth } else { $null }
+    if ($null -eq $d50 -or $null -eq $d75) {
+        $physicsOk = $false
+        Write-Host "PHYSICS: falloff depth missing at one or more up-sweep steps"
+    } else {
+        if (-not ($d75 -gt $d50 + 0.05)) { $physicsOk = $false; Write-Host "PHYSICS: depth(.75)=$d75 not above depth(.50)=$d50" }
+        if ($d75 -lt 0.20)               { $physicsOk = $false; Write-Host "PHYSICS: depth(.75)=$d75 below the 0.20 floor" }
+    }
+
     foreach ($r in $all) {
         $flag = if ($r.Pass) { "PASS" } else { "FAIL" }
         Write-Host ("{0} p={1} quadTop={2}/{3} -> {4} {5}" -f $r.File, $r.Progress, $r.QuadTopMeasured, $r.QuadTopPredicted, $flag, ($r.Notes -join '; '))
-        if (-not $r.Pass) { $r | ConvertTo-Json -Depth 5 | Write-Host }
+        if ($r.Light) {
+            Write-Host ("     light hinge={0} far={1} depth={2} drops={3} | blur hingeStep={4} farStep={5}" -f `
+                $r.Light.HingeL, $r.Light.FarL, $r.Light.Depth, $r.Light.MonoViolations, $r.Blur.HingeMaxStep, $r.Blur.FarMaxStep)
+        }
+        if (-not $r.Pass) { $r | ConvertTo-Json -Depth 6 | Write-Host }
     }
     Write-Host "HYSTERESIS OK: $hysteresisOk"
-    $overall = ($all | Where-Object { -not $_.Pass }).Count -eq 0 -and $hysteresisOk
-    $all | ConvertTo-Json -Depth 6 | Out-File "$root\warp-selftest-result.json" -Encoding utf8
+    Write-Host "PHYSICS OK: $physicsOk"
+
+    $overall = ($all | Where-Object { -not $_.Pass }).Count -eq 0 -and $hysteresisOk -and $physicsOk
+    [ordered]@{
+        GeneratedAt  = (Get-Date).ToString("s")
+        Steps        = $all
+        HysteresisOk = $hysteresisOk
+        PhysicsOk    = $physicsOk
+        Overall      = $overall
+    } | ConvertTo-Json -Depth 7 | Out-File "$root\warp-selftest-result.json" -Encoding utf8
     Write-Host "SELFTEST OVERALL: $overall"
     if (-not $overall) { exit 1 }
     exit 0
 }
 
 # ---------------------------------------------------------------------
-# Run: bands window -> app --warp-selftest -> wait -> kill -> analyze
+# Run: reference window -> app --warp-selftest -> wait -> kill -> analyze
 # ---------------------------------------------------------------------
 $bands = New-Object System.Windows.Forms.Form
 $bands.FormBorderStyle = 'None'
@@ -310,11 +513,15 @@ $bands.TopMost = $true
 $bands.ShowInTaskbar = $false
 $bands.add_Paint({
     param($s, $e)
-    $bh = [double]$s.ClientSize.Height / 10
-    for ($i = 0; $i -lt 10; $i++) {
-        $b = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::FromArgb($script:colors[$i][0], $script:colors[$i][1], $script:colors[$i][2]))
-        $e.Graphics.FillRectangle($b, 0, [int]($i * $bh), $s.ClientSize.Width, [int]($bh) + 1)
-        $b.Dispose()
+    $g = $e.Graphics
+    $cw = $s.ClientSize.Width; $ch = $s.ClientSize.Height
+    # Uniform field: luminance(y) == 255 * light(y), so the falloff profile
+    # is readable directly (a coloured reference cannot do this).
+    $g.FillRectangle([System.Drawing.Brushes]::White, 0, 0, $cw, $ch)
+    # Tick lines: the high-frequency probe for the blur direction. Sharp at
+    # the hinge, dissolved into the frost at the far edge.
+    for ($y = 0; $y -lt $ch; $y += $script:TickSpacing) {
+        $g.FillRectangle([System.Drawing.Brushes]::Black, 0, $y, $cw, $script:TickThickness)
     }
 })
 $bands.Show()
@@ -334,9 +541,8 @@ Write-Host "trace offset: $($script:traceOffset)"
 Start-Process -FilePath $exe -ArgumentList "--warp-selftest"
 Start-Sleep -Seconds 10
 # Move the console OFF-SCREEN during the sweep: its dark surface would
-# otherwise pollute the analysis column (dest x=250 -> source x=480) in the
-# capture. The selftest drives the engine directly - the console is not
-# needed on screen.
+# otherwise pollute the capture. The selftest drives the engine directly -
+# the console is not needed on screen.
 $consoleHwnd = (Get-Process DuoFlow.App -ErrorAction SilentlyContinue | Select-Object -First 1).MainWindowHandle
 if ($consoleHwnd -ne [IntPtr]::Zero) {
     [void][W]::SetWindowPos($consoleHwnd, [IntPtr]::Zero, -2500, -2500, 0, 0, 0x15)
@@ -375,5 +581,3 @@ if ($stale.Count -gt 0) {
 }
 
 & $MyInvocation.MyCommand.Path -AnalyzeOnly -RepoRoot $repo -OutputDir $root -Exe $exe
-
-
