@@ -58,9 +58,9 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 3 — M2 Visual Refinement**（M1 ✅；执行顺序 M2.0→M2.5→M2.4→M2.1→M2.2→M2.3） |
-| 当前小任务 | **M2.4 Demo Mode**（M2.0 ✅、M2.5 ✅ 2026-10-22） |
+| 当前小任务 | **M2.1 Gradient Pass**（M2.0 ✅、M2.5 ✅、M2.4 ✅ 2026-10-22） |
 | 阻塞项 | 无阻塞。DD-045 源冻结经用户真机确认"没问题"，M2 不再为它留工期（需要时可插队） |
-| 最后更新 | 2026-10-22 · M2.5 参数面板（运行时替换 + 面板 + run.ps1），真机 9/9 全绿 · 八弟 |
+| 最后更新 | 2026-10-22 · M2.4 演示模式（DemoPlayer + 四个控件 + 验收脚本），真机 9/9 全绿 · 八弟 |
 
 ---
 
@@ -71,7 +71,7 @@
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
 | Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ✅ 已完成（M0.1-M0.3 云端；M0.4 真机实测 2026-09-16 回填） |
 | Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ✅ 已完成（M1.1-M1.8；Mask/Blur/Dim 三件套随后被 DD-046 物理景深模型取代） |
-| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅ · M2.5 ✅） |
+| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅ · M2.5 ✅ · M2.4 ✅） |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
 | Phase 5 | M4 | Sensor Provider：传感器接入 / Provider Manager | ⬜ |
 | Phase 6 | M5 | Windows Integration：电源事件 / 开合动画 / 开机自启 | ⬜ |
@@ -361,11 +361,37 @@
 同轮 smoke 探针：`WarpState=active`、`Capture=running`、`RenderFrameMs=0.11`、`QualityScale=1`、
 七项窗口属性全 True、`HitTest.Pass=True`、`Warnings=[]`。
 
-#### M2.4 Demo Mode
+#### M2.4 Demo Mode ✅ 2026-10-22
 
-* [ ] `DemoPlayer`：30ms 步进驱动 `ManualProvider.SetProgress`（走既有链路，DD-002 合规）
-* [ ] 按钮：Play Opening / Play Closing / Pause / Loop；速度滑块（时长 0.5~4s）
+* [x] `DemoPlayer`：30ms 步进驱动 `ManualProvider.SetProgress`（走既有链路，DD-002 合规）
+* [x] 按钮：Play Opening / Play Closing / Pause / Loop；速度滑块（时长 0.5~4s）
 * **验收**：点 Play → 完整走完 0→1 或 1→0 → 端点自动停；Loop 连续往返不跳变
+
+**实施记录**
+
+- `DemoPlayer` 只持有 `Action<double> setProgress`，接的就是 `ManualProvider.SetProgress`——
+  演示无法绕过输入链路，引擎仍做平滑（DD-038）。它不引用渲染层。
+- 计时用 `Stopwatch` 而不是 tick 计数：`DispatcherQueueTimer` 在负载下会漂移，
+  演示"说 1.5 秒实际 2 秒"会让 M2.3 的快/慢检查失去意义。
+- 从当前值续播时，**剩余时间按剩余距离缩放**，保证速度恒定（暂停后接着播，
+  最后三分之一不会突然变慢）。
+- Loop 到端点时交换起止并**保留溢出时间**（`_elapsed -= passSeconds`），
+  所以端点点到一次、不重复、转向处不顿。
+- 用户拖 Progress 滑块会**自动暂停演示**（否则鼠标和演示会互相打架）：
+  判断依据是既有的 `_syncingSlider` 守卫——演示自己的回写被守卫吞掉，真拖动才落到暂停那行。
+
+**验收证据**：新增 `scripts/acceptance/demo-mode-verify.ps1`（UIAutomation 驱动 + 每 120ms 采一次
+Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）：
+
+| 检查 | 结果 |
+|---|---|
+| 开盖到达 1.0 | `0 0.23 0.49 0.72 0.93 1` |
+| 开盖单调 | 无回退 |
+| 开盖端点自动停 | 0.9s 后连续 5 次采样仍为 `1` |
+| 合盖到达 0.0 / 单调 / 自动停 | `1 0.79 0.53 0.32 0.11 0`，之后 `0` |
+| 循环两端都到 | `max=1 min=0` |
+| 循环双向反向 | `rose=True fell=True`，样本 `0→1→0.07→0.28→1→0.01→…` |
+| 暂停冻结 | `0.6075 → 0.6075` |
 
 #### M2.1 Gradient Pass
 
@@ -454,6 +480,26 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-10-22 · M2.4 演示模式（DemoPlayer + 控件 + 验收） · 八弟
+
+- **背景**：M2.3 的"六种操作 × 五项检查"需要反复看完整开合过程。手拖滑块既慢又不匀速，
+  判断不了"中途反向有没有跳变"。
+- **`DemoPlayer`**：30ms 定时器驱动 `ManualProvider.SetProgress`——**接的是滑块的同一个入口**，
+  所以演示无法绕过输入链路（DD-002），引擎仍做平滑（DD-038），它也不引用渲染层。
+- **计时用 `Stopwatch` 而非 tick 计数**：`DispatcherQueueTimer` 在负载下会漂移，
+  演示"说 1.5 秒实际 2 秒"会让 M2.3 的快/慢检查失去意义。
+- **续播保持恒速**：从当前值续播时剩余时间按剩余距离缩放，暂停后接着播最后一段不会变慢。
+- **Loop 保留溢出时间**（`_elapsed -= passSeconds`）：端点点到一次、不重复、转向不顿。
+- **拖滑块自动暂停演示**：判断依据是既有的 `_syncingSlider` 守卫——演示自己的回写被守卫吞掉，
+  真拖动才落到暂停那行。不加这条的话鼠标和演示会互相打架。
+- **新增 `scripts/acceptance/demo-mode-verify.ps1`**：UIAutomation 驱动按钮 + 每 120ms 采一次
+  Progress 滑块实时值。真机 **9/9 PASS、退出码 0**（单程 0.6s）：
+  开盖 `0 0.23 0.49 0.72 0.93 1` 后 0.9s 内 5 次采样仍为 `1`（端点自动停）；
+  合盖 `1 0.79 0.53 0.32 0.11 0`；循环 `max=1 min=0` 且 `rose/fell` 都为真
+  （样本 `0→1→0.07→0.28→1→0.01`）；暂停 `0.6075 → 0.6075`。
+- **回归**：单测 63/63。
+
 
 ### 2026-10-22 · M2.5 参数面板（运行时替换 + 面板 + run.ps1） · 八弟
 

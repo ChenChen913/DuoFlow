@@ -12,6 +12,7 @@ windows-latest 是非交互会话，跑出来是黑的，所以它们不进 CI�
 | `warp-selftest.ps1` | 折叠几何 + 光影方向 + 模糊方向 + 无滞回 | ~70 s | 否 |
 | `overlay-p0-verify.ps1` | 覆盖层透明（P0-1）/ 真输入穿透（P0-2）/ 预览有活画面（P1-a） | ~90 s | 是 |
 | `tuning-panel-verify.ps1` | 参数面板的旋钮真的走到了渲染数学（M2.5） | ~35 s | 否 |
+| `demo-mode-verify.ps1` | 演示模式走完 0↔1、端点自动停、循环双向反向、暂停冻结（M2.4） | ~30 s | 否 |
 
 ---
 
@@ -181,3 +182,35 @@ maxBlur 160→80 / 包络起点越界自动抬满值 / 恢复默认（warp + blu
 - `MaxBlurPixels` 的合法区间是 `(0, 400]`，所以滑块最小值是 1 而不是 0；
   包络起点必须小于满值点，越界时面板会把满值抬到 `起点 + 0.01`（这是 UI 状态，不是渲染状态）。
 - 只跑 UIAutomation，**不动鼠标**；但应用仍会全屏接管约 35 秒。
+
+---
+
+## demo-mode-verify.ps1 — 演示模式真的走完并停住吗
+
+**它证明什么**（M2.4）：演示播放器驱动的是**真实**的 progress 链路（provider → 引擎 → 渲染），
+并且停在它该停的地方。
+
+1. **开盖 0→1**：到 1.0、单调不回退、**之后保持不动**（端点自动停，不爬不弹）
+2. **合盖 1→0**：到 0.0 并保持
+3. **循环往返**：**两端都到**（`max≈1`、`min≈0`）且**两个方向都出现过**
+   —— 只会单向走、或者端点跳变的实现会在这里失败
+4. **暂停**：数值冻结
+
+**怎么跑**
+
+```powershell
+dotnet build src/DuoFlow.App -p:Platform=x64
+.\scripts\acceptance\demo-mode-verify.ps1
+.\scripts\acceptance\demo-mode-verify.ps1 -PassDuration 0.6 -OutputDir D:\tmp\demo
+```
+
+**产出**：`demo-mode-verify.txt`（含每一次采样，能直接看出曲线）+ `demo-mode-result.json`。
+**退出码** 0 = 9/9。
+
+**已知边界**
+
+- 采样间隔 120 ms，而 `RangeValuePattern.Current.Value` 是**实时值**（不是缓存），
+  所以曲线是真曲线；单程太短（< 0.3s）会采不到点，`-PassDuration` 别设太小。
+- 默认单程 0.6 s：够快（整轮 ~30 s）又够慢（能采到 ~5 个点/单程）。
+- 判"单调"用 0.02 容差、判"反向"用 0.03 阈值——都是为了避开 UIA 采样抖动。
+- 脚本结束会强杀 `DuoFlow.App`。

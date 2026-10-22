@@ -70,6 +70,55 @@
 
             <Border Height="1" Background="#E0E0E0" Margin="0,8,0,4" />
 
+            <!-- M2.4 demo mode. Drives ManualProvider.SetProgress on a 30ms
+                 clock - the same entry point the slider uses - so the input
+                 chain (DD-002) is untouched and the engine still does the
+                 smoothing. Grabbing the slider pauses the demo. -->
+            <TextBlock
+                FontSize="15"
+                FontWeight="SemiBold"
+                Text="演示模式（M2.4）" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button
+                    x:Name="PlayOpeningButton"
+                    AutomationProperties.AutomationId="PlayOpeningButton"
+                    Content="开盖 0→1"
+                    Click="OnPlayOpening" />
+                <Button
+                    x:Name="PlayClosingButton"
+                    AutomationProperties.AutomationId="PlayClosingButton"
+                    Content="合盖 1→0"
+                    Click="OnPlayClosing" />
+                <Button
+                    x:Name="PauseDemoButton"
+                    AutomationProperties.AutomationId="PauseDemoButton"
+                    Content="暂停"
+                    Click="OnPauseDemo" />
+            </StackPanel>
+            <CheckBox
+                x:Name="LoopCheck"
+                AutomationProperties.AutomationId="LoopCheck"
+                Content="循环往返（到端点自动反向）"
+                Checked="OnLoopChanged"
+                Unchecked="OnLoopChanged" />
+            <Slider
+                x:Name="DurationSlider"
+                AutomationProperties.AutomationId="DurationSlider"
+                Header="单程时长（秒，0.5~4）"
+                Minimum="0.5"
+                Maximum="4"
+                StepFrequency="0.1"
+                Value="1.5" />
+            <TextBlock
+                x:Name="DemoStatus"
+                AutomationProperties.AutomationId="DemoStatus"
+                FontFamily="Consolas"
+                FontSize="12"
+                Foreground="#444444"
+                Text="演示模式空闲" />
+
+            <Border Height="1" Background="#E0E0E0" Margin="0,8,0,4" />
+
             <!-- M2.5 render tuning. NOTE the separation from the block above:
                  Progress is LID INPUT (provider → engine → render, DD-002),
                  these are RENDER CONFIGURATION (they change how the same

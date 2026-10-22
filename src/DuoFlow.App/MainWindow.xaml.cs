@@ -44,6 +44,10 @@ public sealed partial class MainWindow : Window
     private int _ticks;
     private OverlayReport? _lastReport;
 
+    // M2.4 demo mode. Built lazily in OnLoaded: it needs the window's
+    // DispatcherQueue, which is only meaningful once the window exists.
+    private DemoPlayer? _demo;
+
     public MainWindow(OverlayWindow? overlay, bool smoke)
     {
         _overlay = overlay;
@@ -84,6 +88,7 @@ public sealed partial class MainWindow : Window
     {
         // Nothing may outlive the window: detach the handler and stop the
         // provider (it only flips its lifecycle flag - no async work).
+        _demo?.Pause();
         _manualProvider.StateChanged -= OnManualStateChanged;
         _ = _manualProvider.StopAsync();
         Trace.Log("console: manual provider detached + stopped");
@@ -128,6 +133,14 @@ public sealed partial class MainWindow : Window
         _timer.Tick += (_, _) => Refresh();
         _timer.Start();
         Trace.Log("console: timer started");
+
+        // M2.4: the demo player drives ManualProvider - the same entry point
+        // the slider uses (DD-002). It never touches the renderer or the
+        // engine directly.
+        _demo = new DemoPlayer(DispatcherQueue, p => _manualProvider.SetProgress(p));
+        _demo.Ticked += UpdateDemoStatus;
+        UpdateDemoStatus();
+        Trace.Log("console: demo player ready");
 
         if (_smoke)
         {
@@ -210,6 +223,11 @@ public sealed partial class MainWindow : Window
             return;
         }
 
+        // M2.4: a real drag means the user took over - stop the demo so it
+        // does not fight the mouse. (Demo-driven write-backs never reach this
+        // line: they happen inside the _syncingSlider guard above.)
+        _demo?.Pause();
+
         _manualProvider.SetProgress(e.NewValue);
     }
 
@@ -256,6 +274,62 @@ public sealed partial class MainWindow : Window
         _overlay?.NotifyLidState(state);
 
         UpdateProgressDisplay();
+    }
+
+    // ------------------------------------------------------------------
+    // M2.4 demo mode
+    // ------------------------------------------------------------------
+
+    private void OnPlayOpening(object sender, RoutedEventArgs e) => PlayDemo(1.0);
+
+    private void OnPlayClosing(object sender, RoutedEventArgs e) => PlayDemo(0.0);
+
+    private void PlayDemo(double target)
+    {
+        if (_demo is null)
+        {
+            return;
+        }
+
+        _demo.DurationSeconds = DurationSlider.Value;
+        _demo.Loop = LoopCheck.IsChecked == true;
+        // Start from the provider's value, not from the slider's: the slider
+        // can lag a write-back, the provider is the source of truth.
+        _demo.Play(_manualProvider.CurrentState.Progress, target);
+        Trace.Log($"demo: play {_manualProvider.CurrentState.Progress:0.00}->{target:0.00} " +
+                  $"duration={_demo.DurationSeconds:0.0}s loop={_demo.Loop}");
+        UpdateDemoStatus();
+    }
+
+    private void OnPauseDemo(object sender, RoutedEventArgs e)
+    {
+        _demo?.Pause();
+        Trace.Log("demo: paused");
+        UpdateDemoStatus();
+    }
+
+    private void OnLoopChanged(object sender, RoutedEventArgs e)
+    {
+        if (_demo is null)
+        {
+            return;
+        }
+        _demo.Loop = LoopCheck.IsChecked == true;
+        Trace.Log($"demo: loop={_demo.Loop}");
+        UpdateDemoStatus();
+    }
+
+    private void UpdateDemoStatus()
+    {
+        if (_demo is null)
+        {
+            return;
+        }
+        DemoStatus.Text = _demo.IsRunning
+            ? $"运行中 · 单程 {_demo.DurationSeconds:0.0}s · 循环 {(_demo.Loop ? "开" : "关")} · " +
+              $"当前 {_manualProvider.CurrentState.Progress:0.00}"
+            : $"空闲 · 单程 {_demo.DurationSeconds:0.0}s · 循环 {(_demo.Loop ? "开" : "关")} · " +
+              $"当前 {_manualProvider.CurrentState.Progress:0.00}";
     }
 
     private void UpdateProgressDisplay()
