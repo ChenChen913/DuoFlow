@@ -205,6 +205,45 @@
                 AutomationProperties.AutomationId="ResetTuningButton"
                 Content="恢复默认"
                 Click="OnResetTuning" />
+
+            <TextBlock
+                FontSize="13.5"
+                FontWeight="SemiBold"
+                Margin="0,6,0,0"
+                Text="渐变色相（M2.1）" />
+            <CheckBox
+                x:Name="GradientCheck"
+                AutomationProperties.AutomationId="GradientCheck"
+                Content="启用渐变色相（只作用于阴影侧，不影响铰链亮区）"
+                Checked="OnTuningToggled"
+                Unchecked="OnTuningToggled" />
+            <Slider
+                x:Name="HueStartSlider"
+                AutomationProperties.AutomationId="HueStartSlider"
+                Header="起色相（铰链侧，0~360°）"
+                Minimum="0"
+                Maximum="360"
+                StepFrequency="5"
+                Value="205"
+                ValueChanged="OnTuningValueChanged" />
+            <Slider
+                x:Name="HueEndSlider"
+                AutomationProperties.AutomationId="HueEndSlider"
+                Header="止色相（远端，0~360°）"
+                Minimum="0"
+                Maximum="360"
+                StepFrequency="5"
+                Value="275"
+                ValueChanged="OnTuningValueChanged" />
+            <Slider
+                x:Name="GradientStrengthSlider"
+                AutomationProperties.AutomationId="GradientStrengthSlider"
+                Header="强度（0~0.2，上限写死在 GradientOptions）"
+                Minimum="0"
+                Maximum="0.2"
+                StepFrequency="0.01"
+                Value="0"
+                ValueChanged="OnTuningValueChanged" />
             <TextBlock
                 FontSize="11.5"
                 Foreground="#666666"

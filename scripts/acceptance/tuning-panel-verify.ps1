@@ -14,13 +14,20 @@
 #   MaxFold 60, r 4.0, toward  ->  M21 = +0.8660  (sign flips with direction)
 # A UI-only change would leave M00 at 0.0000 and fail every step below.
 #
+# The gradient steps (M2.1) assert the part that matters more than "the
+# checkbox works": with the pass DISABLED the trace must report
+# strength=0.000 no matter what the strength slider says. That zero is what
+# the pixel shader branches on (`if (GradientParams.x > 0.0)`), so it is the
+# mechanism behind "disabled == no-op" - see warp-selftest for the pixel
+# level proof.
+#
 # USAGE (Windows PowerShell 5.1, no admin, interactive desktop):
 #   .\scripts/acceptance\tuning-panel-verify.ps1
 #   .\scripts\acceptance\tuning-panel-verify.ps1 -OutputDir D:\tmp\tune
 #
 # OUTPUT: tuning-panel-verify.txt (log) + tuning-panel-result.json
 # EXIT CODE: 0 = every step matched, 1 = at least one did not.
-# NOTE: ~50 s. It does NOT move the mouse (UIAutomation only), but the app
+# NOTE: ~60 s. It does NOT move the mouse (UIAutomation only), but the app
 # takes over the screen with a fullscreen overlay while it runs.
 # =====================================================================
 
@@ -143,6 +150,18 @@ function Set-Slider([string]$id, [double]$v) {
     Start-Sleep -Milliseconds 700
     return [double]$pat.Current.Value
 }
+function Set-Check([string]$id, [bool]$on) {
+    $el = Find-ById $id
+    if (-not $el) { throw "checkbox '$id' not found (is this build M2.1+?)" }
+    $pat = $el.GetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern)
+    $before = $pat.Current.ToggleState.ToString()
+    $want = if ($on) { 'On' } else { 'Off' }
+    if ($before -ne $want) { $pat.Toggle() }
+    Start-Sleep -Milliseconds 700
+    $after = $pat.Current.ToggleState.ToString()
+    Log ("  [$id] toggle $before -> $after (want $want)")
+    return $after
+}
 function Select-Combo([string]$id, [string]$namePrefix) {
     $cb = Find-ById $id
     if (-not $cb) { throw "combobox '$id' not found" }
@@ -256,7 +275,47 @@ $m = Wait-Trace 'tuning: blur max=80\.0 start=0\.80 full=([\d.]+)'
 Check "envelope clamp" ($m.Success -and $m.Groups[1].Value -eq '0.81') "start=0.80 full=0.81" $(if ($m.Success) { $m.Value } else { "<timeout>" })
 
 # ---------------------------------------------------------------------
-# Step 7: 恢复默认 puts every knob back
+# Step 7: gradient pass (M2.1). Strength is set FIRST while the pass is
+# still off - that is the interesting half of the contract: the trace must
+# report strength=0.000 because GradientOptions.EffectiveStrength collapses
+# to exactly 0 when disabled (the shader branches on > 0.0, so anything
+# non-zero here would mean "off" is not a no-op).
+# ---------------------------------------------------------------------
+[void](Set-Slider 'GradientStrengthSlider' 0.15)
+$m = Wait-Trace 'tuning: gradient enabled=False strength=([\d.]+)'
+Check "gradient off ignores strength" ($m.Success -and $m.Groups[1].Value -eq '0.000') "enabled=False strength=0.000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+
+# ---------------------------------------------------------------------
+# Step 8: enable it -> the same 0.15 now reaches the shader
+# ---------------------------------------------------------------------
+try {
+    [void](Set-Check 'GradientCheck' $true)
+    $m = Wait-Trace 'tuning: gradient enabled=True strength=([\d.]+) hue=(\d+)->(\d+)'
+    Check "gradient on -> strength" ($m.Success -and $m.Groups[1].Value -eq '0.150' -and $m.Groups[2].Value -eq '205' -and $m.Groups[3].Value -eq '275') "enabled=True strength=0.150 hue=205->275" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+} catch {
+    Check "gradient on -> strength" $false "enabled=True strength=0.150 hue=205->275" $_.Exception.Message
+}
+
+# ---------------------------------------------------------------------
+# Step 9: hue start 205 -> 300 (hue is a ramp, so only the start moves)
+# ---------------------------------------------------------------------
+[void](Set-Slider 'HueStartSlider' 300)
+$m = Wait-Trace 'tuning: gradient enabled=True strength=0\.150 hue=300->275'
+Check "hue start 300" $m.Success "hue=300->275" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+
+# ---------------------------------------------------------------------
+# Step 10: disable again -> back to a bit-exact no-op
+# ---------------------------------------------------------------------
+try {
+    [void](Set-Check 'GradientCheck' $false)
+    $m = Wait-Trace 'tuning: gradient enabled=False strength=0\.000 hue=300->275'
+    Check "gradient off again" $m.Success "enabled=False strength=0.000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+} catch {
+    Check "gradient off again" $false "enabled=False strength=0.000" $_.Exception.Message
+}
+
+# ---------------------------------------------------------------------
+# Step 11: 恢复默认 puts every knob back
 # ---------------------------------------------------------------------
 $btn = Find-ById 'ResetTuningButton'
 if ($btn) {
@@ -269,6 +328,8 @@ $m = Wait-Trace 'tuning: warp maxFold=90\.0 r=2\.50 tiltAway=True hingeTop=False
 Check "reset -> defaults" ($m.Success -and $m.Groups[1].Value -eq '0.0000') "maxFold=90 r=2.50 away bottom M00=0.0000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
 $m = Wait-Trace 'tuning: blur max=160\.0 start=0\.30 full=0\.60'
 Check "reset -> blur defaults" $m.Success "max=160 start=0.30 full=0.60" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+$m = Wait-Trace 'tuning: gradient enabled=False strength=0\.000 hue=205->275'
+Check "reset -> gradient defaults" $m.Success "enabled=False strength=0.000 hue=205->275" $(if ($m.Success) { $m.Value } else { "<timeout>" })
 
 # ---------------------------------------------------------------------
 # Summary

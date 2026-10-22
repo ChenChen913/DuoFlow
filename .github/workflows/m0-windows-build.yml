@@ -18,8 +18,15 @@
 #                             M1.1) and run its unit tests. No WinUI/D3D/
 #                             windows TFM involved - plain dotnet CLI.
 #
-# Runs automatically on every push touching src/, scripts/hardware-probe.ps1
-# or this workflow, and can be triggered manually (workflow_dispatch).
+# Runs automatically on every push touching src/, shaders/,
+# scripts/hardware-probe.ps1 or this workflow, and can be triggered manually
+# (workflow_dispatch).
+#
+# shaders/ is in the list because DuoWarp.hlsl is compiled AT RUNTIME
+# (D3DCompile in WarpPipeline.TryCreate) and copied as content next to the
+# exe. A shader-only commit would otherwise skip CI entirely - and a broken
+# HLSL does not fail the build, it silently falls back to the M0.2 blit path
+# at launch. The build job is the only thing standing between that and main.
 # =====================================================================
 
 name: DuoFlow Windows CI
@@ -29,6 +36,7 @@ on:
     branches: [main]
     paths:
       - "src/**"
+      - "shaders/**"
       - "scripts/hardware-probe.ps1"
       - ".github/workflows/m0-windows-build.yml"
   workflow_dispatch:

@@ -58,9 +58,9 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 3 — M2 Visual Refinement**（M1 ✅；执行顺序 M2.0→M2.5→M2.4→M2.1→M2.2→M2.3） |
-| 当前小任务 | **M2.1 Gradient Pass**（M2.0 ✅、M2.5 ✅、M2.4 ✅ 2026-10-22） |
+| 当前小任务 | **M2.2 Light Sweep**（M2.0 ✅、M2.5 ✅、M2.4 ✅、M2.1 ✅ 2026-10-22） |
 | 阻塞项 | 无阻塞。DD-045 源冻结经用户真机确认"没问题"，M2 不再为它留工期（需要时可插队） |
-| 最后更新 | 2026-10-22 · M2.4 演示模式（DemoPlayer + 四个控件 + 验收脚本），真机 9/9 全绿 · 八弟 |
+| 最后更新 | 2026-10-22 · M2.1 渐变色相（寄生在阴影上的 `(1-light)` 加权 + 三轮 A/B 证明关闭态 no-op），真机 14/14 全绿 · 八弟 |
 
 ---
 
@@ -71,7 +71,7 @@
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
 | Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ✅ 已完成（M0.1-M0.3 云端；M0.4 真机实测 2026-09-16 回填） |
 | Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ✅ 已完成（M1.1-M1.8；Mask/Blur/Dim 三件套随后被 DD-046 物理景深模型取代） |
-| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅ · M2.5 ✅ · M2.4 ✅） |
+| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅ · M2.5 ✅ · M2.4 ✅ · M2.1 ✅） |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
 | Phase 5 | M4 | Sensor Provider：传感器接入 / Provider Manager | ⬜ |
 | Phase 6 | M5 | Windows Integration：电源事件 / 开合动画 / 开机自启 | ⬜ |
@@ -393,12 +393,56 @@ Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）
 | 循环双向反向 | `rose=True fell=True`，样本 `0→1→0.07→0.28→1→0.01→…` |
 | 暂停冻结 | `0.6075 → 0.6075` |
 
-#### M2.1 Gradient Pass
+#### M2.1 Gradient Pass ✅ 2026-10-22
 
-* [ ] `GradientOptions`（Enabled / 起止色相 / 最大强度，强度上限 ≤0.2，DD-046 §迁移：作用于模型输出色）
-* [ ] shader 在 `light` 之后叠加：屏幕混合 `rgb += tint * strength * intensity * (1-rgb)`，防过曝
-* [ ] 面板加 Gradient 旋钮
+* [x] `GradientOptions`（Enabled / 起止色相 / 最大强度，强度上限 ≤0.2，DD-046 §迁移：作用于模型输出色）
+* [x] shader 在 `light` 之后叠加：屏幕混合 `rgb += tint * strength * intensity * (1-rgb)`，防过曝
+* [x] 面板加 Gradient 旋钮
 * **验收**：单测（参数校验 / 强度上限 / p=0 恒等）；真机 smoke 仍 active；关闭时与 v2 逐像素无差
+
+**实现记录**
+
+1. **`DuoFlow.Render/GradientOptions.cs`（新）**：`Enabled` 默认 **false**、`Strength` 默认 0、
+   色相 205°→275°（同一蓝紫家族；跨 180° 会读成彩虹而不是玻璃）。
+   `EffectiveStrength` 关闭时返回**精确 0.0**——这是"关闭 = no-op"的机制，不是巧合。
+   `HueToRgb` 固定 `S=0.65 / L=0.55`：只暴露色相，不暴露明度，否则调用方能重新引入过曝。
+2. **`shaders/DuoWarp.hlsl`**：cbuffer 加 3 个 `float4`（8→11 个，176 字节）；
+   叠加权重乘 **`(1 - light)`** 而不是平铺加色（理由见 **DD-049**：平铺加色会把远端
+   亮度从 34.7 抬到 ~80，DD-046 的阴影白建）；再乘 `PhysicsParams.y`，因此渐变**跟模糊包络同源**，
+   `p ≤ 0.30` 时自动消失。
+3. **`WarpPipeline.Render(..., gradient)`**：可选参数，默认 `null` → 强度 0。
+4. **`CaptureRenderer.SetOptions(warp, blur, gradient)`**：三个选项**一起**校验、一起替换，
+   帧内读局部变量（DD-048 不变）。
+5. **面板**：`GradientCheck` / `HueStartSlider` / `HueEndSlider` / `GradientStrengthSlider`，
+   `OnResetTuning` 一并复位（从编译期默认值回种，不复制字面量）。
+6. **单测 16 条**（`GradientOptionsTests.cs`）：默认关闭、关闭时 `EffectiveStrength == 0.0`（精确相等，
+   不是近似）、0.2 上限钳制、`Validate` 拒绝 NaN/Inf/越界、`HueToRgb` 三原色与绕回、色值落在单位立方体。
+
+**真机证据（2026-10-22）**
+
+"关闭 = 逐像素无差"用三轮 A/B 证明（着色器是启动时从磁盘读的，可在**同一二进制**上只换文件）：
+
+| 比对 | 变量 | 逐位相同的档位 | 最大差 | 差异像素 |
+|---|---|---|---|---|
+| A1 vs A2 | 同 shader，两轮 | 3/9 | 23 | 35~115 |
+| A1 vs B | 旧 shader vs 新 shader | 3/9 | **23** | 92~337 |
+
+两组的最大差**同为 23**、差异都落在鼠标指针与刻度线双线性重采样的边缘；
+且量化指标四轮**逐位相同**（`p=0.75: hinge=225.85 far=34.69 depth=0.8464`，`quadTop=774/773.9`）。
+结论：新增的 cbuffer 与分支在关闭态不产生可测差异，差异量与"同一份代码跑两遍"的噪声同级。
+
+反向对照（临时把面板默认改成开 + 0.15，测完即还原）：
+
+| p=0.75 远端 | R | G | B |
+|---|---|---|---|
+| 渐变关 | 24.30 | 24.30 | 24.30 |
+| 渐变开 0.15 | 41.29 | 33.80 | 50.38 |
+
+同档铰链侧 `227.23 → 227.23`（+0.02）——**只吃阴影侧**的设计约束被实测到。
+`p=0.50` 远端 `148.37 → 150.03`（增量随遮光缺口缩小），符合 `(1-light)` 的预期。
+
+**验收结果**：单测 79/79（含新增 16 条）；构建 0 warning 0 error；
+`warp-selftest` 9/9 通过（exit 0）；`tuning-panel-verify` **14/14 通过**（新增 4 步渐变断言，exit 0）。
 
 #### M2.2 Light Sweep
 
@@ -499,6 +543,34 @@ Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）
   合盖 `1 0.79 0.53 0.32 0.11 0`；循环 `max=1 min=0` 且 `rose/fell` 都为真
   （样本 `0→1→0.07→0.28→1→0.01`）；暂停 `0.6075 → 0.6075`。
 - **回归**：单测 63/63。
+
+
+### 2026-10-22 · M2.1 渐变色相（寄生在阴影上 + 三轮 A/B 证明关闭态 no-op） · 八弟
+
+- **背景**：要"折叠像一块有色玻璃"。最直觉的实现是着色器末尾平铺加色，但 DD-046 的 v2
+  刚把远端压到 `light≈0.14`（`far=34.7/255`），平铺 0.15 强度会让那半边亮度几乎翻倍——
+  **阴影白建**。
+- **DD-049 定口径**：叠加权重乘 **遮光缺口 `(1 - light)`**，再乘 `PhysicsParams.y`。
+  结果：铰链侧几乎不加色（实测 +0.02），远端加得最多（实测 `24.30→41.29 / 33.80 / 50.38`），
+  且渐变**跟模糊包络同源**——`p ≤ 0.30` 时一起消失，不会出现"还没折叠就染色"。
+  另有 `(1 - rgb)` 逐通道饱和保护。
+- **"关闭 = no-op" 的机制**：`EffectiveStrength` 关闭时返回**精确 0.0**，
+  着色器 `if (GradientParams.x > 0.0)` 因此是**跳过分支**而不是"加个零"。
+- **怎么证**：着色器是启动时从磁盘读的 → 可在**同一二进制**上只换 `DuoWarp.hlsl`。
+  跑三轮：A1（旧 shader）、A2（同旧 shader，给**逐像素噪声底**）、B（新 shader）。
+  实测 A1vsA2 与 A1vsB 的**最大差同为 23**、差异像素同量级（35~115 vs 92~337），
+  全部落在鼠标指针与刻度线双线性重采样的边缘；量化指标四轮**逐位相同**。
+  ⚠️ 只做 A1vsB 单次比对是不够的——没有噪声底就分不清"1 LSB 抖动"和"真的改了一点"。
+  方法已写进 `scripts/acceptance/README.md`，以后加 pass 照抄。
+- **反向对照**：临时把面板默认改成开 + 0.15 再跑一次，确认渐变真的产生可测变化
+  （否则"关闭无差"可能只是"这个 pass 根本不起作用"）；测完立即还原，未提交。
+  过程中发现面板在启动时会用自己那套值（未勾选 + 强度 0）**覆盖** C# 默认值——
+  这反而验证了 DD-048「面板才是权威」。
+- **面板**：`GradientCheck` / 起色相 / 止色相 / 强度（0~0.2），`OnResetTuning` 一并复位。
+  `tuning-panel-verify.ps1` 从 9 步扩到 **14 步**，新增断言的重点不是"复选框能点"，
+  而是**关闭态把强度滑块推到 0.15 后 trace 仍须报 `strength=0.000`**。
+- **回归**：单测 79/79（新增 16 条）；构建 0 warning 0 error；
+  `warp-selftest` 9/9、`tuning-panel-verify` 14/14，两者 exit 0。
 
 
 ### 2026-10-22 · M2.5 参数面板（运行时替换 + 面板 + run.ps1） · 八弟

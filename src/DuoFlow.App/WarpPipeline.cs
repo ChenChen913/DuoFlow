@@ -33,7 +33,7 @@ namespace DuoFlow.App;
 public sealed class WarpPipeline : IDisposable
 {
     /// <summary>Constant buffer layout - must match the cbuffer in DuoWarp.hlsl
-    /// (8 × float4 = 128 bytes; three float4s instead of float3x3 leave no
+    /// (11 × float4 = 176 bytes; three float4s instead of float3x3 leave no
     /// row/column-major packing doubt).</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Constants
@@ -46,6 +46,9 @@ public sealed class WarpPipeline : IDisposable
         public Vector4 EdgeParams;
         public Vector4 PhysicsParams; // DD-046: x=maxBlurPx, y=intensity, z=1/W, w=1/H
         public Vector4 FadeParams;    // x=global fade opacity
+        public Vector4 GradientParams; // M2.1: x=strength (0 = off)
+        public Vector4 GradientStart;  // rgb tint at the hinge
+        public Vector4 GradientEnd;    // rgb tint at the far edge
     }
 
     public const string ShaderFileName = "DuoWarp.hlsl";
@@ -185,12 +188,20 @@ public sealed class WarpPipeline : IDisposable
     /// after this call.
     /// </summary>
     public void Render(ID3D11DeviceContext context, ID3D11Texture2D desktopTexture, WarpFrame frame,
-        double maxBlurPixels, double intensity, double fadeOpacity)
+        double maxBlurPixels, double intensity, double fadeOpacity,
+        GradientOptions? gradient = null)
     {
         if (_disposed || _renderTarget is null)
         {
             return;
         }
+
+        // M2.1: EffectiveStrength is exactly 0.0 when the pass is disabled, and
+        // the shader takes a branch on it - so "off" is a bit-exact no-op, not
+        // "adds a very small number".
+        double gradientStrength = gradient?.EffectiveStrength ?? 0.0;
+        (double sr, double sg, double sb) = gradient?.TintStart ?? (0.0, 0.0, 0.0);
+        (double er, double eg, double eb) = gradient?.TintEnd ?? (0.0, 0.0, 0.0);
 
         var constants = new Constants
         {
@@ -211,6 +222,9 @@ public sealed class WarpPipeline : IDisposable
             // M1.8: global fade-in of the whole effect - 0 while fully open so
             // the identity fold never ghosts on the live desktop.
             FadeParams = new Vector4((float)fadeOpacity, 0f, 0f, 0f),
+            GradientParams = new Vector4((float)gradientStrength, 0f, 0f, 0f),
+            GradientStart = new Vector4((float)sr, (float)sg, (float)sb, 1f),
+            GradientEnd = new Vector4((float)er, (float)eg, (float)eb, 1f),
         };
         context.UpdateSubresource(constants, _constantBuffer!, 0, 0, 0, null);
 

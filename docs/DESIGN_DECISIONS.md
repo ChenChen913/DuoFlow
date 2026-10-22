@@ -1841,13 +1841,14 @@ M2.3 视觉调优的主要工作量是"改一个默认值 → 构建 → 手动�
    `ManualProvider → StateChanged → AnimationEngine → WarpGeometry`（DD-002 / DD-035 / DD-038）；
    `WarpOptions` / `BlurOptions` 描述的是"同样的 progress 该怎么画"，属于渲染配置。
    `MainWindow.ApplyTuning()` 是唯一写入口，它不引用 `ManualProvider`。
-2. **选项按不可变实例整体替换**，不做字段级可变。`CaptureRenderer.SetOptions(warp, blur)`
-   一次换一对；`RenderTick` 在折叠分支开头**把两个字段读进局部变量**，因此帧内不可能出现
+2. **选项按不可变实例整体替换**，不做字段级可变。`CaptureRenderer.SetOptions(warp, blur, gradient)`
+   一次换一组；`RenderTick` 在折叠分支开头**把三个字段读进局部变量**，因此帧内不可能出现
    "一半新一半旧"的参数组合。
 3. **校验在 UI 侧、整体拒绝**。`WarpOptions` 的非法组合会让 `WarpGeometry.Compute` 抛异常，
    而它在 30ms 的 `DispatcherQueueTimer` 回调里——异常会表现为"覆盖层忽然不动了"，
-   没有可见的因果链。所以 `SetOptions` 先以 `Compute(0)` / `Compute(1)` + `BlurOptions.Validate()`
-   验一遍，失败则**整对拒绝并返回原因**，控制台把原因显示出来，上一组继续生效。
+   没有可见的因果链。所以 `SetOptions` 先以 `Compute(0)` / `Compute(1)` +
+   `BlurOptions.Validate()` / `GradientOptions.Validate()` 验一遍，失败则**整组拒绝并返回原因**，
+   控制台把原因显示出来，上一组继续生效。
 4. **线程模型不变**：`SetOptions` 与 `RenderTick` 都在 UI 线程（同一 `DispatcherQueue`），
    不加锁。`_renderGate` 保护的是与捕获线程共享的 GPU 资源，与这些字段无关。
 5. **面板的可测性**：`SetOptions` 把**派生几何**写进 trace（`frame@1.0 M00=...`），
@@ -1890,6 +1891,98 @@ M2.3 视觉调优的主要工作量是"改一个默认值 → 构建 → 手动�
 - DD-035（ManualProvider 语义）
 - DD-038（AnimationEngine：progress 的唯一来源）
 - DD-046（被调参的物理景深模型）
+
+---
+
+# DD-049：渐变色相只叠在阴影上——用「遮光缺口」缩放，而不是平铺加色
+
+**Status:** Accepted（2026-10-22，M2.1）
+
+## 背景
+
+M2.1 要的是"折叠像一块有色玻璃"，即在折过去的画面上叠一条色相渐变。
+最直觉的实现是在像素着色器末尾直接加色：
+
+```hlsl
+rgb += tint * strength;      // 平铺加色
+```
+
+DD-046 的 v2 模型刚刚花掉 M1 全部时间建立"铰链亮、远端暗"的物理景深：
+远端 `light` 掉到 0.14 左右（`far=34.7/255`）。在这么暗的表面上平铺加一条
+0.15 强度的色相，亮度会几乎翻倍——**折过去的那半边会重新亮起来，DD-046 的阴影白建**。
+
+## 决定
+
+渐变的合成权重乘上**遮光缺口** `(1 - light)`：
+
+```hlsl
+if (GradientParams.x > 0.0)
+{
+    float3 tint = lerp(GradientStart.rgb, GradientEnd.rgb, saturate(sy));
+    rgb += tint * (GradientParams.x * PhysicsParams.y * (1.0 - light) * (1.0 - rgb));
+}
+```
+
+1. **`(1 - light)`**：亮的地方（铰链）几乎不加色，暗的地方（远端）加得最多。
+   这正好是"有色玻璃"的物理直觉——你透过玻璃看到的是它挡掉的那部分光。
+2. **`PhysicsParams.y`**（模糊强度）：渐变跟模糊包络同源。包络没开（`p ≤ 0.30`）
+   时 `intensity = 0`，渐变**一起消失**，不会出现"画面还没折叠就已经染色"的怪状态。
+3. **`(1 - rgb)`**：逐通道饱和保护，亮表面不会被推到过曝。
+4. **`if (GradientParams.x > 0.0)`**：`x` 由 `GradientOptions.EffectiveStrength` 给出，
+   关闭时返回**精确的 0.0**（不是 1e-9）。因此关闭态在着色器里是**跳过分支**，
+   而不是"加一个零"——这是"关闭 = no-op"在编译层面的保证。
+5. **强度上限 0.2 写死在 `GradientOptions.MaxStrengthLimit`**，`Validate()` 与
+   `EffectiveStrength` 双处执行（面板不是唯一调用方）。超过 0.2 就不再是"染色"，
+   而是"滤镜"。
+
+## 原因
+
+* 视觉上，渐变必须让折叠更"实"，而不是把折叠的明暗关系抹平；
+* 把权重绑到 `(1 - light)` 之后，M2.3 调参时**不可能**通过调渐变把 DD-046 的阴影破坏掉，
+  两个 pass 之间不是"叠加"而是"寄生"关系；
+* 与 `PhysicsParams.y` 同源，省掉了"渐变自己的包络"这个额外旋钮，也避免两套包络打架。
+
+## 替代方案
+
+* **平铺加色**：最省事，直接把远端亮度抬到接近铰链，DD-046 失效（已量化：远端
+  `34.7 → 47.2` 是可接受的染色；平铺加色会到 `~80`，阴影基本消失）；
+* **在模糊之前染色**：色相会被 mip 链和 16-tap 采样一起模糊，边缘出现色边；
+* **用屏幕混合 / 叠加混合模式**：需要额外读回或第二个 RT，成本远高于一行乘加；
+* **HSL 空间插值**：`lerp` 在 RGB 空间已经足够（两端色相只差 70°，都在蓝紫家族），
+  转 HSL 只为 70° 的插值不值得。
+
+## 影响
+
+* `DuoWarp.hlsl`：cbuffer 增加 3 个 `float4`（`GradientParams` / `GradientStart` /
+  `GradientEnd`），总长 8 → 11 个 `float4`（176 字节），`WarpPipeline.Constants` 同步。
+* `DuoFlow.Render/GradientOptions.cs`（新）：`Enabled` 默认 **false**，
+  `HueToRgb` 固定 `S=0.65 / L=0.55`——只暴露色相，不暴露明度，否则调用方能把
+  过曝重新引进来。
+* `WarpPipeline.Render(...)` 增加可选参数 `gradient`（默认 `null` → 强度 0）。
+* `CaptureRenderer.SetOptions(warp, blur, gradient)`：三个选项**一起**校验、一起替换。
+* 面板新增 4 个控件（开关 + 起色相 + 止色相 + 强度）。
+
+## 验证
+
+"关闭 = no-op"这条不是靠读代码，而是靠真机三轮比对（方法见
+`scripts/acceptance/README.md`「怎么证明新 pass 关闭时是 no-op」）：
+同一二进制、只换磁盘上的 `DuoWarp.hlsl`，`A1 vs A2`（同 shader）给出逐像素噪声底，
+`A1 vs B`（新旧 shader）必须落在噪声底之内。实测两者最大差同为 23、差异像素同量级，
+且**所有量化指标逐位相同**（`hinge=227.68 far=148.37 depth=0.3483`）。
+
+反向对照：临时打开渐变（强度 0.15）后，`p=0.75` 远端 RGB 从 `24.30/24.30/24.30`
+变为 `41.29/33.80/50.38`（B>R>G，紫调），同档铰链侧 `227.23 → 227.23`（+0.02）。
+"只吃阴影侧"这条设计约束因此也被实测到了。
+
+## 迁移方案
+
+不适用（纯增量，默认关闭）。
+
+## 相关决策
+
+- DD-046（被渐变压在其上的物理景深模型——本决策的全部约束来源）
+- DD-048（参数运行时可替换——渐变三件套走同一条 `SetOptions` 通道）
+- DD-002（渲染配置与输入链路的分界）
 
 ---
 

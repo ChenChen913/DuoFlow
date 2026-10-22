@@ -54,6 +54,16 @@ cbuffer FoldConstants : register(b0)
     float4 PhysicsParams;
     // x: global fade opacity [0,1] (0 while fully open)
     float4 FadeParams;
+
+    // M2.1 gradient pass:
+    // x: strength (0 = OFF - the shader takes the branch below only when
+    //    this is > 0, which is what makes "disabled" a bit-exact no-op)
+    // yzw reserved
+    float4 GradientParams;
+    // rgb tint at the hinge (source-side height 0)
+    float4 GradientStart;
+    // rgb tint at the far edge (source-side height 1)
+    float4 GradientEnd;
 };
 
 Texture2D    DesktopTexture : register(t0);
@@ -157,6 +167,23 @@ float4 PSMain(VSOutput input) : SV_Target
 
     // The shadow transition: light falls as the frost deepens.
     rgb *= light;
+
+    // ---- M2.1 gradient pass ----
+    // A hue ramp across the fold, laid over the SHADOW.
+    //
+    // Why scaled by (1 - light): the far edge is where the frost is deepest
+    // and the surface darkest, so that is where a tint is actually visible.
+    // A flat additive tint there would roughly double the far edge's
+    // luminance and undo the shadow DD-046 built - the fold would glow back
+    // to life. Scaling by the shading deficit keeps the ramp visible exactly
+    // where it can be seen without touching the luminance the model fought
+    // for. (1 - rgb) is a final guard so a bright surface cannot be pushed
+    // past white.
+    if (GradientParams.x > 0.0)
+    {
+        float3 tint = lerp(GradientStart.rgb, GradientEnd.rgb, saturate(sy));
+        rgb += tint * (GradientParams.x * PhysicsParams.y * (1.0 - light) * (1.0 - rgb));
+    }
 
     return float4(rgb * a * FadeParams.x, a * FadeParams.x);
 }

@@ -11,7 +11,7 @@ windows-latest 是非交互会话，跑出来是黑的，所以它们不进 CI�
 |---|---|---|---|
 | `warp-selftest.ps1` | 折叠几何 + 光影方向 + 模糊方向 + 无滞回 | ~70 s | 否 |
 | `overlay-p0-verify.ps1` | 覆盖层透明（P0-1）/ 真输入穿透（P0-2）/ 预览有活画面（P1-a） | ~90 s | 是 |
-| `tuning-panel-verify.ps1` | 参数面板的旋钮真的走到了渲染数学（M2.5） | ~35 s | 否 |
+| `tuning-panel-verify.ps1` | 参数面板的旋钮真的走到了渲染数学（M2.5/M2.1） | ~60 s | 否 |
 | `demo-mode-verify.ps1` | 演示模式走完 0↔1、端点自动停、循环双向反向、暂停冻结（M2.4） | ~30 s | 否 |
 
 ---
@@ -99,6 +99,33 @@ dotnet build src/DuoFlow.App -p:Platform=x64
 - 不删 trace、不删旧 dump：某些 shell 会拦删除（safe-delete fail-closed），
   而"记录 offset + 时间戳"比"删除成功"是更强的证据——旧文件残留会被 stale 检查挡住。
 
+**怎么证明「新 pass 关闭时是 no-op」**（M2.1 用的手法，以后加 pass 照抄）
+
+着色器是**启动时从磁盘读**的（`AppContext.BaseDirectory\shaders\DuoWarp.hlsl`），
+所以可以在**同一个二进制**上只换这个文件，把"渲染数学变了"和"代码变了"彻底分开：
+
+1. 换回 HEAD 版 shader，跑一次 → dump A1
+2. **同一个** shader 再跑一次 → dump A2（这一对给出**逐像素噪声底**：鼠标指针 + 刻度线
+   双线性重采样的边缘）
+3. 换回新 shader 再跑 → dump B
+4. `A1 vs B` 的差异必须落在 `A1 vs A2` 的噪声底之内（同样的最大差、同样的像素量级、
+   同一批位置）
+
+本机实测：噪声底最大差 23、差异像素 35~115 个；新旧 shader 之间最大差同样是 23、
+差异像素 92~337 个（都在指针与刻度边缘），而**所有量化指标四轮逐位相同**
+（`hinge=227.68 far=148.37 depth=0.3483` 等）。只做 `A1 vs B` 单次比对是不够的——
+没有噪声底，就无法区分"1 LSB 抖动"和"真的改了一点"。
+
+**反向对照同样必要**：把渐变临时打开再跑一次，确认它真的产生可测变化，
+否则"关闭无差"可能只是"这个 pass 根本不起作用"：
+
+| p=0.75 远端 | R | G | B |
+|---|---|---|---|
+| 渐变关 | 24.30 | 24.30 | 24.30（中性灰） |
+| 渐变开 0.15 | 41.29 | 33.80 | 50.38（B>R>G，紫调） |
+
+同一组里铰链侧 `227.23 → 227.23`（+0.02）——**只吃阴影侧**这条设计约束同时被验到。
+
 ---
 
 ## overlay-p0-verify.ps1 — 覆盖层 P0 三件套
@@ -160,6 +187,11 @@ dotnet build src/DuoFlow.App -p:Platform=x64
 
 只改 UI 不改渲染的话，`M00` 会一直停在 `0.0000`，上面每一档都会失败。
 
+渐变的四步（M2.1）断言的不是「复选框能点」，而是**关闭时强度必须归零**：
+把强度滑块推到 0.15 之后 trace 仍须报 `strength=0.000`——那个 0 就是像素着色器
+`if (GradientParams.x > 0.0)` 的分支条件，也是「关闭 = 无操作」的机制本身。
+像素级证明在 `warp-selftest` 那边（见上）。
+
 **怎么跑**
 
 ```powershell
@@ -168,10 +200,11 @@ dotnet build src/DuoFlow.App -p:Platform=x64
 .\scripts\acceptance\tuning-panel-verify.ps1 -OutputDir D:\tmp\tune
 ```
 
-**产出**：`tuning-panel-verify.txt` + `tuning-panel-result.json`。**退出码** 0 = 9/9。
+**产出**：`tuning-panel-verify.txt` + `tuning-panel-result.json`。**退出码** 0 = 14/14。
 
-**覆盖的 9 步**：初始推送 / MaxFold 90→60 / r 2.5→4.0 / 方向 away→toward / 铰链 底→顶 /
-maxBlur 160→80 / 包络起点越界自动抬满值 / 恢复默认（warp + blur 两项）。
+**覆盖的 14 步**：初始推送 / MaxFold 90→60 / r 2.5→4.0 / 方向 away→toward / 铰链 底→顶 /
+maxBlur 160→80 / 包络起点越界自动抬满值 / 关闭态忽略强度 / 勾选后强度生效 /
+起色相 205→300 / 再次关闭回到 0.000 / 恢复默认（warp + blur + gradient 三项）。
 
 **已知边界 / 坑**
 

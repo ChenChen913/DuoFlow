@@ -64,6 +64,7 @@ public sealed class CaptureRenderer : IDisposable
     // with the capture thread, not these fields.
     private WarpOptions _warpOptions = new();
     private BlurOptions _blurOptions = new();
+    private GradientOptions _gradientOptions = new();
     private readonly object _renderGate = new();
     private DumpRequest? _pendingDumpRequest;
     private bool _sourceFrozen; // DD-045: true while the fold is on screen (capture frozen)
@@ -121,10 +122,11 @@ public sealed class CaptureRenderer : IDisposable
     /// rejected as a whole (all-or-nothing, no half-applied state).
     /// </summary>
     /// <returns>null on success, otherwise a human-readable rejection reason.</returns>
-    public string? SetOptions(WarpOptions warp, BlurOptions blur)
+    public string? SetOptions(WarpOptions warp, BlurOptions blur, GradientOptions gradient)
     {
         if (warp is null) { return "warp options null"; }
         if (blur is null) { return "blur options null"; }
+        if (gradient is null) { return "gradient options null"; }
 
         try
         {
@@ -134,6 +136,7 @@ public sealed class CaptureRenderer : IDisposable
             WarpGeometry.Compute(0.0, warp);
             WarpGeometry.Compute(1.0, warp);
             blur.Validate();
+            gradient.Validate();
         }
         catch (Exception ex)
         {
@@ -143,6 +146,7 @@ public sealed class CaptureRenderer : IDisposable
 
         _warpOptions = warp;
         _blurOptions = blur;
+        _gradientOptions = gradient;
 
         // Trace the DERIVED geometry, not just the inputs: the acceptance
         // check greps M00 at full fold, which is r*cos(MaxFoldDegrees) - the
@@ -154,6 +158,8 @@ public sealed class CaptureRenderer : IDisposable
                   $"-> frame@1.0 M00={atFull.M00:0.0000} M11={atFull.M11:0.0000} M21={atFull.M21:0.0000} " +
                   $"farEdgeY={atFull.FarEdgeY:0.0000}");
         Trace.Log($"tuning: blur max={blur.MaxBlurPixels:0.0} start={blur.StartProgress:0.00} full={blur.FullProgress:0.00}");
+        Trace.Log($"tuning: gradient enabled={gradient.Enabled} strength={gradient.EffectiveStrength:0.000} " +
+                  $"hue={gradient.HueStartDegrees:0}->{gradient.HueEndDegrees:0}");
         return null;
     }
 
@@ -399,6 +405,7 @@ public sealed class CaptureRenderer : IDisposable
                 // comment): a swap mid-frame can then never mix two sets.
                 WarpOptions warpOptions = _warpOptions;
                 BlurOptions blurOptions = _blurOptions;
+                GradientOptions gradientOptions = _gradientOptions;
                 WarpFrame frame = WarpGeometry.Compute(state.Progress, warpOptions);
 
                 // M1.8 feedback kill (DD-045): the fullscreen capture contains
@@ -421,7 +428,8 @@ public sealed class CaptureRenderer : IDisposable
                     Math.Clamp(state.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
                 warp.Render(_context, _latestFrame, frame,
                     blurOptions.MaxBlurPixels * _qualityScale,
-                    blurOptions.IntensityAt(state.Progress), fadeOpacity);
+                    blurOptions.IntensityAt(state.Progress), fadeOpacity,
+                    gradientOptions);
             }
             else
             {

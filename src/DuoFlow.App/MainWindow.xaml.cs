@@ -398,6 +398,12 @@ public sealed partial class MainWindow : Window
     private void OnTuningSelectionChanged(object sender, SelectionChangedEventArgs e)
         => ApplyTuning();
 
+    // CheckBox.Checked/Unchecked are RoutedEventHandler, not
+    // SelectionChangedEventHandler - WinUI's XAML compiler rejects the
+    // selection handler outright (CS0123).
+    private void OnTuningToggled(object sender, RoutedEventArgs e)
+        => ApplyTuning();
+
     private void OnResetTuning(object sender, RoutedEventArgs e)
     {
         _syncingTuning = true;
@@ -412,6 +418,10 @@ public sealed partial class MainWindow : Window
             EnvelopeFullSlider.Value = BlurOptions.DefaultFullProgress;
             TiltCombo.SelectedIndex = 0;    // away
             HingeCombo.SelectedIndex = 0;   // bottom
+            GradientCheck.IsChecked = false;
+            HueStartSlider.Value = GradientOptions.DefaultHueStartDegrees;
+            HueEndSlider.Value = GradientOptions.DefaultHueEndDegrees;
+            GradientStrengthSlider.Value = 0.0;
         }
         finally
         {
@@ -454,8 +464,15 @@ public sealed partial class MainWindow : Window
             StartProgress = start,
             FullProgress = full,
         };
+        var gradient = new GradientOptions
+        {
+            Enabled = GradientCheck.IsChecked == true,
+            HueStartDegrees = HueStartSlider.Value,
+            HueEndDegrees = HueEndSlider.Value,
+            Strength = GradientStrengthSlider.Value,
+        };
 
-        string? error = renderer.SetOptions(warp, blur);
+        string? error = renderer.SetOptions(warp, blur, gradient);
         if (error is null)
         {
             _tuningPushed = true;
@@ -463,7 +480,8 @@ public sealed partial class MainWindow : Window
         TuningStatus.Text = error is null
             ? $"生效：MaxFold {warp.MaxFoldDegrees:0}° · r {warp.CameraDistanceRatio:0.00} · " +
               $"{(warp.TiltAwayFromViewer ? "away" : "toward")} · 铰链{(warp.HingeAtTop ? "顶" : "底")} · " +
-              $"maxBlur {blur.MaxBlurPixels:0}px · 包络 {blur.StartProgress:0.00}→{blur.FullProgress:0.00}"
+              $"maxBlur {blur.MaxBlurPixels:0}px · 包络 {blur.StartProgress:0.00}→{blur.FullProgress:0.00} · " +
+              $"渐变 {(gradient.Enabled ? $"开 {gradient.Strength:0.00}" : "关")}"
             : $"✗ 已拒绝（保持上一组生效值）：{error}";
     }
 
