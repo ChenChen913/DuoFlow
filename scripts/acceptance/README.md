@@ -11,6 +11,7 @@ windows-latest 是非交互会话，跑出来是黑的，所以它们不进 CI�
 |---|---|---|---|
 | `warp-selftest.ps1` | 折叠几何 + 光影方向 + 模糊方向 + 无滞回 | ~70 s | 否 |
 | `overlay-p0-verify.ps1` | 覆盖层透明（P0-1）/ 真输入穿透（P0-2）/ 预览有活画面（P1-a） | ~90 s | 是 |
+| `tuning-panel-verify.ps1` | 参数面板的旋钮真的走到了渲染数学（M2.5） | ~35 s | 否 |
 
 ---
 
@@ -138,3 +139,45 @@ dotnet build src/DuoFlow.App -p:Platform=x64
 - 布局坐标一律用覆盖层自己的 `GetWindowRect`（主屏 rect），不要用 `SM_CXVIRTUALSCREEN`。
 - App 冷启动可能 >3 s，脚本默认等 14 s（`-StartupSeconds` 可调）。
 - 会占用真实鼠标约 30 秒。
+
+---
+
+## tuning-panel-verify.ps1 — 参数面板真的接上渲染了吗
+
+**它证明什么**：控制台的旋钮不是只改了 UI。每一步都用 UIAutomation 驱动控件（和读屏器
+同一条通道，不靠像素猜），再读应用自己 trace 里 `CaptureRenderer` 从 `WarpGeometry.Compute`
+**算出来的**几何。
+
+关键断言是全折叠时的 `M00 = r · cos(MaxFold)`：
+
+| 旋钮 | 期望 M00 |
+|---|---|
+| MaxFold 90°、r 2.5 | `0.0000`（平面侧对相机，无像） |
+| MaxFold 60°、r 2.5 | `1.2500` |
+| MaxFold 60°、r 4.0 | `2.0000` |
+| 同上 + 方向 toward | `M21 = +0.8660`（符号翻转） |
+
+只改 UI 不改渲染的话，`M00` 会一直停在 `0.0000`，上面每一档都会失败。
+
+**怎么跑**
+
+```powershell
+dotnet build src/DuoFlow.App -p:Platform=x64
+.\scripts\acceptance\tuning-panel-verify.ps1
+.\scripts\acceptance\tuning-panel-verify.ps1 -OutputDir D:\tmp\tune
+```
+
+**产出**：`tuning-panel-verify.txt` + `tuning-panel-result.json`。**退出码** 0 = 9/9。
+
+**覆盖的 9 步**：初始推送 / MaxFold 90→60 / r 2.5→4.0 / 方向 away→toward / 铰链 底→顶 /
+maxBlur 160→80 / 包络起点越界自动抬满值 / 恢复默认（warp + blur 两项）。
+
+**已知边界 / 坑**
+
+- **WinUI ComboBox 的 popup 是独立的 UIA 子树**：从 ComboBox 元素往下 `FindAll(ListItem)`
+  是空的，必须从桌面根节点搜。而且 `SelectionItemPattern.Select()` 调用成功 ≠ 选择真的变了，
+  脚本会读 `SelectionPattern` 前后比对——不比对的话，失败只会表现为一个莫名的 timeout。
+- 脚本用 `AutomationId` 定位控件。**M2.5 之前构建的二进制没有这些 id**，会报 `control 'X' not found`。
+- `MaxBlurPixels` 的合法区间是 `(0, 400]`，所以滑块最小值是 1 而不是 0；
+  包络起点必须小于满值点，越界时面板会把满值抬到 `起点 + 0.01`（这是 UI 状态，不是渲染状态）。
+- 只跑 UIAutomation，**不动鼠标**；但应用仍会全屏接管约 35 秒。

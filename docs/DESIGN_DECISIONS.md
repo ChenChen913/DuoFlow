@@ -1823,6 +1823,76 @@ M1 收官一个月后对已完成功能做代码级审查，发现三类问题�
 
 ---
 
+# DD-048：渲染参数在运行时可替换——参数面板的边界
+
+**Status:** Accepted（2026-10-22，M2.5）
+
+## 背景
+
+M2.3 视觉调优的主要工作量是"改一个默认值 → 构建 → 手动启动 → 拖滑块 → 看"。
+`WarpOptions` / `BlurOptions` 是 `init`-only 的不可变配置，构造后无法改；控制台也没有
+任何入口能把它们传进渲染层。不解决这件事，M2.3 每调一次参数就要一轮完整构建。
+
+同时必须回答一个架构问题：**参数面板是不是在绕过 DD-002（输入层与渲染层解耦）？**
+
+## 决定
+
+1. **面板只写渲染配置，不碰输入链路**。`Progress` 的路径仍是
+   `ManualProvider → StateChanged → AnimationEngine → WarpGeometry`（DD-002 / DD-035 / DD-038）；
+   `WarpOptions` / `BlurOptions` 描述的是"同样的 progress 该怎么画"，属于渲染配置。
+   `MainWindow.ApplyTuning()` 是唯一写入口，它不引用 `ManualProvider`。
+2. **选项按不可变实例整体替换**，不做字段级可变。`CaptureRenderer.SetOptions(warp, blur)`
+   一次换一对；`RenderTick` 在折叠分支开头**把两个字段读进局部变量**，因此帧内不可能出现
+   "一半新一半旧"的参数组合。
+3. **校验在 UI 侧、整体拒绝**。`WarpOptions` 的非法组合会让 `WarpGeometry.Compute` 抛异常，
+   而它在 30ms 的 `DispatcherQueueTimer` 回调里——异常会表现为"覆盖层忽然不动了"，
+   没有可见的因果链。所以 `SetOptions` 先以 `Compute(0)` / `Compute(1)` + `BlurOptions.Validate()`
+   验一遍，失败则**整对拒绝并返回原因**，控制台把原因显示出来，上一组继续生效。
+4. **线程模型不变**：`SetOptions` 与 `RenderTick` 都在 UI 线程（同一 `DispatcherQueue`），
+   不加锁。`_renderGate` 保护的是与捕获线程共享的 GPU 资源，与这些字段无关。
+5. **面板的可测性**：`SetOptions` 把**派生几何**写进 trace（`frame@1.0 M00=...`），
+   因为 `M00 = r·cos(MaxFold)` 是唯一能证明"旋钮真的走到了渲染数学"而不是只改了 UI 的数字。
+
+## 原因
+
+* M2.3 是 M2 的主工作量，调参工具不是可选项；
+* "整体替换 + 帧内读局部"用两行代码换掉了整个并发问题，比加锁或 volatile 更可靠；
+* 校验失败必须**可见**。静默回退会让调参者以为参数生效了，从而得出错误结论——
+  这正是 M2.3 最不能容忍的失败模式。
+
+## 替代方案
+
+* **把 `WarpOptions` / `BlurOptions` 改成可变类**：改动最小，但会破坏"同一 progress 恒定输出"
+  这个可单测的性质，也让帧内读到混合状态成为可能；
+* **把选项改成 `record` 用 `with` 复制**：语法更顺，但把 `with` 引入渲染配置类型只为省几行
+  面板代码，收益不值；
+* **通过 `ManualProvider` 转发参数**：会把渲染配置混进输入状态机，污染 DD-002 的语义；
+* **用外部配置文件 + 热重载**：适合最终用户，不适合"边看边调"，M2.3 需要的是即时反馈。
+
+## 影响
+
+* `CaptureRenderer`：`_warpOptions` / `_blurOptions` 去掉 `readonly`，新增 `SetOptions`。
+* `MainWindow`：新增 `ApplyTuning()` / `OnResetTuning()`，`Refresh()` 负责在渲染器就绪后
+  补一次推送（两个窗口的 Loaded 顺序不保证）。
+* `MainWindow.xaml`：参数面板 6 个控件 + 恢复默认；`ProgressSlider` 补 `AutomationId`——
+  面板加了 6 个 Slider 之后，"子树里第一个 Slider"不再是可靠定位方式，
+  `overlay-p0-verify.ps1` 已改为按 `AutomationId` 查找。
+* 控制台宽度**刻意保持 580**：`overlay-p0-verify.ps1` 把白色参考窗放在屏宽 35%（1920 上 x=672），
+  而控制台是 TOPMOST——加宽会静默遮住参考窗、让透明测试失效。
+
+## 迁移方案
+
+不适用（纯增量）。
+
+## 相关决策
+
+- DD-002（输入/渲染解耦——本决策划清面板的边界）
+- DD-035（ManualProvider 语义）
+- DD-038（AnimationEngine：progress 的唯一来源）
+- DD-046（被调参的物理景深模型）
+
+---
+
 # 摄像头适配铁律
 
 > 来源：硬件适配讨论结论，应作为摄像头模块不可推翻的原则。

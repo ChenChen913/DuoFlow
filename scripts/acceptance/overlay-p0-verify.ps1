@@ -234,19 +234,29 @@ if ($console -ne [IntPtr]::Zero) {
   $slCond = New-Object System.Windows.Automation.PropertyCondition(
     [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
     [System.Windows.Automation.ControlType]::Slider)
+  # M2.5 added six more sliders (the tuning panel), so "first Slider in the
+  # subtree" is no longer a safe way to find the Progress one - target its
+  # AutomationId, with the old lookup as a fallback for pre-M2.5 binaries.
+  $idCond = New-Object System.Windows.Automation.PropertyCondition(
+    [System.Windows.Automation.AutomationElement]::AutomationIdProperty, 'ProgressSlider')
+  function DfFindSlider {
+    $s = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $idCond)
+    if (-not $s) { $s = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $slCond) }
+    return $s
+  }
   function DfVal {
-    $sl = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$slCond)
+    $sl = DfFindSlider
     if (-not $sl) { return 'NOSLIDER' }
     $pat = $sl.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
     return ([string][math]::Round([double]$pat.Current.Value,4))
   }
   function DfSet([double]$v) {
-    $sl = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$slCond)
+    $sl = DfFindSlider
     if (-not $sl) { return }
     $pat = $sl.GetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern)
     $pat.SetValue($v); Start-Sleep -Milliseconds 700
   }
-  $sl = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants,$slCond)
+  $sl = DfFindSlider
   if ($sl) {
     $sr = $sl.Current.BoundingRectangle
     $midY = [int]($sr.Y + $sr.Height/2)

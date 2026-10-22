@@ -1,8 +1,10 @@
 using System;
 using DuoFlow.Core;
+using DuoFlow.Render;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Input;
 using Windows.Graphics;
@@ -94,17 +96,26 @@ public sealed partial class MainWindow : Window
         try
         {
             // Bottom-left control panel, always on top of the overlay.
-            // (M1.2: grown from 470 to 620 to fit the Manual Progress block.)
+            // M1.2: grown from 470 to 620 to fit the Manual Progress block.
+            // M2.5: grown again for the tuning panel - the height is taken
+            // from the work area (capped) so it never runs off-screen on a
+            // shorter display; the ScrollViewer covers the rest.
+            //
+            // WIDTH IS DELIBERATELY UNCHANGED at 580: overlay-p0-verify.ps1
+            // parks its white reference window at 35% of the screen width
+            // (x=672 on 1920) and this console is TOPMOST - widening it would
+            // silently cover the reference and void the transparency test.
             RectInt32 work = DisplayArea.Primary.WorkArea;
-            AppWindow.Resize(new SizeInt32(580, 620));
+            int consoleHeight = Math.Min(960, Math.Max(420, work.Height - 48));
+            AppWindow.Resize(new SizeInt32(580, consoleHeight));
             int x = work.X + 24;
-            int y = Math.Max(work.Y + work.Height - 644, work.Y + 8);
+            int y = Math.Max(work.Y + 8, work.Y + work.Height - consoleHeight - 24);
             AppWindow.Move(new PointInt32(x, y));
             if (AppWindow.Presenter is OverlappedPresenter presenter)
             {
                 presenter.IsAlwaysOnTop = true;
             }
-            Trace.Log("console: positioned OK");
+            Trace.Log($"console: positioned OK ({580}×{consoleHeight} at {x},{y})");
         }
         catch (Exception ex)
         {
@@ -127,6 +138,13 @@ public sealed partial class MainWindow : Window
     private void Refresh()
     {
         _ticks++;
+
+        // M2.5: push the panel's initial state once the renderer exists
+        // (the two windows load in an unspecified order).
+        if (!_tuningPushed)
+        {
+            ApplyTuning();
+        }
 
         OverlayReport report;
         try
@@ -277,6 +295,103 @@ public sealed partial class MainWindow : Window
 
     private static string FormatProgress(double progress, double angle)
         => $"Progress {progress:0.00} · Angle ≈ {angle:0.0}°（§6 示意映射）";
+
+    // ------------------------------------------------------------------
+    // M2.5 render tuning panel.
+    //
+    // The panel is the EDITOR and the renderer holds the last ACCEPTED
+    // snapshot. Every change builds a complete immutable WarpOptions /
+    // BlurOptions pair and hands it to CaptureRenderer.SetOptions, which
+    // validates all-or-nothing (DD-048). Nothing here touches
+    // ManualProvider: progress is lid input, these are how that progress is
+    // drawn.
+    // ------------------------------------------------------------------
+
+    // Guard for programmatic writes into the tuning widgets (reset / clamp
+    // write-backs), so they do not re-enter ApplyTuning and fight each other.
+    private bool _syncingTuning;
+
+    // The console and the overlay load in an unspecified order, so the first
+    // ApplyTuning can run before OverlayWindow has built its CaptureRenderer.
+    // Rather than guess, the 1 s refresh retries until the options have been
+    // pushed once - the widgets are the editor, so whatever they hold at that
+    // moment is what the renderer should start with.
+    private bool _tuningPushed;
+
+    private void OnTuningValueChanged(object sender, RangeBaseValueChangedEventArgs e)
+        => ApplyTuning();
+
+    private void OnTuningSelectionChanged(object sender, SelectionChangedEventArgs e)
+        => ApplyTuning();
+
+    private void OnResetTuning(object sender, RoutedEventArgs e)
+    {
+        _syncingTuning = true;
+        try
+        {
+            // Re-seed from the compiled-in defaults, never from a copy: if a
+            // default changes in DuoFlow.Render, "restore defaults" follows.
+            MaxFoldSlider.Value = WarpOptions.DefaultMaxFoldDegrees;
+            CameraSlider.Value = WarpOptions.DefaultCameraDistanceRatio;
+            MaxBlurSlider.Value = BlurOptions.DefaultMaxBlurPixels;
+            EnvelopeStartSlider.Value = BlurOptions.DefaultStartProgress;
+            EnvelopeFullSlider.Value = BlurOptions.DefaultFullProgress;
+            TiltCombo.SelectedIndex = 0;    // away
+            HingeCombo.SelectedIndex = 0;   // bottom
+        }
+        finally
+        {
+            _syncingTuning = false;
+        }
+        ApplyTuning();
+    }
+
+    private void ApplyTuning()
+    {
+        if (_syncingTuning || _overlay?.Renderer is not { } renderer)
+        {
+            return;   // renderer not built yet - Refresh() retries
+        }
+
+        // Keep the envelope coherent BEFORE building the options: a start at
+        // or past the full point is a UI state, not a render state - pushing
+        // it through would only get rejected and show an error for something
+        // the user did not mean. The write-back is guarded.
+        double start = EnvelopeStartSlider.Value;
+        double full = EnvelopeFullSlider.Value;
+        if (full <= start)
+        {
+            full = Math.Min(1.0, start + 0.01);
+            _syncingTuning = true;
+            try { EnvelopeFullSlider.Value = full; }
+            finally { _syncingTuning = false; }
+        }
+
+        var warp = new WarpOptions
+        {
+            MaxFoldDegrees = MaxFoldSlider.Value,
+            CameraDistanceRatio = CameraSlider.Value,
+            TiltAwayFromViewer = TiltCombo.SelectedIndex == 0,
+            HingeAtTop = HingeCombo.SelectedIndex == 1,
+        };
+        var blur = new BlurOptions
+        {
+            MaxBlurPixels = MaxBlurSlider.Value,
+            StartProgress = start,
+            FullProgress = full,
+        };
+
+        string? error = renderer.SetOptions(warp, blur);
+        if (error is null)
+        {
+            _tuningPushed = true;
+        }
+        TuningStatus.Text = error is null
+            ? $"生效：MaxFold {warp.MaxFoldDegrees:0}° · r {warp.CameraDistanceRatio:0.00} · " +
+              $"{(warp.TiltAwayFromViewer ? "away" : "toward")} · 铰链{(warp.HingeAtTop ? "顶" : "底")} · " +
+              $"maxBlur {blur.MaxBlurPixels:0}px · 包络 {blur.StartProgress:0.00}→{blur.FullProgress:0.00}"
+            : $"✗ 已拒绝（保持上一组生效值）：{error}";
+    }
 
     private string Format(OverlayReport r) =>
         $"Overlay 创建            {Mark(r.OverlayCreated)}\n" +

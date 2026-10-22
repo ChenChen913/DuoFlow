@@ -65,10 +65,13 @@ DuoFlow 是一个运行于 Windows 11 上的桌面视觉特效程序：
 1. 按[快速开始](#快速开始)构建并运行
 2. 拖动左下角控制台的进度滑块
 3. 整个桌面实时折叠：铰链处保持锐利明亮，远端逐渐磨砂化并沉入阴影
+4. 用下方「渲染参数」面板实时改折叠角度 / 相机距离 / 方向 / 铰链边 / 模糊与包络
 
 - 单元测试 63/63 通过（`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`）
 - 渲染采用物理景深模型：缝隙高度驱动磨砂半径与光衰减，mip 预过滤 + Vogel 螺旋采样
 - 透明度、点击穿透（click-through）、折叠几何均已真机验证
+- 真机量化验收脚本在 `scripts/acceptance/`：几何/光影方向/模糊方向/无滞回（9/9）、
+  P0 三件套、参数面板接线（9/9），退出码可直接判
 
 ## 快速开始
 
@@ -77,11 +80,19 @@ DuoFlow 是一个运行于 Windows 11 上的桌面视觉特效程序：
 ```powershell
 git clone https://github.com/ChenChen913/DuoFlow.git
 cd DuoFlow
+.\scripts\run.ps1          # 构建 + 启动（等价于下面两行）
+```
+
+手动构建与启动：
+
+```powershell
 dotnet build src/DuoFlow.App/DuoFlow.App.csproj -p:Platform=x64
 .\src\DuoFlow.App\bin\x64\Debug\net8.0-windows10.0.22621.0\DuoFlow.App.exe
 ```
 
-运行后拖动左下角控制台的滑块即可看到折叠效果；关闭控制台窗口即整体退出。
+运行后拖动左下角控制台的 **Manual Progress** 滑块即可看到折叠效果；下方「渲染参数」面板
+可以实时改折叠角度、相机距离、折叠方向、铰链边、最大模糊与模糊包络（「恢复默认」一键复位）。
+关闭控制台窗口即整体退出。
 
 ## 工作原理
 
@@ -169,7 +180,8 @@ DuoFlow/
 │   ├── DuoFlow.Core.Tests/     # xUnit 单元测试
 │   ├── DuoFlow.Capture/        # Windows Graphics Capture 与 D3D 互操作
 │   └── DuoFlow.Render/         # 折叠几何 / 渲染参数（纯 C#，可单测）
-├── scripts/                    # 环境准备 / 硬件探针
+├── scripts/                    # run.ps1（一键构建+启动）/ 环境准备 / 硬件探针
+│   └── acceptance/             # 真机量化验收（warp-selftest / P0 三件套 / 参数面板）
 ├── docs/                       # 规格 / 设计决策 / 路线图 / 硬件兼容性
 └── .github/workflows/          # Windows CI（构建 / 冒烟 / 单测）
 ```

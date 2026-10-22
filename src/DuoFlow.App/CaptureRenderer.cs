@@ -49,8 +49,21 @@ public sealed class CaptureRenderer : IDisposable
     private ID3D11ShaderResourceView? _latestFrameSrv;
     private ID3D11DeviceContext? _context;
     private WarpPipeline? _warp;
-    private readonly WarpOptions _warpOptions = new();
-    private readonly BlurOptions _blurOptions = new();
+
+    // M2.5: the tuning options are REPLACEABLE at runtime (the console's
+    // parameter panel swaps whole immutable instances). Both WarpOptions and
+    // BlurOptions are init-only, so a change means "build a new instance",
+    // never "mutate in place" - that is what makes the swap atomic with
+    // respect to a frame: RenderTick reads the fields ONCE into locals at the
+    // top of the fold branch, so a mid-frame swap cannot produce a frame
+    // stitched from two option sets.
+    //
+    // Threading: SetOptions is called from the UI thread (slider handlers)
+    // and RenderTick also runs on the UI thread (DispatcherQueueTimer), so
+    // there is nothing to lock. _renderGate guards the GPU resources shared
+    // with the capture thread, not these fields.
+    private WarpOptions _warpOptions = new();
+    private BlurOptions _blurOptions = new();
     private readonly object _renderGate = new();
     private DumpRequest? _pendingDumpRequest;
     private bool _sourceFrozen; // DD-045: true while the fold is on screen (capture frozen)
@@ -96,6 +109,53 @@ public sealed class CaptureRenderer : IDisposable
     /// <summary>M1.4 warp pipeline state, surfaced to the console/probe
     /// (informational; the real-machine checks are the visual authority).</summary>
     public string WarpState { get; private set; } = "starting";
+
+    /// <summary>
+    /// M2.5: replace the tuning options at runtime (console parameter panel).
+    /// MUST be called on the UI thread - the same thread as RenderTick.
+    ///
+    /// Validation happens HERE, not in the shader: an out-of-range value would
+    /// throw inside WarpGeometry.Compute on the render heartbeat, which is a
+    /// fire-and-forget timer tick - the exception would surface as a dead
+    /// overlay with no obvious cause. So the candidate is validated once and
+    /// rejected as a whole (all-or-nothing, no half-applied state).
+    /// </summary>
+    /// <returns>null on success, otherwise a human-readable rejection reason.</returns>
+    public string? SetOptions(WarpOptions warp, BlurOptions blur)
+    {
+        if (warp is null) { return "warp options null"; }
+        if (blur is null) { return "blur options null"; }
+
+        try
+        {
+            // Both validators are the ones the render path uses - call them
+            // with the same arguments the renderer would, at both sweep ends
+            // so a combination that only breaks at progress 1 is caught too.
+            WarpGeometry.Compute(0.0, warp);
+            WarpGeometry.Compute(1.0, warp);
+            blur.Validate();
+        }
+        catch (Exception ex)
+        {
+            Trace.Log($"tuning: REJECTED ({ex.GetType().Name}: {ex.Message})");
+            return ex.Message;
+        }
+
+        _warpOptions = warp;
+        _blurOptions = blur;
+
+        // Trace the DERIVED geometry, not just the inputs: the acceptance
+        // check greps M00 at full fold, which is r*cos(MaxFoldDegrees) - the
+        // one number that proves the panel actually reached the render math
+        // (and not just the UI). 60 deg / r=2.5 -> M00=1.2500.
+        WarpFrame atFull = WarpGeometry.Compute(1.0, warp);
+        Trace.Log($"tuning: warp maxFold={warp.MaxFoldDegrees:0.0} r={warp.CameraDistanceRatio:0.00} " +
+                  $"tiltAway={warp.TiltAwayFromViewer} hingeTop={warp.HingeAtTop} feather={warp.EdgeFeather:0.0000} " +
+                  $"-> frame@1.0 M00={atFull.M00:0.0000} M11={atFull.M11:0.0000} M21={atFull.M21:0.0000} " +
+                  $"farEdgeY={atFull.FarEdgeY:0.0000}");
+        Trace.Log($"tuning: blur max={blur.MaxBlurPixels:0.0} start={blur.StartProgress:0.00} full={blur.FullProgress:0.00}");
+        return null;
+    }
 
     private sealed class DumpRequest
     {
@@ -334,7 +394,12 @@ public sealed class CaptureRenderer : IDisposable
                 // (DD-002/DD-038); the clock serializes the UI thread's
                 // Update() against this thread.
                 LidState state = clock.Tick();
-                WarpFrame frame = WarpGeometry.Compute(state.Progress, _warpOptions);
+
+                // Read the tuning options ONCE per frame (see the field
+                // comment): a swap mid-frame can then never mix two sets.
+                WarpOptions warpOptions = _warpOptions;
+                BlurOptions blurOptions = _blurOptions;
+                WarpFrame frame = WarpGeometry.Compute(state.Progress, warpOptions);
 
                 // M1.8 feedback kill (DD-045): the fullscreen capture contains
                 // our own previous output - sampling it while the effect is
@@ -355,8 +420,8 @@ public sealed class CaptureRenderer : IDisposable
                 double fadeOpacity =
                     Math.Clamp(state.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
                 warp.Render(_context, _latestFrame, frame,
-                    _blurOptions.MaxBlurPixels * _qualityScale,
-                    _blurOptions.IntensityAt(state.Progress), fadeOpacity);
+                    blurOptions.MaxBlurPixels * _qualityScale,
+                    blurOptions.IntensityAt(state.Progress), fadeOpacity);
             }
             else
             {

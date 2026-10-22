@@ -58,9 +58,9 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 3 — M2 Visual Refinement**（M1 ✅；执行顺序 M2.0→M2.5→M2.4→M2.1→M2.2→M2.3） |
-| 当前小任务 | **M2.5 参数面板**（M2.0 已完成 ✅ 2026-10-22） |
+| 当前小任务 | **M2.4 Demo Mode**（M2.0 ✅、M2.5 ✅ 2026-10-22） |
 | 阻塞项 | 无阻塞。DD-045 源冻结经用户真机确认"没问题"，M2 不再为它留工期（需要时可插队） |
-| 最后更新 | 2026-10-22 · M2.0 验收基线补齐（光影/模糊方向断言 + P0 脚本入库），真机 9/9 全绿 · 八弟 |
+| 最后更新 | 2026-10-22 · M2.5 参数面板（运行时替换 + 面板 + run.ps1），真机 9/9 全绿 · 八弟 |
 
 ---
 
@@ -71,7 +71,7 @@
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
 | Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ✅ 已完成（M0.1-M0.3 云端；M0.4 真机实测 2026-09-16 回填） |
 | Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ✅ 已完成（M1.1-M1.8；Mask/Blur/Dim 三件套随后被 DD-046 物理景深模型取代） |
-| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅） |
+| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅ · M2.5 ✅） |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
 | Phase 5 | M4 | Sensor Provider：传感器接入 / Provider Manager | ⬜ |
 | Phase 6 | M5 | Windows Integration：电源事件 / 开合动画 / 开机自启 | ⬜ |
@@ -323,13 +323,43 @@
 
 上行与下行逐档同值（`quadTop` 差 0 px、`depth` 差 0.000）→ 无滞回。`OVERALL: True`、退出码 0。
 
-#### M2.5 Parameter Panel（轻量版）
+#### M2.5 Parameter Panel（轻量版）✅ 2026-10-22
 
-* [ ] `WarpOptions` / `BlurOptions` 支持运行时替换（CaptureRenderer 持有可变引用）
-* [ ] 控制台加「参数」面板：折叠角度 (0~90)、相机距离 (1~6)、方向 (away/toward)、铰链边 (bottom/top)、最大模糊 (0~400)、包络起止 (0~1)
-* [ ] 改值即时生效（同一 UI 线程读写，无锁）；「恢复默认」按钮
-* [ ] `scripts/run.ps1` 一键构建 + 启动
+* [x] `WarpOptions` / `BlurOptions` 支持运行时替换（CaptureRenderer 持有可变引用）
+* [x] 控制台加「参数」面板：折叠角度 (0~90)、相机距离 (1~6)、方向 (away/toward)、铰链边 (bottom/top)、最大模糊 (0~400)、包络起止 (0~1)
+* [x] 改值即时生效（同一 UI 线程读写，无锁）；「恢复默认」按钮
+* [x] `scripts/run.ps1` 一键构建 + 启动
 * **验收**：UIAutomation 改旋钮 → trace 记录新值 → 画面几何随之变化（selftest 复跑 quadTop 随 MaxFold 变）
+
+**实施记录**
+
+- 决策口径见 **DD-048**：面板只写渲染配置，不碰输入链路（DD-002 语义不变）；选项按
+  不可变实例**整体替换**，`RenderTick` 在折叠分支开头把两个字段读进局部变量，
+  帧内不可能出现"一半新一半旧"；校验在 UI 侧、**整对拒绝并显示原因**
+  （渲染异常会发生在 30ms 定时器回调里，表现为"覆盖层忽然不动了"，没有因果链）。
+- 可测性设计：`SetOptions` 把**派生几何**写进 trace（`frame@1.0 M00=...`）。
+  `M00 = r·cos(MaxFold)` 是唯一能证明"旋钮走到了渲染数学"而不是只改了 UI 的数字。
+- 控制台宽度**刻意保持 580**：`overlay-p0-verify.ps1` 把白色参考窗放在屏宽 35%（1920 上 x=672），
+  控制台是 TOPMOST——加宽会静默遮住参考窗、让透明测试失效。高度改为按工作区自适应（上限 960）。
+- `ProgressSlider` 补 `AutomationId`：面板加了 6 个 Slider 之后"子树里第一个 Slider"
+  不再可靠，`overlay-p0-verify.ps1` 已改为按 `AutomationId` 查找（保留旧查找作为回退）。
+
+**验收证据**：新增 `scripts/acceptance/tuning-panel-verify.ps1`（9 步，UIAutomation 驱动 + 读 trace），
+真机 **9/9 PASS、退出码 0**：
+
+| 步骤 | 期望 | 实测 |
+|---|---|---|
+| 面板初始推送 | maxFold=90 r=2.50 away bottom M00=0.0000 | 一致 |
+| MaxFold 90→60 | M00=1.2500 | `M00=1.2500` |
+| r 2.5→4.0 | M00=2.0000 | `M00=2.0000` |
+| 方向 away→toward | M21=+0.8660（符号翻转） | `M21=0.8660` |
+| 铰链 底→顶 | hingeTop=True | 一致 |
+| maxBlur 160→80 | blur max=80.0 | 一致 |
+| 包络起点 0.80（满值仍 0.60） | 自动抬到 full=0.81 | `start=0.80 full=0.81` |
+| 恢复默认 | 全部回默认 | warp + blur 两项均一致 |
+
+同轮 smoke 探针：`WarpState=active`、`Capture=running`、`RenderFrameMs=0.11`、`QualityScale=1`、
+七项窗口属性全 True、`HitTest.Pass=True`、`Warnings=[]`。
 
 #### M2.4 Demo Mode
 
@@ -424,6 +454,35 @@
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-10-22 · M2.5 参数面板（运行时替换 + 面板 + run.ps1） · 八弟
+
+- **背景**：M2.3 视觉调优的主工作量是"改默认值 → 构建 → 启动 → 拖滑块 → 看"。
+  `WarpOptions`/`BlurOptions` 是 `init`-only，构造后无法改，控制台也没有入口传进渲染层。
+- **DD-048 划边界**：面板只写**渲染配置**，不碰输入链路——`Progress` 仍走
+  `ManualProvider → AnimationEngine → WarpGeometry`。选项按不可变实例**整体替换**，
+  `RenderTick` 在折叠分支开头把两个字段读进局部变量，帧内不可能出现混合参数组合。
+- **校验在 UI 侧、整对拒绝**：非法组合会让 `WarpGeometry.Compute` 在 30ms 定时器回调里抛异常，
+  表现为"覆盖层忽然不动了"，没有因果链。`SetOptions` 先用 `Compute(0)`/`Compute(1)` +
+  `BlurOptions.Validate()` 验一遍，失败则整对拒绝并返回原因，上一组继续生效，控制台显示原因。
+- **可测性**：`SetOptions` 把**派生几何**写进 trace（`frame@1.0 M00=...`）。`M00 = r·cos(MaxFold)`
+  是唯一能证明旋钮走到渲染数学而不是只改 UI 的数字。
+- **面板**：折叠角度 1~90 / 相机距离 1.1~6 / 方向 away·toward / 铰链边 bottom·top /
+  最大模糊 1~400 / 包络起止 0~1 + 恢复默认。控制台高度按工作区自适应（上限 960），
+  **宽度刻意保持 580**——`overlay-p0-verify.ps1` 的白色参考窗在屏宽 35%（x=672），
+  控制台 TOPMOST，加宽会静默遮住参考窗、让透明测试失效。
+- **`ProgressSlider` 补 `AutomationId`**：面板加了 6 个 Slider 后"子树里第一个 Slider"
+  不再可靠，`overlay-p0-verify.ps1` 改为按 AutomationId 查找（旧查找保留为回退）。
+- **`scripts/run.ps1`**：一键构建 + 启动（`-NoBuild` / `-Smoke` / `-SelfTest` / `-Configuration`）。
+- **新增 `scripts/acceptance/tuning-panel-verify.ps1`**：9 步 UIAutomation 驱动 + 读 trace 断言。
+  真机 **9/9 PASS、退出码 0**：M00 在 90°→0.0000、60°/r2.5→1.2500、60°/r4.0→2.0000，
+  toward 后 M21 翻正为 0.8660，包络起点 0.80 自动把满值抬到 0.81，恢复默认全项复位。
+- **踩到的坑**：WinUI ComboBox 的 popup 是**独立的 UIA 子树**，从 ComboBox 元素往下找不到
+  ListItem——必须从桌面根节点搜；而且"Select 调用成功"不等于"选择真的变了"，
+  脚本现在读 `SelectionPattern` 前后比对，选择没变就直接报错（否则只会看到一个莫名的 timeout）。
+- **同轮回归**：单测 63/63；smoke 探针 `WarpState=active`、`RenderFrameMs=0.11`、`QualityScale=1`、
+  七项窗口属性全 True、`Warnings=[]`。
+
 
 ### 2026-10-22 · M2.0 验收基线补齐（光影方向 / 模糊方向断言 + P0 脚本入库） · 八弟
 
