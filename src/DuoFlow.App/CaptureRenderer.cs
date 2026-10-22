@@ -65,6 +65,7 @@ public sealed class CaptureRenderer : IDisposable
     private WarpOptions _warpOptions = new();
     private BlurOptions _blurOptions = new();
     private GradientOptions _gradientOptions = new();
+    private LightSweepOptions _sweepOptions = new();
     private readonly object _renderGate = new();
     private DumpRequest? _pendingDumpRequest;
     private bool _sourceFrozen; // DD-045: true while the fold is on screen (capture frozen)
@@ -122,11 +123,13 @@ public sealed class CaptureRenderer : IDisposable
     /// rejected as a whole (all-or-nothing, no half-applied state).
     /// </summary>
     /// <returns>null on success, otherwise a human-readable rejection reason.</returns>
-    public string? SetOptions(WarpOptions warp, BlurOptions blur, GradientOptions gradient)
+    public string? SetOptions(WarpOptions warp, BlurOptions blur, GradientOptions gradient,
+        LightSweepOptions sweep)
     {
         if (warp is null) { return "warp options null"; }
         if (blur is null) { return "blur options null"; }
         if (gradient is null) { return "gradient options null"; }
+        if (sweep is null) { return "sweep options null"; }
 
         try
         {
@@ -137,6 +140,7 @@ public sealed class CaptureRenderer : IDisposable
             WarpGeometry.Compute(1.0, warp);
             blur.Validate();
             gradient.Validate();
+            sweep.Validate();
         }
         catch (Exception ex)
         {
@@ -147,6 +151,7 @@ public sealed class CaptureRenderer : IDisposable
         _warpOptions = warp;
         _blurOptions = blur;
         _gradientOptions = gradient;
+        _sweepOptions = sweep;
 
         // Trace the DERIVED geometry, not just the inputs: the acceptance
         // check greps M00 at full fold, which is r*cos(MaxFoldDegrees) - the
@@ -160,6 +165,12 @@ public sealed class CaptureRenderer : IDisposable
         Trace.Log($"tuning: blur max={blur.MaxBlurPixels:0.0} start={blur.StartProgress:0.00} full={blur.FullProgress:0.00}");
         Trace.Log($"tuning: gradient enabled={gradient.Enabled} strength={gradient.EffectiveStrength:0.000} " +
                   $"hue={gradient.HueStartDegrees:0}->{gradient.HueEndDegrees:0}");
+        // The centre is traced at p=0.5 as well as the raw knobs: a panel that
+        // moves the slider without the model following would keep centre=0.500
+        // for every Position, which is exactly the failure this line catches.
+        Trace.Log($"tuning: sweep enabled={sweep.Enabled} strength={sweep.EffectiveStrength:0.000} " +
+                  $"width={sweep.Width:0.00} pos={sweep.Position:0.00} dir={sweep.Direction} " +
+                  $"centre@p0.5={sweep.CenterAt(0.5):0.0000}");
         return null;
     }
 
@@ -406,6 +417,7 @@ public sealed class CaptureRenderer : IDisposable
                 WarpOptions warpOptions = _warpOptions;
                 BlurOptions blurOptions = _blurOptions;
                 GradientOptions gradientOptions = _gradientOptions;
+                LightSweepOptions sweepOptions = _sweepOptions;
                 WarpFrame frame = WarpGeometry.Compute(state.Progress, warpOptions);
 
                 // M1.8 feedback kill (DD-045): the fullscreen capture contains
@@ -428,8 +440,8 @@ public sealed class CaptureRenderer : IDisposable
                     Math.Clamp(state.Progress / FadeInRange, 0.0, 1.0) * GlobalOpacity;
                 warp.Render(_context, _latestFrame, frame,
                     blurOptions.MaxBlurPixels * _qualityScale,
-                    blurOptions.IntensityAt(state.Progress), fadeOpacity,
-                    gradientOptions);
+                    blurOptions.IntensityAt(state.Progress), fadeOpacity, state.Progress,
+                    gradientOptions, sweepOptions);
             }
             else
             {

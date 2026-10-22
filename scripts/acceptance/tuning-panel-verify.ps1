@@ -21,13 +21,16 @@
 # mechanism behind "disabled == no-op" - see warp-selftest for the pixel
 # level proof.
 #
+# The sweep steps (M2.2) go one further and assert the DERIVED band centre:/n# centre@p0.5 is traced, so a panel that moves the Position slider without the
+# model following would keep reporting 0.5000 for every position. Measured:/n# pos 0.00 -> 0.5000, pos 0.30 -> 0.8000, FarToHinge + pos 0.30 -> 0.2000.
+#
 # USAGE (Windows PowerShell 5.1, no admin, interactive desktop):
 #   .\scripts/acceptance\tuning-panel-verify.ps1
 #   .\scripts\acceptance\tuning-panel-verify.ps1 -OutputDir D:\tmp\tune
 #
 # OUTPUT: tuning-panel-verify.txt (log) + tuning-panel-result.json
 # EXIT CODE: 0 = every step matched, 1 = at least one did not.
-# NOTE: ~60 s. It does NOT move the mouse (UIAutomation only), but the app
+# NOTE: ~75 s. It does NOT move the mouse (UIAutomation only), but the app
 # takes over the screen with a fullscreen overlay while it runs.
 # =====================================================================
 
@@ -315,7 +318,61 @@ try {
 }
 
 # ---------------------------------------------------------------------
-# Step 11: 恢复默认 puts every knob back
+# Step 11: light sweep (M2.2). Same shape as the gradient block: strength is
+# set FIRST while the pass is off, because the contract is that the trace
+# reports strength=0.000 anyway (EffectiveStrength collapses to exactly 0).
+# ---------------------------------------------------------------------
+[void](Set-Slider 'SweepStrengthSlider' 0.15)
+$m = Wait-Trace 'tuning: sweep enabled=False strength=([\d.]+)'
+Check "sweep off ignores strength" ($m.Success -and $m.Groups[1].Value -eq '0.000') "enabled=False strength=0.000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+
+# ---------------------------------------------------------------------
+# Step 12: enable -> 0.15 reaches the shader; centre at p=0.5 is 0.5000
+# (Position 0, HingeToFar: the band sits exactly where progress puts it)
+# ---------------------------------------------------------------------
+try {
+    [void](Set-Check 'SweepCheck' $true)
+    $m = Wait-Trace 'tuning: sweep enabled=True strength=0\.150 width=([\d.]+) pos=([\d.]+) dir=(\w+) centre@p0\.5=([\d.]+)'
+    Check "sweep on -> strength + centre" ($m.Success -and $m.Groups[4].Value -eq '0.5000') "enabled=True strength=0.150 centre@p0.5=0.5000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+} catch {
+    Check "sweep on -> strength + centre" $false "enabled=True strength=0.150 centre@p0.5=0.5000" $_.Exception.Message
+}
+
+# ---------------------------------------------------------------------
+# Step 13: Position 0 -> 0.30 runs the band AHEAD: centre = 0.5 + 0.3 = 0.8000
+# ---------------------------------------------------------------------
+[void](Set-Slider 'SweepPositionSlider' 0.30)
+$m = Wait-Trace 'tuning: sweep enabled=True strength=0\.150 width=[\d.]+ pos=0\.30 dir=(\w+) centre@p0\.5=([\d.]+)'
+Check "sweep position 0.30" ($m.Success -and $m.Groups[2].Value -eq '0.8000') "centre@p0.5=0.8000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+
+# ---------------------------------------------------------------------
+# Step 14: FarToHinge mirrors it: centre = 1 - 0.8 = 0.2000
+# ---------------------------------------------------------------------
+try {
+    Select-Combo 'SweepDirectionCombo' '远端'
+    # The pattern must name the EXPECTED direction. Without it, the regex
+    # matches the previous line (which is still in this run's trace tail) and
+    # the step "passes" against a stale value - the same trap as reading
+    # $Matches twice.
+    $m = Wait-Trace 'tuning: sweep enabled=True strength=0\.150 width=[\d.]+ pos=0\.30 dir=FarToHinge centre@p0\.5=([\d.]+)'
+    Check "sweep direction far->hinge" ($m.Success -and $m.Groups[1].Value -eq '0.2000') "dir=FarToHinge centre@p0.5=0.2000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+} catch {
+    Check "sweep direction far->hinge" $false "dir=FarToHinge centre@p0.5=0.2000" $_.Exception.Message
+}
+
+# ---------------------------------------------------------------------
+# Step 15: disable again -> back to a bit-exact no-op
+# ---------------------------------------------------------------------
+try {
+    [void](Set-Check 'SweepCheck' $false)
+    $m = Wait-Trace 'tuning: sweep enabled=False strength=0\.000'
+    Check "sweep off again" $m.Success "enabled=False strength=0.000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+} catch {
+    Check "sweep off again" $false "enabled=False strength=0.000" $_.Exception.Message
+}
+
+# ---------------------------------------------------------------------
+# Step 16: 恢复默认 puts every knob back
 # ---------------------------------------------------------------------
 $btn = Find-ById 'ResetTuningButton'
 if ($btn) {
@@ -330,11 +387,16 @@ $m = Wait-Trace 'tuning: blur max=160\.0 start=0\.30 full=0\.60'
 Check "reset -> blur defaults" $m.Success "max=160 start=0.30 full=0.60" $(if ($m.Success) { $m.Value } else { "<timeout>" })
 $m = Wait-Trace 'tuning: gradient enabled=False strength=0\.000 hue=205->275'
 Check "reset -> gradient defaults" $m.Success "enabled=False strength=0.000 hue=205->275" $(if ($m.Success) { $m.Value } else { "<timeout>" })
+$m = Wait-Trace 'tuning: sweep enabled=False strength=0\.000 width=0\.10 pos=0\.00 dir=HingeToFar centre@p0\.5=0\.5000'
+Check "reset -> sweep defaults" $m.Success "enabled=False width=0.10 pos=0.00 HingeToFar centre=0.5000" $(if ($m.Success) { $m.Value } else { "<timeout>" })
 
 # ---------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------
-$failed = ($steps | Where-Object { -not $_.Pass }).Count
+# Wrap in @(): with exactly one match, Where-Object returns the object itself,
+# and .Count on an ordered dictionary is the number of KEYS (4) - which is how
+# "1 failed" once printed as "4 of 20 failed".
+$failed = @($steps | Where-Object { -not $_.Pass }).Count
 $overall = ($failed -eq 0)
 Log ""
 Log ("OVERALL = " + $(if ($overall) { "PASS ($($steps.Count)/$($steps.Count))" } else { "FAIL ($failed of $($steps.Count) failed)" }))

@@ -249,7 +249,10 @@ Check "pause freezes progress" ([math]::Abs($p2 - $p1) -le 0.02) ("{0} -> {1}" -
 # ---------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------
-$failed = ($steps | Where-Object { -not $_.Pass }).Count
+# Wrap in @(): with exactly one match, Where-Object returns the object
+# itself, and .Count on an ordered dictionary is the number of KEYS (4) -
+# which is how "1 failed" once printed as "4 of 20 failed".
+$failed = @($steps | Where-Object { -not $_.Pass }).Count
 $overall = ($failed -eq 0)
 Log ""
 Log ("OVERALL = " + $(if ($overall) { "PASS ($($steps.Count)/$($steps.Count))" } else { "FAIL ($failed of $($steps.Count) failed)" }))

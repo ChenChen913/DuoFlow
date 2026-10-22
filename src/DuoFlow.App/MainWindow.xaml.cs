@@ -48,11 +48,20 @@ public sealed partial class MainWindow : Window
     // DispatcherQueue, which is only meaningful once the window exists.
     private DemoPlayer? _demo;
 
-    public MainWindow(OverlayWindow? overlay, bool smoke)
+    public MainWindow(OverlayWindow? overlay, bool smoke, bool lightSweep = false)
     {
         _overlay = overlay;
         _smoke = smoke;
         InitializeComponent();
+
+        // M2.2 acceptance hook (--light-sweep): start with the sweep on so
+        // warp-selftest can measure the band without a temporary source edit.
+        // The PANEL stays the authority (DD-048) - this only seeds its initial
+        // state, exactly like a user ticking the box.
+        if (lightSweep)
+        {
+            SweepCheck.IsChecked = true;
+        }
 
         // M1.2 wiring: StartAsync emits the baseline state (Progress = 0)
         // synchronously, which initializes the display below. Fire-and-forget
@@ -422,6 +431,11 @@ public sealed partial class MainWindow : Window
             HueStartSlider.Value = GradientOptions.DefaultHueStartDegrees;
             HueEndSlider.Value = GradientOptions.DefaultHueEndDegrees;
             GradientStrengthSlider.Value = 0.0;
+            SweepCheck.IsChecked = false;
+            SweepPositionSlider.Value = LightSweepOptions.DefaultPosition;
+            SweepWidthSlider.Value = LightSweepOptions.DefaultWidth;
+            SweepStrengthSlider.Value = LightSweepOptions.DefaultStrength;
+            SweepDirectionCombo.SelectedIndex = 0;   // hinge -> far
         }
         finally
         {
@@ -471,8 +485,18 @@ public sealed partial class MainWindow : Window
             HueEndDegrees = HueEndSlider.Value,
             Strength = GradientStrengthSlider.Value,
         };
+        var sweep = new LightSweepOptions
+        {
+            Enabled = SweepCheck.IsChecked == true,
+            Position = SweepPositionSlider.Value,
+            Width = SweepWidthSlider.Value,
+            Strength = SweepStrengthSlider.Value,
+            Direction = SweepDirectionCombo.SelectedIndex == 1
+                ? SweepDirection.FarToHinge
+                : SweepDirection.HingeToFar,
+        };
 
-        string? error = renderer.SetOptions(warp, blur, gradient);
+        string? error = renderer.SetOptions(warp, blur, gradient, sweep);
         if (error is null)
         {
             _tuningPushed = true;
@@ -481,7 +505,8 @@ public sealed partial class MainWindow : Window
             ? $"生效：MaxFold {warp.MaxFoldDegrees:0}° · r {warp.CameraDistanceRatio:0.00} · " +
               $"{(warp.TiltAwayFromViewer ? "away" : "toward")} · 铰链{(warp.HingeAtTop ? "顶" : "底")} · " +
               $"maxBlur {blur.MaxBlurPixels:0}px · 包络 {blur.StartProgress:0.00}→{blur.FullProgress:0.00} · " +
-              $"渐变 {(gradient.Enabled ? $"开 {gradient.Strength:0.00}" : "关")}"
+              $"渐变 {(gradient.Enabled ? $"开 {gradient.Strength:0.00}" : "关")} · " +
+              $"光带 {(sweep.Enabled ? $"开 {sweep.Strength:0.00} w{sweep.Width:0.00}" : "关")}"
             : $"✗ 已拒绝（保持上一组生效值）：{error}";
     }
 

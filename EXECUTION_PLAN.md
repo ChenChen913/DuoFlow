@@ -58,9 +58,9 @@
 | 项目 | 状态 |
 | --- | --- |
 | 当前 Phase | **Phase 3 — M2 Visual Refinement**（M1 ✅；执行顺序 M2.0→M2.5→M2.4→M2.1→M2.2→M2.3） |
-| 当前小任务 | **M2.2 Light Sweep**（M2.0 ✅、M2.5 ✅、M2.4 ✅、M2.1 ✅ 2026-10-22） |
+| 当前小任务 | **M2.3 Visual Tuning**（M2.0 ✅、M2.5 ✅、M2.4 ✅、M2.1 ✅、M2.2 ✅ 2026-10-22） |
 | 阻塞项 | 无阻塞。DD-045 源冻结经用户真机确认"没问题"，M2 不再为它留工期（需要时可插队） |
-| 最后更新 | 2026-10-22 · M2.1 渐变色相（寄生在阴影上的 `(1-light)` 加权 + 三轮 A/B 证明关闭态 no-op），真机 14/14 全绿 · 八弟 |
+| 最后更新 | 2026-10-22 · M2.2 光带（剩余空间归一化的中性高光 + 位置量化验收），真机 14/14 + 面板 20/20 全绿 · 八弟 |
 
 ---
 
@@ -71,7 +71,7 @@
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
 | Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ✅ 已完成（M0.1-M0.3 云端；M0.4 真机实测 2026-09-16 回填） |
 | Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ✅ 已完成（M1.1-M1.8；Mask/Blur/Dim 三件套随后被 DD-046 物理景深模型取代） |
-| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅ · M2.5 ✅ · M2.4 ✅ · M2.1 ✅） |
+| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅ · M2.5 ✅ · M2.4 ✅ · M2.1 ✅ · M2.2 ✅） |
 | Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
 | Phase 5 | M4 | Sensor Provider：传感器接入 / Provider Manager | ⬜ |
 | Phase 6 | M5 | Windows Integration：电源事件 / 开合动画 / 开机自启 | ⬜ |
@@ -444,12 +444,63 @@ Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）
 **验收结果**：单测 79/79（含新增 16 条）；构建 0 warning 0 error；
 `warp-selftest` 9/9 通过（exit 0）；`tuning-panel-verify` **14/14 通过**（新增 4 步渐变断言，exit 0）。
 
-#### M2.2 Light Sweep
+#### M2.2 Light Sweep ✅ 2026-10-22
 
-* [ ] `LightSweepOptions`（Enabled / 位置 / 宽度 / 强度 / 方向），默认强度 0.08（spec 建议 0.05~0.15）
-* [ ] shader：沿铰链法线方向的窄高斯亮带，位置随 Progress 从铰链扫向远端
-* [ ] 面板加 Light Sweep 旋钮
+* [x] `LightSweepOptions`（Enabled / 位置 / 宽度 / 强度 / 方向），默认强度 0.08（spec 建议 0.05~0.15）
+* [x] shader：沿铰链法线方向的窄高斯亮带，位置随 Progress 从铰链扫向远端
+* [x] 面板加 Light Sweep 旋钮
 * **验收**：单测（宽度/强度边界、p=0 恒等）；关闭时无差；开启时峰值增量 ≤ 强度上限
+
+**实现记录**
+
+1. **`DuoFlow.Render/LightSweepOptions.cs`（新）**：`Enabled` 默认 false，`Strength` 0.08，
+   `Width` 0.10（**半高全宽 FWHM**，不是 sigma——调参的人想的是"多宽"），`Position` 0，
+   `Direction` HingeToFar。`CenterAt(progress)` 是纯函数：`saturate(p + Position)`，
+   FarToHinge 取 `1 - 上式`。`Evaluate(sy, p)` 是纯高斯，因此"FWHM 真的是 FWHM"
+   可以直接断言（中心两侧 `Width/2` 处必须正好是 0.5）。
+2. **`shaders/DuoWarp.hlsl`**：cbuffer 11 → 12 个 `float4`（192 字节），加 `SweepParams`
+   （中心 / `1/(2σ²)` / 强度 / **强度上限**）。保护用**剩余空间归一化**而不是乘法保护
+   （理由与量级见 **DD-050**：照搬渐变的 `(1-light)` 会让折叠前半段只有 2/255，等于没有）。
+   乘 `PhysicsParams.y`，与模糊包络同源。
+3. **`WarpPipeline.Render(..., progress, gradient, sweep)`**：新增 `progress` 参数——
+   `CenterAt` 需要原始 progress，从 `M00/M11` 反解 φ 也能得到，但换了 `MaxFoldDegrees`
+   就会悄悄算错。
+4. **`CaptureRenderer.SetOptions(warp, blur, gradient, sweep)`**：四个选项一起校验、一起替换；
+   trace 里多一行 `tuning: sweep ... centre@p0.5=...`（派生量，不是输入量）。
+5. **面板**：`SweepCheck` / `SweepPositionSlider` / `SweepWidthSlider` / `SweepStrengthSlider` /
+   `SweepDirectionCombo`，`OnResetTuning` 一并复位。
+6. **`--light-sweep` 启动参数**：把面板初始状态种成"开"，供验收脚本测量；
+   面板仍是权威（DD-048）。
+7. **单测 17 条**（`LightSweepOptionsTests.cs`）：默认关闭、关闭时精确 0.0、0.2 上限钳制、
+   `CenterAt` 单调/夹紧/NaN 降级/双向、`Width` 真的是 FWHM（±Width/2 处 = 0.5）、
+   窄带宽度的峰值更高、**p=0 交付强度精确为 0**（与 `BlurOptions.IntensityAt(0)` 的
+   跨模块恒等式）、`Validate` 四类拒绝、宽度极值下 σ 与指数因子有限。
+
+**真机证据（2026-10-22）**
+
+`scripts/acceptance/light-sweep-verify.ps1` 三轮（off1 / off2 / on，同一二进制）：
+
+| p | 噪声底 | 峰值增量 | 实测行 | 预测行 | 行误差 |
+|---|---|---|---|---|---|
+| 0.25 | 0.000 | 0.00（包络未开，**无光带** ✓） | — | — | — |
+| 0.50 | 0.000 | 13.39 | 746 | 741.3 | 4.7（容差 44）|
+| 0.75 | 0.010 | 20.60 | 833 | 832.6 | 0.4（容差 19）|
+
+峰值上限 = 0.08 × 255 = 20.4，实测 20.60（含 0.09 的测量噪声）。
+
+**关闭态 no-op**（同一二进制、只换 `shaders/DuoWarp.hlsl`）：
+
+| 比对 | 变量 | 行剖面最大差（0–255） | 逐位相同档位 |
+|---|---|---|---|
+| off1 vs off2 | 同一份 shader，两轮 | 0.0080 | 3/9 |
+| off1 vs m21 | pre-M2.2 shader vs M2.2，光带关闭 | 0.0087 | 3/9 |
+| off1 vs on | 光带开启 | 20.60 | — |
+
+即"新旧 shader 关闭态差异"与"同一份代码跑两遍"同级，真实信号是噪声的 **2500 倍**。
+
+**验收结果**：单测 96/96（含新增 17 条）；构建 0 warning 0 error；
+`light-sweep-verify` **14/14**（exit 0）；`tuning-panel-verify` **20/20**（新增 6 步，exit 0）；
+`warp-selftest` 9/9（关闭态，exit 0）。
 
 #### M2.3 Visual Tuning
 
@@ -543,6 +594,35 @@ Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）
   合盖 `1 0.79 0.53 0.32 0.11 0`；循环 `max=1 min=0` 且 `rose/fell` 都为真
   （样本 `0→1→0.07→0.28→1→0.01`）；暂停 `0.6075 → 0.6075`。
 - **回归**：单测 63/63。
+
+
+### 2026-10-22 · M2.2 光带扫过（剩余空间归一化 + 位置量化验收） · 八弟
+
+- **背景**：要在折叠上叠一条沿铰链法线的窄高斯亮带，随 Progress 从铰链扫向远端。
+- **先算量级再动手**：光带中心 = progress，所以折叠前半段它落在**还很亮**的表面上。
+  照搬 M2.1 渐变的 `(1 - light)` 保护，p=0.5 处只有 `0.08 × 0.20 × 255 ≈ 2/255`——
+  和抖动同级，用户看到的是"前半程没反应，后半程突然出现一条线"。
+- **DD-050 定口径**：改用**剩余空间归一化** `headroom = saturate((1 - maxChannel) / 强度上限)`。
+  因为 `gain ≤ 上限`，所以 `gain × headroom ≤ 1 − maxChannel`，叠加后**必然不裁切**；
+  "峰值增量 ≤ 强度上限"成了这一行的推论而不是另外加的钳制。用最大通道而不是亮度做保护，
+  色相不被推偏。实测 p=0.5 从 2/255 提升到 **13.4/255**。
+- **上限传给着色器**：`SweepParams.w` 就是 `MaxStrengthLimit`，HLSL 里不重复写 0.2，
+  避免与 C# 常量漂移。
+- **宽度用 FWHM 而不是 sigma**：调参的人想的是"亮带多宽"。代价是要在单测里真的断言
+  `±Width/2` 处权重 = 0.5——这条断言是"这个旋钮有意义"的证明。
+- **`CenterAt(progress)` 做成纯函数**：于是"随 Progress 从铰链扫到远端"变成可单测的陈述。
+  面板 trace 里额外打 `centre@p0.5`，因为只打输入量的话，"滑条动了但模型没跟上"会看不出来。
+- **验收脚本踩的坑（都已修）**：
+  1. `Get-DumpSize` 里第二次 `-match` 覆盖了 `$Matches` → 尺寸读成 0×0，全程"无 quad"；
+  2. 尺寸读坏之后脚本仍报 `PASS (0/0)` —— 加了"零项检查即失败"的护栏，这正是本项目
+     反复防的假阳性；
+  3. 方向那步的正则能匹配到**上一行**（trace 尾部还留着），于是拿旧值"通过"；
+  4. `($steps | Where-Object ...).Count` 在只匹配一项时取到的是**字典键数 4**，
+     把"1 项失败"打印成"4 of 20 失败"。三处脚本都改成 `@(...)`。
+- **采样带收窄**：42% 处蹭到屏幕上一个偶发亮斑（21 px），足以把行剖面推动 1.6 单位——
+  和要测的信号同量级。光带脚本改用 46% 起，噪声底从 1.57 降到 **0.006**。
+- **回归**：单测 96/96（新增 17 条）；构建 0 warning 0 error；
+  `light-sweep-verify` 14/14、`tuning-panel-verify` 20/20、`warp-selftest` 9/9，全部 exit 0。
 
 
 ### 2026-10-22 · M2.1 渐变色相（寄生在阴影上 + 三轮 A/B 证明关闭态 no-op） · 八弟

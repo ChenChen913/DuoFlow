@@ -249,6 +249,54 @@
                 Foreground="#666666"
                 TextWrapping="Wrap"
                 Text="改值即时生效（同一 UI 线程，无锁）。越界组合会被整体拒绝并在上面显示原因，不会半途生效。" />
+
+            <TextBlock
+                FontSize="13.5"
+                FontWeight="SemiBold"
+                Margin="0,6,0,0"
+                Text="光带扫过（M2.2）" />
+            <CheckBox
+                x:Name="SweepCheck"
+                AutomationProperties.AutomationId="SweepCheck"
+                Content="启用光带（中性高光，只加亮度不改色相）"
+                Checked="OnTuningToggled"
+                Unchecked="OnTuningToggled" />
+            <Slider
+                x:Name="SweepPositionSlider"
+                AutomationProperties.AutomationId="SweepPositionSlider"
+                Header="位置（沿扫动方向提前量，0~1）"
+                Minimum="0"
+                Maximum="1"
+                StepFrequency="0.05"
+                Value="0"
+                ValueChanged="OnTuningValueChanged" />
+            <Slider
+                x:Name="SweepWidthSlider"
+                AutomationProperties.AutomationId="SweepWidthSlider"
+                Header="宽度（半高全宽，0.02~0.5）"
+                Minimum="0.02"
+                Maximum="0.5"
+                StepFrequency="0.01"
+                Value="0.10"
+                ValueChanged="OnTuningValueChanged" />
+            <Slider
+                x:Name="SweepStrengthSlider"
+                AutomationProperties.AutomationId="SweepStrengthSlider"
+                Header="强度（0~0.2，上限写死在 LightSweepOptions）"
+                Minimum="0"
+                Maximum="0.2"
+                StepFrequency="0.01"
+                Value="0.08"
+                ValueChanged="OnTuningValueChanged" />
+            <ComboBox
+                x:Name="SweepDirectionCombo"
+                AutomationProperties.AutomationId="SweepDirectionCombo"
+                Header="方向"
+                HorizontalAlignment="Stretch"
+                SelectionChanged="OnTuningSelectionChanged">
+                <ComboBoxItem Content="铰链 → 远端（默认）" />
+                <ComboBoxItem Content="远端 → 铰链" />
+            </ComboBox>
         </StackPanel>
     </ScrollViewer>
 

@@ -31,6 +31,15 @@
 // Progress enters ONLY through the matrix (phi) and the fade opacity: at
 // progress 0 the matrix is the identity and FadeParams.x = 0, so a fully
 // open desktop shows nothing at all.
+//
+// Two OPTIONAL passes ride on top of the v2 model, both off by default and
+// both gated by a `> 0.0` branch so "off" is a bit-exact no-op:
+//   - M2.1 gradient (hue ramp, DD-049) - scaled by the shading deficit
+//     (1 - light) so it cannot undo the shadow;
+//   - M2.2 light sweep (neutral highlight, DD-050) - scaled by (1 - rgb) so
+//     it cannot clip, and so it reads strongest in the frost.
+// They are deliberately orthogonal: the gradient owns hue, the sweep owns
+// luminance. Neither runs before `rgb *= light`.
 // =====================================================================
 
 cbuffer FoldConstants : register(b0)
@@ -64,6 +73,14 @@ cbuffer FoldConstants : register(b0)
     float4 GradientStart;
     // rgb tint at the far edge (source-side height 1)
     float4 GradientEnd;
+
+    // M2.2 light sweep:
+    // x: band centre in fold-height units (0 hinge, 1 far edge)
+    // y: 1 / (2 * sigma^2), pre-computed by LightSweepOptions
+    // z: strength (0 = OFF - same branch trick as the gradient above)
+    // w: the strength cap (LightSweepOptions.MaxStrengthLimit) - the shader
+    //    needs it to normalise the headroom-to-white guard
+    float4 SweepParams;
 };
 
 Texture2D    DesktopTexture : register(t0);
@@ -183,6 +200,39 @@ float4 PSMain(VSOutput input) : SV_Target
     {
         float3 tint = lerp(GradientStart.rgb, GradientEnd.rgb, saturate(sy));
         rgb += tint * (GradientParams.x * PhysicsParams.y * (1.0 - light) * (1.0 - rgb));
+    }
+
+    // ---- M2.2 light sweep ----
+    // A narrow neutral highlight parallel to the hinge, travelling from the
+    // hinge to the far edge as the fold closes.
+    //
+    // It is LIGHT, not colour: added equally to all three channels, so it
+    // brightens without shifting hue. The gradient pass owns hue; keeping the
+    // two orthogonal is what lets M2.3 tune them independently (DD-050).
+    //
+    // Why NOT the gradient's (1 - rgb) guard: the band is brightest exactly
+    // where the surface is still bright (early in the fold, light ~= 0.9), so
+    // a multiplicative guard would make the sweep invisible for the first half
+    // and then pop. Measured: at Strength 0.08 the guard left ~2 luminance
+    // units at mid fold, i.e. nothing.
+    //
+    // Instead the gain is limited by the HEADROOM to white, normalised by the
+    // strength cap:
+    //   headroom = saturate((1 - maxChannel) / StrengthLimit)
+    // Since gain <= StrengthLimit, gain*headroom <= 1 - maxChannel, so the sum
+    // can never exceed 1.0 - no clipping, no white plateau, and the bound
+    // "peak delta <= StrengthLimit" holds by construction. Using the max
+    // CHANNEL (not the luminance) keeps the guard achromatic.
+    //
+    // Scaled by PhysicsParams.y like the gradient, so the band disappears
+    // together with the blur envelope instead of glinting on a flat desktop.
+    if (SweepParams.z > 0.0)
+    {
+        float d = sy - SweepParams.x;
+        float band = exp(-(d * d) * SweepParams.y);
+        float maxChannel = max(rgb.r, max(rgb.g, rgb.b));
+        float headroom = saturate((1.0 - maxChannel) / max(SweepParams.w, 1e-4));
+        rgb += (SweepParams.z * PhysicsParams.y * band * headroom);
     }
 
     return float4(rgb * a * FadeParams.x, a * FadeParams.x);

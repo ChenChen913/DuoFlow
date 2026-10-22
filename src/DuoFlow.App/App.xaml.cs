@@ -68,6 +68,7 @@ public partial class App : Application
 
         bool smoke = false;
         bool selfTest = false;
+        bool lightSweep = false;
         foreach (string arg in Environment.GetCommandLineArgs())
         {
             if (string.Equals(arg, "--overlay-smoke", StringComparison.OrdinalIgnoreCase))
@@ -78,8 +79,14 @@ public partial class App : Application
             {
                 selfTest = true;
             }
+            // M2.2 acceptance hook: seed the sweep ON so warp-selftest can
+            // measure the band. Test-only, same category as --warp-selftest.
+            if (string.Equals(arg, "--light-sweep", StringComparison.OrdinalIgnoreCase))
+            {
+                lightSweep = true;
+            }
         }
-        Trace.Log($"smoke={smoke} selfTest={selfTest}");
+        Trace.Log($"smoke={smoke} selfTest={selfTest} lightSweep={lightSweep}");
 
         try
         {
@@ -99,7 +106,7 @@ public partial class App : Application
         try
         {
             Trace.Log("console: constructing...");
-            _console = new MainWindow(_overlay, smoke);
+            _console = new MainWindow(_overlay, smoke, lightSweep);
             Trace.Log("console: constructed OK");
             _console.Activate();
             Trace.Log("console: activated OK");

@@ -33,7 +33,7 @@ namespace DuoFlow.App;
 public sealed class WarpPipeline : IDisposable
 {
     /// <summary>Constant buffer layout - must match the cbuffer in DuoWarp.hlsl
-    /// (11 × float4 = 176 bytes; three float4s instead of float3x3 leave no
+    /// (12 × float4 = 192 bytes; three float4s instead of float3x3 leave no
     /// row/column-major packing doubt).</summary>
     [StructLayout(LayoutKind.Sequential)]
     private struct Constants
@@ -49,6 +49,7 @@ public sealed class WarpPipeline : IDisposable
         public Vector4 GradientParams; // M2.1: x=strength (0 = off)
         public Vector4 GradientStart;  // rgb tint at the hinge
         public Vector4 GradientEnd;    // rgb tint at the far edge
+        public Vector4 SweepParams;    // M2.2: x=centre, y=1/(2 sigma^2), z=strength (0 = off)
     }
 
     public const string ShaderFileName = "DuoWarp.hlsl";
@@ -188,20 +189,29 @@ public sealed class WarpPipeline : IDisposable
     /// after this call.
     /// </summary>
     public void Render(ID3D11DeviceContext context, ID3D11Texture2D desktopTexture, WarpFrame frame,
-        double maxBlurPixels, double intensity, double fadeOpacity,
-        GradientOptions? gradient = null)
+        double maxBlurPixels, double intensity, double fadeOpacity, double progress,
+        GradientOptions? gradient = null, LightSweepOptions? sweep = null)
     {
         if (_disposed || _renderTarget is null)
         {
             return;
         }
 
-        // M2.1: EffectiveStrength is exactly 0.0 when the pass is disabled, and
-        // the shader takes a branch on it - so "off" is a bit-exact no-op, not
-        // "adds a very small number".
+        // M2.1/M2.2: EffectiveStrength is exactly 0.0 when the pass is
+        // disabled, and the shader takes a branch on it - so "off" is a
+        // bit-exact no-op, not "adds a very small number".
         double gradientStrength = gradient?.EffectiveStrength ?? 0.0;
         (double sr, double sg, double sb) = gradient?.TintStart ?? (0.0, 0.0, 0.0);
         (double er, double eg, double eb) = gradient?.TintEnd ?? (0.0, 0.0, 0.0);
+
+        // The band centre and the exponent factor are functions of progress, so
+        // they are derived per frame. progress is passed explicitly rather than
+        // recovered from the matrix: phi could be inverted out of M00/M11, but
+        // that would make the sweep silently wrong for any non-default
+        // MaxFoldDegrees - the caller already has the real number.
+        double sweepStrength = sweep?.EffectiveStrength ?? 0.0;
+        double sweepCentre = sweepStrength > 0.0 ? sweep!.CenterAt(progress) : 0.0;
+        double sweepExponent = sweepStrength > 0.0 ? sweep!.InvTwoSigmaSquared : 0.0;
 
         var constants = new Constants
         {
@@ -225,6 +235,8 @@ public sealed class WarpPipeline : IDisposable
             GradientParams = new Vector4((float)gradientStrength, 0f, 0f, 0f),
             GradientStart = new Vector4((float)sr, (float)sg, (float)sb, 1f),
             GradientEnd = new Vector4((float)er, (float)eg, (float)eb, 1f),
+            SweepParams = new Vector4((float)sweepCentre, (float)sweepExponent, (float)sweepStrength,
+                (float)LightSweepOptions.MaxStrengthLimit),
         };
         context.UpdateSubresource(constants, _constantBuffer!, 0, 0, 0, null);
 
