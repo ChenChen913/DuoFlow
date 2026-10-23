@@ -71,6 +71,7 @@ public partial class App : Application
         bool selfTest = false;
         bool lightSweep = false;
         string? cameraProbeDir = null;
+        string? cameraDetectDir = null;
         foreach (string arg in Environment.GetCommandLineArgs())
         {
             if (string.Equals(arg, "--overlay-smoke", StringComparison.OrdinalIgnoreCase))
@@ -97,15 +98,39 @@ public partial class App : Application
                     ? arg[(eq + 1)..]
                     : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "duoflow-camera-probe");
             }
+
+            // M3.2 acceptance hook: same shape, but it also runs screen
+            // detection on every frame. Only the quad and the confidence leave
+            // the callback - still no pixel, still nothing on disk.
+            if (arg.StartsWith("--camera-detect", StringComparison.OrdinalIgnoreCase))
+            {
+                int eq = arg.IndexOf('=');
+                cameraDetectDir = eq > 0
+                    ? arg[(eq + 1)..]
+                    : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "duoflow-camera-detect");
+            }
         }
-        Trace.Log($"smoke={smoke} selfTest={selfTest} lightSweep={lightSweep} cameraProbe={cameraProbeDir ?? "-"}");
+
+        Trace.Log($"smoke={smoke} selfTest={selfTest} lightSweep={lightSweep} " +
+                  $"cameraProbe={cameraProbeDir ?? "-"} cameraDetect={cameraDetectDir ?? "-"}");
 
         // The camera probe is a headless mode: no overlay, no console, no
         // rendering. It measures one thing (can this machine deliver frames)
         // and exits, so it can run beside anything else on the desktop.
         if (cameraProbeDir is not null)
         {
-            RunCameraProbeThenExit(cameraProbeDir);
+            RunHeadlessThenExit("camera-probe", dir =>
+                CameraProbe.RunAsync(dir, MediaCaptureCamera.DefaultTargetFps, 30), cameraProbeDir);
+            return;
+        }
+
+        // M3.2: same headless contract, plus detection. Kept separate from the
+        // probe so a detection failure can never make "can this machine open
+        // its camera" look broken - they answer different questions.
+        if (cameraDetectDir is not null)
+        {
+            RunHeadlessThenExit("camera-detect", dir =>
+                CameraProbe.RunDetectAsync(dir, MediaCaptureCamera.DefaultTargetFps, 30), cameraDetectDir);
             return;
         }
 
@@ -145,10 +170,16 @@ public partial class App : Application
 
     /// <summary>
     /// Run the M3.1 probe and terminate the process with its exit code.
+    /// <summary>
+    /// Runs a headless acceptance routine and exits with its verdict.
+    ///
     /// The probe awaits WinRT I/O, so it cannot run on the UI thread; the exit
     /// itself must be posted back to it (WinUI tears the app down from there).
+    /// Shared by every headless mode so they cannot drift apart in how they
+    /// report success - one of them quietly returning 0 on failure would make
+    /// the acceptance scripts lie.
     /// </summary>
-    private void RunCameraProbeThenExit(string outputDir)
+    private void RunHeadlessThenExit(string label, Func<string, Task<int>> run, string outputDir)
     {
         Microsoft.UI.Dispatching.DispatcherQueue dispatcher =
             Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
@@ -158,11 +189,11 @@ public partial class App : Application
             int exitCode = 1;
             try
             {
-                exitCode = await CameraProbe.RunAsync(outputDir, MediaCaptureCamera.DefaultTargetFps, 30);
+                exitCode = await run(outputDir);
             }
             catch (Exception ex)
             {
-                Trace.Log($"camera-probe: unhandled {ex.GetType().Name}: {ex.Message}");
+                Trace.Log($"{label}: unhandled {ex.GetType().Name}: {ex.Message}");
             }
 
             dispatcher.TryEnqueue(() =>

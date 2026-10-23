@@ -268,6 +268,212 @@ internal static class CameraProbe
     }
 
     /// <summary>
+    /// M3.2 acceptance probe: open the camera, run screen detection on every
+    /// frame, report what the detector decided.
+    ///
+    /// <para>
+    /// <b>Privacy is unchanged.</b> The frame is turned into a
+    /// <see cref="GrayImage"/> inside the callback, the detector consumes it,
+    /// and only the resulting quad (normalized coordinates) and confidence
+    /// leave. Nothing is written to disk but those numbers. A quad is
+    /// geometry, not a picture - it cannot be turned back into a frame.
+    /// </para>
+    /// <para>
+    /// <b>What is gated and what is not.</b> The gate is "the detector never
+    /// threw and every frame produced a decision". It is NOT "the screen was
+    /// found": on a machine whose lens is capped or whose room is dark there
+    /// is nothing to find, and a detector that invented a quad there would be
+    /// the bug, not the feature. Detection quality is reported, with the
+    /// reason breakdown that explains a low rate.
+    /// </para>
+    /// <para>
+    /// Cost note: each frame allocates one luminance buffer and one downscaled
+    /// copy (~1 MB for 720p). At the 10 fps the governor allows that is fine
+    /// for a probe; the shipping path will reuse buffers the way
+    /// <see cref="MediaCaptureCamera"/> reuses its frame array.
+    /// </para>
+    /// </summary>
+    public static async Task<int> RunDetectAsync(string outputDir, double targetFps, int frameCount)
+    {
+        Directory.CreateDirectory(outputDir);
+        string jsonPath = Path.Combine(outputDir, "camera-detect-result.json");
+
+        var report = new Dictionary<string, object?>();
+        var failures = new List<string>();
+
+        IReadOnlyList<CameraDeviceInfo> devices = Array.Empty<CameraDeviceInfo>();
+        CameraDeviceInfo? chosen = null;
+        CameraDeviceInfo? opened = null;
+
+        var confidences = new List<double>();
+        var reasons = new Dictionary<string, int>();
+        var polarities = new Dictionary<string, int>();
+        ScreenDetection? best = null;
+        int usableFrames = 0;
+        int detectorThrows = 0;
+        string? lastThrow = null;
+        string? error = null;
+        CameraFailure health = CameraFailure.None;
+
+        try
+        {
+            devices = await MediaCaptureCamera.EnumerateAsync();
+            chosen = CameraSelection.Choose(devices);
+            if (chosen is null)
+            {
+                health = CameraFailure.NoDevice;
+                failures.Add("no capture device enumerated");
+            }
+            else
+            {
+                Trace.Log($"camera-detect: chosen '{chosen.Name}' ({chosen.Enclosure})");
+
+                var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                await using var camera = new MediaCaptureCamera(targetFps);
+                camera.FrameArrived += frame =>
+                {
+                    ScreenDetection detection;
+                    try
+                    {
+                        GrayImage gray = GrayImage.FromBgra(frame.Width, frame.Height, frame.Bgra.Span);
+                        detection = ScreenDetector.Detect(gray);
+                    }
+                    catch (Exception ex)
+                    {
+                        // A detector that throws on one frame must not take the
+                        // whole probe down - but it must be counted, because
+                        // "never throws" is the actual contract (M3.2).
+                        detectorThrows++;
+                        lastThrow = $"{ex.GetType().Name}: {ex.Message}";
+                        return;
+                    }
+
+                    confidences.Add(detection.Confidence);
+                    string reason = detection.Reason.ToString();
+                    reasons[reason] = reasons.TryGetValue(reason, out int n) ? n + 1 : 1;
+                    string polarity = detection.Polarity.ToString();
+                    polarities[polarity] = polarities.TryGetValue(polarity, out int p) ? p + 1 : 1;
+
+                    if (detection.IsUsable)
+                    {
+                        usableFrames++;
+                    }
+
+                    if (best is null || detection.Confidence > best.Confidence)
+                    {
+                        best = detection;
+                    }
+
+                    if (confidences.Count >= frameCount)
+                    {
+                        done.TrySetResult(true);
+                    }
+                };
+
+                await camera.OpenAsync(chosen.Id, targetFps);
+                opened = camera.Device;
+
+                Task completed = await Task.WhenAny(done.Task, Task.Delay(TimeSpan.FromSeconds(20)));
+                if (completed != done.Task)
+                {
+                    failures.Add($"timed out after 20 s with {confidences.Count}/{frameCount} frames");
+                }
+
+                await camera.CloseAsync();
+                if (camera.IsRunning)
+                {
+                    failures.Add("camera still running after CloseAsync");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            health = CameraHealth.Classify(ex);
+            error = $"{ex.GetType().Name}: {ex.Message} (hresult=0x{ex.HResult:X8})";
+            Trace.Log($"camera-detect: FAILED {error}");
+            failures.Add(CameraHealth.Describe(health));
+        }
+
+        double confMin = double.MaxValue, confMax = double.MinValue, confMean = 0.0;
+        foreach (double c in confidences)
+        {
+            confMin = Math.Min(confMin, c);
+            confMax = Math.Max(confMax, c);
+            confMean += c;
+        }
+
+        if (confidences.Count > 0)
+        {
+            confMean /= confidences.Count;
+        }
+        else
+        {
+            confMin = confMax = 0.0;
+        }
+
+        report["GeneratedAt"] = DateTimeOffset.Now.ToString("s");
+        report["TargetFps"] = targetFps;
+        report["RequestedFrames"] = frameCount;
+        report["Devices"] = devices;
+        report["ChosenDevice"] = chosen;
+        report["OpenedDevice"] = opened;
+        report["FramesDetected"] = confidences.Count;
+        report["DetectorThrows"] = detectorThrows;
+        report["LastThrow"] = lastThrow;
+        report["UsableFrames"] = usableFrames;
+        report["UsableRate"] = confidences.Count > 0 ? Math.Round((double)usableFrames / confidences.Count, 3) : 0.0;
+        report["ConfidenceMin"] = Math.Round(confMin, 4);
+        report["ConfidenceMax"] = Math.Round(confMax, 4);
+        report["ConfidenceMean"] = Math.Round(confMean, 4);
+        report["Reasons"] = reasons;
+        report["Polarities"] = polarities;
+        report["BestQuad"] = best?.Quad?.Flatten();
+        report["BestConfidence"] = best is null ? 0.0 : Math.Round(best.Confidence, 4);
+        report["BestReason"] = best?.Reason.ToString();
+        report["BestPolarity"] = best?.Polarity.ToString();
+        report["BestAreaFraction"] = best is null ? 0.0 : Math.Round(best.AreaFraction, 4);
+        report["BestAspect"] = best is null ? 0.0 : Math.Round(best.AspectRatio, 4);
+        report["BestEdgeContrast"] = best is null ? 0.0 : Math.Round(best.EdgeContrast, 2);
+        report["BestSceneStd"] = best is null ? 0.0 : Math.Round(best.SceneStd, 3);
+        report["BestClipped"] = best?.TouchesFrameEdge ?? false;
+        report["Health"] = health.ToString();
+        report["HealthHint"] = CameraHealth.Describe(health);
+        report["Error"] = error;
+        report["Failures"] = failures;
+        // Deliberately NOT reported: any pixel, any image path, any frame data.
+        report["StoredPixels"] = false;
+
+        File.WriteAllText(jsonPath, JsonSerializer.Serialize(report, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+        }));
+        Trace.Log($"camera-detect: wrote {jsonPath}");
+        if (best is not null)
+        {
+            Trace.Log($"camera-detect: best -> {best.Describe()}");
+        }
+
+        bool ok = error is null
+                  && failures.Count == 0
+                  && confidences.Count >= frameCount
+                  && detectorThrows == 0;
+
+        if (detectorThrows > 0)
+        {
+            failures.Add($"detector threw on {detectorThrows} frame(s); last {lastThrow}");
+        }
+
+        if (ok && usableFrames == 0)
+        {
+            Trace.Log("camera-detect: no usable detection - expected when the lens is capped " +
+                      "or the room is dark; the contract here is 'decides, never throws'");
+        }
+
+        Trace.Log($"camera-detect: OVERALL={(ok ? "PASS" : "FAIL")}");
+        return ok ? 0 : 1;
+    }
+
+    /// <summary>
     /// Reduces a frame to four scalars: mean luminance (0..255), its standard
     /// deviation, the alpha mean, and the byte range.
     ///

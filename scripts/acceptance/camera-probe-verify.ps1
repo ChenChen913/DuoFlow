@@ -1,9 +1,10 @@
 ﻿# =====================================================================
-# DuoFlow - camera probe acceptance (M3.1)
+# DuoFlow - camera probe acceptance (M3.1) + screen detection (M3.2)
 #
 # WHAT IT PROVES: this machine can enumerate a camera, open it, negotiate a
 # format, receive real decoded frames, and classify health - and that the
-# probe leaks no pixels while doing it.
+# probe leaks no pixels while doing it. With -Detect it also proves the
+# screen detector decides on every frame and never throws.
 #
 #   1.  exit code      the probe reports its own verdict, not just "it ran"
 #   2.  枚举           at least one capture device is visible
@@ -11,10 +12,11 @@
 #   4.  协商格式       the OPENED device has W/H > 0 and a pixel format -
 #                      enumeration reports 0 here on purpose (see below)
 #   5.  收帧           FramesReceived >= requested, FramesOffered >= received
-#   6.  速率           MeasuredFps > 0 and consistent with CameraFps
+#   6.  速率           按"谁是瓶颈"分两种断言（见下方注释）
 #   7.  缓冲区结构     AlphaMean = 255 (proves a real NV12->BGRA conversion)
 #   8.  健康分类       Health = None on a healthy machine
 #   9.  隐私           no pixel-shaped field, no sample array, small JSON
+#  10.  检测（-Detect）决定/不抛异常/四边形归一化/不落像素
 #
 # WHY 5/6 ARE SPLIT: FramesOffered is what the CAMERA delivered before our
 # governor; FramesReceived is what we kept. They look identical from outside
@@ -37,12 +39,15 @@
 # USAGE (Windows PowerShell 5.1, no admin):
 #   .\scripts\acceptance\camera-probe-verify.ps1
 #   .\scripts\acceptance\camera-probe-verify.ps1 -RequireContrast
+#   .\scripts\acceptance\camera-probe-verify.ps1 -Detect              # + M3.2
+#   .\scripts\acceptance\camera-probe-verify.ps1 -Detect -RequireContrast
 #   .\scripts\acceptance\camera-probe-verify.ps1 -OutputDir D:\tmp\cam
 #
 # OUTPUT: camera-probe-verify.txt + probe\camera-probe-result.json
+#         (+ detect\camera-detect-result.json when -Detect)
 # EXIT CODE: 0 = all checks passed, 1 = at least one did not.
 # NOTE: headless - opens no window and does not touch the screen.
-#       ~10 s, dominated by the probe's own frame budget.
+#       ~10 s without -Detect, ~20 s with it.
 # =====================================================================
 
 param(
@@ -50,7 +55,8 @@ param(
     [string]$OutputDir = "",
     [string]$Exe = "",
     [int]$TimeoutSeconds = 90,
-    [switch]$RequireContrast
+    [switch]$RequireContrast,
+    [switch]$Detect
 )
 
 $ErrorActionPreference = "Stop"
@@ -191,10 +197,24 @@ Check "measured rate is positive" ($measured -gt 0) ("measured=" + ("{0:0.00}" -
 Check "camera-side rate is positive" ($cameraFps -gt 0) ("camera=" + ("{0:0.00}" -f $cameraFps) + "/s")
 
 # MeasuredFps is (frames-1)/span over the frames we KEPT; CameraFps is over
-# what the camera OFFERED. They can only differ by our own dropping, so a
-# large gap means the governor is the story, not the sensor.
-$rateGap = if ($cameraFps -gt 0) { [Math]::Abs($measured - $cameraFps) / $cameraFps } else { 1.0 }
-Check "measured rate agrees with camera rate" ($rateGap -le 0.35) ("gap=" + ("{0:0.0}" -f ($rateGap * 100)) + "% (<=35% = we are not the bottleneck)")
+# what the camera OFFERED. They can only differ by our own dropping - so the
+# gap means opposite things depending on who is the limit:
+#
+#   camera slower than target -> we must track it (a gap means we are losing
+#                                frames we wanted, which is a bug)
+#   camera faster than target -> dropping is the governor DOING ITS JOB, and
+#                                the right assertion is that we kept ~target
+#
+# Asserting "gap <= 35%" unconditionally was wrong: it failed on a perfectly
+# healthy 30 fps camera throttled to 10. Measured, not theorised.
+if ($cameraFps -le $targetFps * 1.05) {
+    $rateGap = if ($cameraFps -gt 0) { [Math]::Abs($measured - $cameraFps) / $cameraFps } else { 1.0 }
+    Check "measured rate tracks the camera" ($rateGap -le 0.35) ("gap=" + ("{0:0.0}" -f ($rateGap * 100)) + "% (camera is the limit, so we must keep what it gives)")
+} else {
+    $targetGap = if ($targetFps -gt 0) { [Math]::Abs($measured - $targetFps) / $targetFps } else { 1.0 }
+    Check "measured rate tracks the target" ($targetGap -le 0.30) ("measured=" + ("{0:0.00}" -f $measured) + "/s target=" + ("{0:0.00}" -f $targetFps) + "/s gap=" + ("{0:0.0}" -f ($targetGap * 100)) + "%")
+    Check "governor drops the surplus" ($dropped -gt 0) ("offered=" + $offered + " kept=" + $received + " dropped=" + $dropped)
+}
 
 # ---------------------------------------------------------------------
 # 5. Buffer structure - the load-bearing check.
@@ -248,6 +268,83 @@ $jsonKb = [Math]::Round((Get-Item $jsonPath).Length / 1024.0, 1)
 Check "report stays small" ($jsonKb -lt 64) ($jsonKb.ToString() + " KB (< 64 KB cannot hold a frame)")
 
 # ---------------------------------------------------------------------
+# 9. M3.2 screen detection (optional, -Detect).
+#
+#    What is gated: the detector DECIDES on every frame and never throws.
+#    What is NOT gated: that a screen was found. On a capped lens or a dark
+#    room there is nothing to find, and a detector that invented a quad there
+#    would be the bug. Detection quality is reported instead.
+# ---------------------------------------------------------------------
+$detectInfo = $null
+if ($Detect) {
+    Log ""
+    Log "9. running screen detection (M3.2)"
+
+    $detectDir = Join-Path $OutputDir "detect"
+    New-Item -ItemType Directory -Force -Path $detectDir | Out-Null
+    $detectProc = Start-Process -FilePath $Exe -ArgumentList ("--camera-detect=" + $detectDir) -PassThru -WindowStyle Hidden
+    $detectTimedOut = -not $detectProc.WaitForExit($TimeoutSeconds * 1000)
+    if ($detectTimedOut) {
+        try { $detectProc.Kill() } catch { }
+    }
+
+    $detectExit = if ($detectTimedOut) { -1 } else { $detectProc.ExitCode }
+    Check "detect probe exits 0" ($detectExit -eq 0) ("exit=" + $detectExit)
+
+    $detectJsonPath = Join-Path $detectDir "camera-detect-result.json"
+    $d = $null
+    if (Test-Path $detectJsonPath) {
+        try { $d = Get-Content $detectJsonPath -Raw | ConvertFrom-Json } catch { $d = $null }
+    }
+    Check "detect report written" ($null -ne $d) ($detectJsonPath)
+
+    if ($null -ne $d) {
+        $framesDetected = [int]$d.FramesDetected
+        $throws = [int]$d.DetectorThrows
+        $usableFrames = [int]$d.UsableFrames
+        $bestConfidence = [double]$d.BestConfidence
+
+        Check "detector decided on every frame" ($framesDetected -ge [int]$d.RequestedFrames) ("decided=" + $framesDetected + "/" + $d.RequestedFrames)
+        Check "detector never threw" ($throws -eq 0) ("throws=" + $throws + $(if ($d.LastThrow) { " last=" + $d.LastThrow } else { "" }))
+        Check "detect report stores no pixels" ($d.StoredPixels -eq $false) ("StoredPixels=" + $d.StoredPixels)
+
+        # A quad is 8 normalized numbers. Anything outside 0..1 means the
+        # normalization door leaked a pixel coordinate - the one thing DD-053
+        # forbids - so it is worth asserting rather than trusting.
+        $quadOk = $true
+        $quadText = "(no quad)"
+        if ($null -ne $d.BestQuad) {
+            $flat = @($d.BestQuad)
+            $quadOk = ($flat.Count -eq 8)
+            foreach ($v in $flat) {
+                if ([double]$v -lt 0.0 -or [double]$v -gt 1.0) { $quadOk = $false }
+            }
+            $quadText = ($flat -join ",")
+        }
+        Check "best quad is normalized 0..1" $quadOk $quadText
+
+        Log ("  [INFO] usable frames " + $usableFrames + "/" + $framesDetected +
+             "  best confidence " + ("{0:0.000}" -f $bestConfidence) +
+             "  reason " + $d.BestReason + "  std " + $d.BestSceneStd)
+        $reasonText = ($d.Reasons.PSObject.Properties | ForEach-Object { $_.Name + "=" + $_.Value }) -join " "
+        Log ("         reasons: " + $reasonText)
+
+        if ($RequireContrast) {
+            Check "a screen is actually detected" ($usableFrames -gt 0) ("usable=" + $usableFrames)
+        }
+
+        $detectInfo = [ordered]@{
+            FramesDetected = $framesDetected
+            DetectorThrows = $throws
+            UsableFrames   = $usableFrames
+            BestConfidence = $bestConfidence
+            BestReason     = $d.BestReason
+            BestSceneStd   = $d.BestSceneStd
+        }
+    }
+}
+
+# ---------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------
 # Wrap in @(): with exactly one match, Where-Object returns the object itself,
@@ -272,6 +369,7 @@ Log ("OVERALL = " + $(if ($overall) { "PASS (" + $script:steps.Count + "/" + $sc
     GeneratedAt     = (Get-Date).ToString("s")
     Exe             = $Exe
     RequireContrast = [bool]$RequireContrast
+    Detect          = [bool]$Detect
     ExitCode        = $exitCode
     TargetFps       = $targetFps
     CameraFps       = $cameraFps
@@ -282,6 +380,7 @@ Log ("OVERALL = " + $(if ($overall) { "PASS (" + $script:steps.Count + "/" + $sc
     AlphaMean       = $alpha
     SceneFlat       = $sceneFlat
     ContrastDelta   = $contrastDelta
+    Detection       = $detectInfo
     Steps           = $script:steps
     Overall         = $overall
 } | ConvertTo-Json -Depth 6 | Out-File (Join-Path $OutputDir "camera-probe-verify-result.json") -Encoding utf8
