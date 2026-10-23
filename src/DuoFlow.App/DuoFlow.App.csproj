@@ -44,6 +44,10 @@
     <ProjectReference Include="..\DuoFlow.Core\DuoFlow.Core.csproj" />
     <!-- M1.4: warp geometry (pure net8.0, unit tested) feeds the shader. -->
     <ProjectReference Include="..\DuoFlow.Render\DuoFlow.Render.csproj" />
+    <!-- M3.1: camera device (WinRT) + camera geometry/policy (pure net8.0).
+         Split per HARDWARE §1.2 - see the two csproj headers. -->
+    <ProjectReference Include="..\DuoFlow.Camera\DuoFlow.Camera.csproj" />
+    <ProjectReference Include="..\DuoFlow.Vision\DuoFlow.Vision.csproj" />
   </ItemGroup>
 
 </Project>

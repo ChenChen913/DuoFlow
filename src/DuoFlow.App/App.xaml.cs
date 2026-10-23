@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using DuoFlow.Camera;
 using Microsoft.UI.Xaml;
 
 namespace DuoFlow.App;
@@ -69,6 +70,7 @@ public partial class App : Application
         bool smoke = false;
         bool selfTest = false;
         bool lightSweep = false;
+        string? cameraProbeDir = null;
         foreach (string arg in Environment.GetCommandLineArgs())
         {
             if (string.Equals(arg, "--overlay-smoke", StringComparison.OrdinalIgnoreCase))
@@ -85,8 +87,27 @@ public partial class App : Application
             {
                 lightSweep = true;
             }
+            // M3.1 acceptance hook. Takes an optional output directory:
+            //   --camera-probe                -> %TEMP%\duoflow-camera-probe
+            //   --camera-probe=D:\tmp\cam     -> that directory
+            if (arg.StartsWith("--camera-probe", StringComparison.OrdinalIgnoreCase))
+            {
+                int eq = arg.IndexOf('=');
+                cameraProbeDir = eq > 0
+                    ? arg[(eq + 1)..]
+                    : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "duoflow-camera-probe");
+            }
         }
-        Trace.Log($"smoke={smoke} selfTest={selfTest} lightSweep={lightSweep}");
+        Trace.Log($"smoke={smoke} selfTest={selfTest} lightSweep={lightSweep} cameraProbe={cameraProbeDir ?? "-"}");
+
+        // The camera probe is a headless mode: no overlay, no console, no
+        // rendering. It measures one thing (can this machine deliver frames)
+        // and exits, so it can run beside anything else on the desktop.
+        if (cameraProbeDir is not null)
+        {
+            RunCameraProbeThenExit(cameraProbeDir);
+            return;
+        }
 
         try
         {
@@ -120,5 +141,35 @@ public partial class App : Application
         }
 
         Trace.Log("launch end");
+    }
+
+    /// <summary>
+    /// Run the M3.1 probe and terminate the process with its exit code.
+    /// The probe awaits WinRT I/O, so it cannot run on the UI thread; the exit
+    /// itself must be posted back to it (WinUI tears the app down from there).
+    /// </summary>
+    private void RunCameraProbeThenExit(string outputDir)
+    {
+        Microsoft.UI.Dispatching.DispatcherQueue dispatcher =
+            Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread();
+
+        _ = Task.Run(async () =>
+        {
+            int exitCode = 1;
+            try
+            {
+                exitCode = await CameraProbe.RunAsync(outputDir, MediaCaptureCamera.DefaultTargetFps, 30);
+            }
+            catch (Exception ex)
+            {
+                Trace.Log($"camera-probe: unhandled {ex.GetType().Name}: {ex.Message}");
+            }
+
+            dispatcher.TryEnqueue(() =>
+            {
+                Environment.ExitCode = exitCode;
+                Exit();
+            });
+        });
     }
 }

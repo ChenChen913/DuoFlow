@@ -4,8 +4,9 @@
 证明不了"画面变形是否符合数学模型"、也证明不了"覆盖层是否真的透明/可穿透"——
 那部分靠这里的脚本 + 应用内置的自测模式。
 
-三个脚本都**不需要管理员**，都要求**真实交互式桌面**（GitHub Actions 的
-windows-latest 是非交互会话，跑出来是黑的，所以它们不进 CI）。
+这些脚本都**不需要管理员**，除 `camera-probe-verify.ps1`（无头）外都要求
+**真实交互式桌面**（GitHub Actions 的 windows-latest 是非交互会话，跑出来是黑的，
+所以它们不进 CI）。
 
 | 脚本 | 证明什么 | 耗时 | 会动鼠标 |
 |---|---|---|---|
@@ -14,6 +15,7 @@ windows-latest 是非交互会话，跑出来是黑的，所以它们不进 CI�
 | `tuning-panel-verify.ps1` | 参数面板的旋钮真的走到了渲染数学（M2.5/M2.1/M2.2） | ~75 s | 否 |
 | `demo-mode-verify.ps1` | 六种操作（快/慢开合、循环、暂停、中途停、中途反向）+ 速率合规（M2.4/M2.3） | ~70 s | 否 |
 | `light-sweep-verify.ps1` | 光带真的存在、位置对、幅度受限、包络外不出现（M2.2） | ~3.5 min | 否 |
+| `camera-probe-verify.ps1` | 摄像头能枚举/打开/协商格式/收到真解码帧，且不泄露任何像素（M3.1） | ~10 s | 否 |
 
 ---
 
@@ -336,3 +338,77 @@ dotnet build src/DuoFlow.App -p:Platform=x64
 - 默认单程 0.6 s；整轮约 70 s（六种操作 + 两趟 3 s 慢速）。
 - 判"单调"用 0.02 容差、判"反向"用 0.03 阈值——都是为了避开 UIA 采样抖动。
 - 脚本结束会强杀 `DuoFlow.App`。
+
+---
+
+## camera-probe-verify.ps1 — 摄像头能打开，而且不泄露任何像素
+
+包住 `DuoFlow.App.exe --camera-probe=<dir>`（无头模式：不开窗、不碰屏幕、不动鼠标），
+把探针的 JSON 当作被测对象，逐项断言。
+
+**18 项检查**
+
+| # | 检查 | 判据 |
+|---|---|---|
+| 1 | 探针自己给出结论 | exit code 0（不是"跑起来了"就算过） |
+| 2 | 报告可解析 | `camera-probe-result.json` 存在且能 parse |
+| 3 | 枚举 | 至少 1 台设备，并打印 `[Enclosure] Name` |
+| 4 | 选择 | 选出了设备（策略是确定性的，见 DD-053） |
+| 5 | 协商格式 | **打开后** W/H > 0 且像素格式非空 |
+| 6 | 帧预算 | 报告里的 `RequestedFrames` > 0 |
+| 7 | 收帧 | `FramesReceived >= RequestedFrames` |
+| 8 | 不虚报 | `FramesOffered >= FramesReceived` |
+| 9 | 速率 > 0 | `MeasuredFps > 0` 且 `CameraFps > 0` |
+| 10 | 速率一致 | 两者相差 ≤ 35%（证明瓶颈不在我们的 governor） |
+| 11 | **缓冲区结构** | `AlphaMean ≥ 250` |
+| 12 | 非空 | `ByteMax > 0` |
+| 13 | 健康分类 | `Health = None` |
+| 14 | 隐私 | `StoredPixels = false` |
+| 15 | 隐私 | 除 `StoredPixels` 外无键匹配 `/pixel/` |
+| 16 | 隐私 | 无逐帧数值数组（报告只能是标量） |
+| 17 | 隐私 | JSON < 64 KB（放不下一帧） |
+| 18 | 场景（可选） | `-RequireContrast` 时要求 `SceneFlat = false` |
+
+**为什么第 11 项才是承重的那一项**
+
+`NV12` 不携带 alpha，所以一次**正确**的 `NV12 → BGRA8` 转换必然把 alpha 合成 255。
+读错缓冲区（错格式、错步长、未初始化的分配）就不会是 255。它证明的是
+"这堆字节是解码出来的图像"——比"画面有变化"更接近我们真正想知道的事。
+
+**为什么场景对比度不是门禁**
+
+画面有没有对比度取决于**房间**，不取决于代码。锁屏 + 镜头被遮时，
+一台完全正常的摄像头会给出整帧均匀的画面（本机实测：每个字节都是 15，
+alpha 255，4.9 fps，30 帧标准差全为 0）。拿它当门禁，脚本会因为一个它修不了的原因失败。
+所以默认只观测，灯开着、快门打开时再加 `-RequireContrast` 证明活画面。
+
+**真机基线（2026-10-23，LENOVO 83EG，会话锁屏）**
+
+| 观测 | 值 | 读法 |
+|---|---|---|
+| 枚举 → 打开 | 1 台 `Integrated Camera` → **1280×720 @30fps NV12** | 枚举报 0×0 是故意的 |
+| `FramesOffered/Received/Dropped` | 32 / 30 / 2 | 不是我们在丢帧 |
+| `CameraFps` / `MeasuredFps` | 4.88 / 4.57 | 摄像头自己只有 4.9 fps（暗场拉长曝光） |
+| `AlphaMean` | **255** | 真 BGRA |
+| `ByteMin` / `ByteMax` | 15 / 15 | 整帧均匀，15 = NV12 有限范围黑电平（Y=16） |
+| `ContrastDelta` | 0 | `SceneFlat=True` |
+
+**怎么跑**
+
+```powershell
+dotnet build src/DuoFlow.App -p:Platform=x64
+.\scripts\acceptance\camera-probe-verify.ps1
+.\scripts\acceptance\camera-probe-verify.ps1 -RequireContrast      # 灯开着时
+.\scripts\acceptance\camera-probe-verify.ps1 -OutputDir D:\tmp\cam
+```
+
+**产出**：`camera-probe-verify.txt` + `camera-probe-verify-result.json` +
+`probe\camera-probe-result.json`（探针原始报告）。
+**退出码** 0 = 18/18。
+
+**已知边界**
+
+- 无头运行，不需要交互式桌面。
+- 帧预算和目标帧率由**探针**决定（30 帧 / 10 fps），脚本从报告里读回来——
+  不提供 `-Frames` / `-TargetFps`，因为探针不读它们，那种参数只会假装能配。
+- 摄像头被别的程序独占时可能 `Health = InUse`：先关掉会议软件再跑。

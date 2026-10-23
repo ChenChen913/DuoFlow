@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    DuoFlow.Camera - the DEVICE half of M3 (HARDWARE §1.2).
+
+    This project is allowed to know about WinRT, MediaCapture and pixel buffers;
+    DuoFlow.Vision is not. Keeping the boundary at the assembly level means the
+    geometry can be unit tested on a machine with no camera at all, and a WinRT
+    API change cannot reach into the algorithm.
+
+    Target is the same windows TFM as DuoFlow.Capture so the CsWinRT projections
+    (Windows.Media.Capture, Windows.Devices.Enumeration, ...) come from the SDK
+    with no extra package.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows10.0.22621.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>10.0.17763.0</SupportedOSPlatformVersion>
+    <RootNamespace>DuoFlow.Camera</RootNamespace>
+    <Platforms>x86;x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DuoFlow.Vision\DuoFlow.Vision.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -49,7 +49,14 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
 $log = Join-Path $OutputDir "tuning-panel-verify.txt"
 Remove-Item $log -ErrorAction SilentlyContinue
-function Log([string]$m) { $m | Out-File -FilePath $log -Append -Encoding UTF8; Write-Host $m }
+# Write-Host "" emits NOTHING in Windows PowerShell 5.1 (verified: A/""/B
+# prints "AB"), so an empty line has to be written as a single space. Without
+# this every Log "" in the script silently collapses the layout.
+function Log([string]$m) {
+    $line = if ($m.Length -eq 0) { " " } else { $m }
+    $line | Out-File -FilePath $log -Append -Encoding UTF8
+    Write-Host $line
+}
 
 if (-not $Exe) {
     $found = Get-ChildItem (Join-Path $RepoRoot "src\DuoFlow.App\bin") -Recurse -Filter "DuoFlow.App.exe" -ErrorAction SilentlyContinue |

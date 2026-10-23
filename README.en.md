@@ -58,7 +58,7 @@ A truly great version should make the user feel: **the computer did not suddenly
 
 ## Current status
 
-**M0 (feasibility) and M1 (rendering MVP) are fully complete ✅; the project is now in M2 visual refinement.**
+**M0 (feasibility) and M1 (rendering MVP) are fully complete ✅, M2 visual refinement is objectively complete, and the project is now in M3, the camera provider.**
 
 A demo you can run today:
 
@@ -66,9 +66,11 @@ A demo you can run today:
 2. Drag the progress slider on the console at the bottom-left
 3. The whole desktop folds in real time: sharp and bright at the hinge, progressively frosted and shadowed toward the far edge
 
-- Unit tests 134/134 passing (`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`)
+- Unit tests 202/202 passing (`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`)
 - Rendering uses a physical depth-of-field model: the gap height drives the frost radius and the light falloff, with mip pre-filtering and Vogel-spiral sampling
 - Transparency, click-through and the fold geometry are all verified on real hardware
+- Quantified on-device acceptance scripts live in `scripts/acceptance/`: geometry / light direction / blur direction / no hysteresis / coverage (9/9), the P0 transparency trio, tuning-panel wiring (20/20), six lid operations with rate compliance (22/22), light-sweep position and amplitude (14/14), and camera enumerate/open/real-decoded-frames/privacy (18/18)
+- The camera is wired in with devices and algorithms split at the assembly level (DD-053): `DuoFlow.Vision` is plain `net8.0` and **cannot reference WinRT**, and the only door for pixel coordinates is `CameraProfile`; only `DuoFlow.Camera` touches a device. Measured on real hardware: 1280x720 NV12, `AlphaMean=255` (genuine BGRA), no pixel ever persisted
 - Render tuning is saved to `%LOCALAPPDATA%\DuoFlow\tuning.json` and restored on the next launch (DD-051)
 - The render heartbeat goes quiet while the effect is off screen: no 33 FPS idle spin on a static desktop (DD-051)
 
@@ -168,17 +170,20 @@ DuoFlow/
 ├── shaders/
 │   └── DuoWarp.hlsl            # fold projection + physical DoF + light falloff shader
 ├── src/
-│   ├── DuoFlow.App/            # WinUI 3 app (overlay / console / render pipeline)
+│   ├── DuoFlow.App/            # WinUI 3 app (overlay / console / render pipeline / probes)
 │   ├── DuoFlow.Core/           # LidState / AnimationEngine / provider contracts
-│   ├── DuoFlow.Core.Tests/     # xUnit unit tests
+│   ├── DuoFlow.Core.Tests/     # xUnit unit tests (202)
 │   ├── DuoFlow.Capture/        # Windows Graphics Capture & D3D interop
-│   └── DuoFlow.Render/         # fold geometry / render parameters (pure C#, testable)
+│   ├── DuoFlow.Render/         # fold geometry / render parameters (pure C#, testable)
+│   ├── DuoFlow.Vision/         # camera geometry / selection / throttling / health (plain net8.0, no WinRT)
+│   └── DuoFlow.Camera/         # MediaCapture device layer (the only assembly touching a camera)
 ├── scripts/                    # environment setup / hardware probe
+│   └── acceptance/             # quantified on-device acceptance (geometry / P0 trio / panel / camera)
 ├── docs/                       # spec / design decisions / roadmap / hardware compatibility
 └── .github/workflows/          # Windows CI (build / smoke / unit tests)
 ```
 
-<!-- TODO: 待确认 --> DuoFlow.Camera / DuoFlow.Sensors / DuoFlow.Power are planned modules, landing with M3/M4/M5.
+<!-- TODO: 待确认 --> DuoFlow.Sensors / DuoFlow.Power are planned modules, landing with M4/M5.
 
 ## Privacy
 

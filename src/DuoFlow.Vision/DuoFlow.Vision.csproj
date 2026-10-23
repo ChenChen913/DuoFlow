@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    DuoFlow.Vision - camera-side geometry and policy, WITHOUT any WinRT.
+
+    Split from DuoFlow.Camera (M3.1) on purpose: HARDWARE_COMPATIBILITY §1.2
+    requires the device and "how the device is used to measure the lid" to be
+    separated. Everything here is plain net8.0 so the cloud CI can run the
+    tests with nothing but "dotnet test", and so the geometry can be proven
+    against synthetic quadrilaterals long before a real camera is involved.
+
+    RULE: nothing in this project may see a pixel coordinate. Algorithms take
+    normalized 0..1 coordinates; pixels exist only at CameraProfile's two
+    edges. That is what keeps "works on my laptop" from becoming the design.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>DuoFlow.Vision</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <DefaultLanguage>en-US</DefaultLanguage>
+  </PropertyGroup>
+
+</Project>

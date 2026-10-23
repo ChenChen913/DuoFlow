@@ -1,0 +1,290 @@
+﻿# =====================================================================
+# DuoFlow - camera probe acceptance (M3.1)
+#
+# WHAT IT PROVES: this machine can enumerate a camera, open it, negotiate a
+# format, receive real decoded frames, and classify health - and that the
+# probe leaks no pixels while doing it.
+#
+#   1.  exit code      the probe reports its own verdict, not just "it ran"
+#   2.  枚举           at least one capture device is visible
+#   3.  选择           a device is chosen deterministically
+#   4.  协商格式       the OPENED device has W/H > 0 and a pixel format -
+#                      enumeration reports 0 here on purpose (see below)
+#   5.  收帧           FramesReceived >= requested, FramesOffered >= received
+#   6.  速率           MeasuredFps > 0 and consistent with CameraFps
+#   7.  缓冲区结构     AlphaMean = 255 (proves a real NV12->BGRA conversion)
+#   8.  健康分类       Health = None on a healthy machine
+#   9.  隐私           no pixel-shaped field, no sample array, small JSON
+#
+# WHY 5/6 ARE SPLIT: FramesOffered is what the CAMERA delivered before our
+# governor; FramesReceived is what we kept. They look identical from outside
+# ("few frames arrived") but have opposite fixes. A dim room drops a webcam
+# to ~5 fps by lengthening exposure - that is the camera, not a bug, and
+# dropping frames because of it would send someone hunting in the wrong file.
+#
+# WHY CONTRAST IS NOT A GATE: whether the picture has contrast depends on the
+# room, not on the code. A locked screen with the lens capped gives a
+# perfectly uniform frame from a perfectly working camera (measured on the
+# dev laptop: every byte = 15, alpha = 255, 4.9 fps). Gating on it would make
+# this script fail for a reason it cannot fix. Pass -RequireContrast when the
+# light is on and the shutter is open, to additionally prove a LIVE PICTURE.
+#
+# WHAT THE NUMBERS LOOK LIKE WHEN IT IS DARK (dev laptop, 2026-10-23):
+#   FramesOffered 32 / Received 30 / Dropped 2, CameraFps 4.88,
+#   Luminance 15.00 flat, ContrastDelta 0, AlphaMean 255, ByteMin=ByteMax=15.
+#   15 is the NV12 limited-range black floor (Y=16) after conversion.
+#
+# USAGE (Windows PowerShell 5.1, no admin):
+#   .\scripts\acceptance\camera-probe-verify.ps1
+#   .\scripts\acceptance\camera-probe-verify.ps1 -RequireContrast
+#   .\scripts\acceptance\camera-probe-verify.ps1 -OutputDir D:\tmp\cam
+#
+# OUTPUT: camera-probe-verify.txt + probe\camera-probe-result.json
+# EXIT CODE: 0 = all checks passed, 1 = at least one did not.
+# NOTE: headless - opens no window and does not touch the screen.
+#       ~10 s, dominated by the probe's own frame budget.
+# =====================================================================
+
+param(
+    [string]$RepoRoot = "",
+    [string]$OutputDir = "",
+    [string]$Exe = "",
+    [int]$TimeoutSeconds = 90,
+    [switch]$RequireContrast
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not $RepoRoot) { $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path }
+if (-not $OutputDir) { $OutputDir = Join-Path $env:TEMP "duoflow-camera-probe" }
+New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+
+$log = Join-Path $OutputDir "camera-probe-verify.txt"
+Remove-Item $log -ErrorAction SilentlyContinue
+# Write-Host "" emits NOTHING in Windows PowerShell 5.1 (verified: A/""/B
+# prints "AB"), so an empty line has to be written as a single space. Without
+# this every Log "" in the script silently collapses the layout.
+function Log([string]$m) {
+    $line = if ($m.Length -eq 0) { " " } else { $m }
+    $line | Out-File -FilePath $log -Append -Encoding UTF8
+    Write-Host $line
+}
+
+if (-not $Exe) {
+    $found = Get-ChildItem (Join-Path $RepoRoot "src\DuoFlow.App\bin") -Recurse -Filter "DuoFlow.App.exe" -ErrorAction SilentlyContinue |
+             Where-Object { $_.FullName -notmatch "\\obj\\" } |
+             Sort-Object LastWriteTime -Descending |
+             Select-Object -First 1
+    if ($found) { $Exe = $found.FullName }
+}
+if (-not $Exe -or -not (Test-Path $Exe)) {
+    Write-Host "ERROR: DuoFlow.App.exe not found - build it first:"
+    Write-Host "  cd src\DuoFlow.App; dotnet build -p:Platform=x64"
+    exit 1
+}
+
+Log "DuoFlow camera probe acceptance (M3.1)"
+Log ("  exe        : " + $Exe)
+Log ("  output     : " + $OutputDir)
+$contrastMode = if ($RequireContrast) { "REQUIRED (light on, shutter open)" } else { "informational" }
+# The frame budget and the target rate are the PROBE's, and are read back from
+# its report. Passing them in here would be a lie: the probe takes them from
+# MediaCaptureCamera.DefaultTargetFps and a fixed 30-frame budget, so a script
+# parameter would appear to control them while changing nothing.
+Log ("  contrast   : " + $contrastMode)
+Log ""
+
+$script:steps = @()
+function Check([string]$name, [bool]$pass, [string]$detail) {
+    $script:steps += [ordered]@{ Name = $name; Pass = $pass; Detail = $detail }
+    $tag = if ($pass) { "PASS" } else { "FAIL" }
+    Log ("  [{0}] {1} - {2}" -f $tag, $name, $detail)
+}
+
+# ---------------------------------------------------------------------
+# 1. Run the probe. It is headless: no window, no screen takeover.
+# ---------------------------------------------------------------------
+$probeDir = Join-Path $OutputDir "probe"
+New-Item -ItemType Directory -Force -Path $probeDir | Out-Null
+$probeArg = "--camera-probe=" + $probeDir
+
+Log "1. running probe"
+$clock = [Diagnostics.Stopwatch]::StartNew()
+$proc = Start-Process -FilePath $Exe -ArgumentList $probeArg -PassThru -WindowStyle Hidden
+$timedOut = -not $proc.WaitForExit($TimeoutSeconds * 1000)
+$clock.Stop()
+if ($timedOut) {
+    # A probe that hangs is a failure mode in itself (driver stuck behind a
+    # privacy prompt); kill it so the script can still report.
+    try { $proc.Kill() } catch { }
+    Log ("  probe did not exit within " + $TimeoutSeconds + " s - killed")
+}
+$exitCode = if ($timedOut) { -1 } else { $proc.ExitCode }
+Log ("  exit code " + $exitCode + " in " + ("{0:0.0}" -f $clock.Elapsed.TotalSeconds) + " s")
+
+Check "probe exits 0" ($exitCode -eq 0) ("exit=" + $exitCode)
+
+# ---------------------------------------------------------------------
+# 2. Read the report.
+# ---------------------------------------------------------------------
+$jsonPath = Join-Path $probeDir "camera-probe-result.json"
+$j = $null
+if (Test-Path $jsonPath) {
+    try { $j = Get-Content $jsonPath -Raw | ConvertFrom-Json } catch { $j = $null }
+}
+Check "result JSON written" ($null -ne $j) ($(if ($j) { $jsonPath } else { "missing or unparseable: " + $jsonPath }))
+
+if ($null -eq $j) {
+    Log ""
+    Log "OVERALL = FAIL (no report to check)"
+    [ordered]@{
+        GeneratedAt = (Get-Date).ToString("s")
+        Exe         = $Exe
+        Steps       = $script:steps
+        Overall     = $false
+    } | ConvertTo-Json -Depth 6 | Out-File (Join-Path $OutputDir "camera-probe-result-summary.json") -Encoding utf8
+    exit 1
+}
+
+# ---------------------------------------------------------------------
+# 3. Devices and format.
+# ---------------------------------------------------------------------
+$devices = @($j.Devices)
+Check "at least one camera enumerated" ($devices.Count -ge 1) ("devices=" + $devices.Count)
+if ($devices.Count -gt 0) {
+    $names = @($devices | ForEach-Object { "[" + $_.Enclosure + "] " + $_.Name })
+    Log ("  devices: " + ($names -join "; "))
+}
+
+Check "a device was chosen" ($null -ne $j.ChosenDevice) ("chosen=" + $(if ($j.ChosenDevice) { $j.ChosenDevice.Name } else { "(none)" }))
+
+$opened = $j.OpenedDevice
+$fmtOk = $false
+$fmtText = "(not opened)"
+if ($null -ne $opened) {
+    $fmtOk = ($opened.Width -gt 0) -and ($opened.Height -gt 0) -and (-not [string]::IsNullOrWhiteSpace($opened.PixelFormat))
+    $fmtText = "" + $opened.Width + "x" + $opened.Height + " @" + $opened.FrameRate + "fps " + $opened.PixelFormat
+}
+# Enumeration reports 0x0 on purpose: the real size is a property of the
+# negotiated source, and reporting the advertised one would make the trace lie.
+Check "opened with a negotiated format" $fmtOk $fmtText
+
+# ---------------------------------------------------------------------
+# 4. Frames: received vs offered, and the two rates.
+# ---------------------------------------------------------------------
+$received = [int]$j.FramesReceived
+$offered  = [int]$j.FramesOffered
+$dropped  = [int]$j.FramesDropped
+$requested = [int]$j.RequestedFrames
+$targetFps = [double]$j.TargetFps
+$measured = [double]$j.MeasuredFps
+$cameraFps = [double]$j.CameraFps
+
+# RequestedFrames is the probe's own contract, read from the report rather
+# than passed in: a script parameter that the probe ignores would look like it
+# controlled the frame budget while doing nothing (it did, briefly).
+Check "probe declared a frame budget" ($requested -gt 0) ("requested=" + $requested + " target=" + $targetFps + "/s")
+Check "received the requested frames" ($received -ge $requested) ("received=" + $received + " requested=" + $requested)
+# Offered must be >= received: the governor can only ever remove frames.
+Check "offered >= received" ($offered -ge $received) ("offered=" + $offered + " received=" + $received + " dropped=" + $dropped)
+Check "measured rate is positive" ($measured -gt 0) ("measured=" + ("{0:0.00}" -f $measured) + "/s")
+Check "camera-side rate is positive" ($cameraFps -gt 0) ("camera=" + ("{0:0.00}" -f $cameraFps) + "/s")
+
+# MeasuredFps is (frames-1)/span over the frames we KEPT; CameraFps is over
+# what the camera OFFERED. They can only differ by our own dropping, so a
+# large gap means the governor is the story, not the sensor.
+$rateGap = if ($cameraFps -gt 0) { [Math]::Abs($measured - $cameraFps) / $cameraFps } else { 1.0 }
+Check "measured rate agrees with camera rate" ($rateGap -le 0.35) ("gap=" + ("{0:0.0}" -f ($rateGap * 100)) + "% (<=35% = we are not the bottleneck)")
+
+# ---------------------------------------------------------------------
+# 5. Buffer structure - the load-bearing check.
+#    NV12 carries no alpha, so a correct BGRA conversion synthesises 255.
+#    Anything else means we are reading bytes that are not BGRA, and every
+#    statistic above would be meaningless.
+# ---------------------------------------------------------------------
+$alpha = [double]$j.AlphaMean
+$byteMin = [int]$j.ByteMin
+$byteMax = [int]$j.ByteMax
+
+Check "buffer is BGRA8 (alpha 255)" ($alpha -ge 250) ("alpha mean=" + ("{0:0.0}" -f $alpha))
+Check "buffer is not all zeros" ($byteMax -gt 0) ("byte range=" + $byteMin + ".." + $byteMax)
+
+# ---------------------------------------------------------------------
+# 6. Health.
+# ---------------------------------------------------------------------
+$health = [string]$j.Health
+Check "health classified as None" ($health -eq "None") ("health=" + $health + " hint=" + $j.HealthHint)
+
+# ---------------------------------------------------------------------
+# 7. Contrast: informational by default, gated on request.
+# ---------------------------------------------------------------------
+$sceneFlat = [bool]$j.SceneFlat
+$contrastDelta = [double]$j.ContrastDelta
+if ($RequireContrast) {
+    Check "scene has contrast (live picture)" (-not $sceneFlat) ("contrast delta=" + ("{0:0.000000}" -f $contrastDelta) + " lum=" + $j.LuminanceMean)
+} else {
+    Log ("  [INFO] scene flat=" + $sceneFlat + " contrast delta=" + ("{0:0.000000}" -f $contrastDelta) + " lum=" + $j.LuminanceMean)
+    if ($sceneFlat) {
+        Log "         uniform frame: lens capped, privacy shutter closed, or a dark room."
+        Log "         The pipeline is fine - rerun with -RequireContrast once there is light."
+    }
+}
+
+# ---------------------------------------------------------------------
+# 8. Privacy: no pixel ever leaves. The probe sets StoredPixels=false; this
+#    also proves no field NAME hints at image data and that nothing grew into
+#    a sample array. Cheap, and it is the one rule that must never regress.
+# ---------------------------------------------------------------------
+Check "StoredPixels is false" ($j.StoredPixels -eq $false) ("StoredPixels=" + $j.StoredPixels)
+
+$leaky = @($j.PSObject.Properties | Where-Object { $_.Name -match '(?i)pixel' -and $_.Name -ne 'StoredPixels' })
+Check "no pixel-shaped field" ($leaky.Count -eq 0) ($(if ($leaky.Count -eq 0) { "no key matches /pixel/ except StoredPixels" } else { "leaky keys: " + (($leaky | ForEach-Object { $_.Name }) -join ", ") }))
+
+# A per-frame series would be an array of numbers; nothing legitimate here is.
+$series = @($j.PSObject.Properties | Where-Object { $_.Value -is [array] -and @($_.Value).Count -gt 8 -and @($_.Value)[0] -is [double] })
+Check "no per-frame sample arrays" ($series.Count -eq 0) ($(if ($series.Count -eq 0) { "report is scalars only" } else { "arrays: " + (($series | ForEach-Object { $_.Name }) -join ", ") }))
+
+$jsonKb = [Math]::Round((Get-Item $jsonPath).Length / 1024.0, 1)
+Check "report stays small" ($jsonKb -lt 64) ($jsonKb.ToString() + " KB (< 64 KB cannot hold a frame)")
+
+# ---------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------
+# Wrap in @(): with exactly one match, Where-Object returns the object itself,
+# and .Count on an ordered dictionary is the number of KEYS.
+$failed = @($script:steps | Where-Object { -not $_.Pass }).Count
+$overall = ($failed -eq 0)
+
+Log ""
+Log ("  " + ("{0,-38}" -f "measure") + " value")
+Log ("  " + ("-" * 38) + " -----")
+Log ("  " + ("{0,-38}" -f "target rate") + " " + ("{0:0.00}" -f $targetFps) + " fps")
+Log ("  " + ("{0,-38}" -f "camera rate (offered)") + " " + ("{0:0.00}" -f $cameraFps) + " fps")
+Log ("  " + ("{0,-38}" -f "measured rate (kept)") + " " + ("{0:0.00}" -f $measured) + " fps")
+Log ("  " + ("{0,-38}" -f "frames offered/received/dropped") + " " + $offered + "/" + $received + "/" + $dropped)
+Log ("  " + ("{0,-38}" -f "luminance mean") + " " + $j.LuminanceMean)
+Log ("  " + ("{0,-38}" -f "alpha mean") + " " + $alpha)
+Log ("  " + ("{0,-38}" -f "byte range") + " " + $byteMin + ".." + $byteMax)
+Log ""
+Log ("OVERALL = " + $(if ($overall) { "PASS (" + $script:steps.Count + "/" + $script:steps.Count + ")" } else { "FAIL (" + $failed + " of " + $script:steps.Count + " failed)" }))
+
+[ordered]@{
+    GeneratedAt     = (Get-Date).ToString("s")
+    Exe             = $Exe
+    RequireContrast = [bool]$RequireContrast
+    ExitCode        = $exitCode
+    TargetFps       = $targetFps
+    CameraFps       = $cameraFps
+    MeasuredFps     = $measured
+    FramesOffered   = $offered
+    FramesReceived  = $received
+    FramesDropped   = $dropped
+    AlphaMean       = $alpha
+    SceneFlat       = $sceneFlat
+    ContrastDelta   = $contrastDelta
+    Steps           = $script:steps
+    Overall         = $overall
+} | ConvertTo-Json -Depth 6 | Out-File (Join-Path $OutputDir "camera-probe-verify-result.json") -Encoding utf8
+
+if (-not $overall) { exit 1 }
+exit 0

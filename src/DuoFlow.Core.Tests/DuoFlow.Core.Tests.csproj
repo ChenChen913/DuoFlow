@@ -28,6 +28,9 @@
   <ItemGroup>
     <ProjectReference Include="..\DuoFlow.Core\DuoFlow.Core.csproj" />
     <ProjectReference Include="..\DuoFlow.Render\DuoFlow.Render.csproj" />
+    <!-- M3.1: camera geometry/policy is pure net8.0 precisely so it can be
+         tested here, on a machine with no camera attached. -->
+    <ProjectReference Include="..\DuoFlow.Vision\DuoFlow.Vision.csproj" />
   </ItemGroup>
 
 </Project>

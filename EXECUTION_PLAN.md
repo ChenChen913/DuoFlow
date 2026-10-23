@@ -57,10 +57,10 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 当前 Phase | **Phase 3 — M2 Visual Refinement**（M1 ✅；执行顺序 M2.0→M2.5→M2.4→M2.1→M2.2→M2.6→M2.3） |
-| 当前小任务 | **M2.3 Visual Tuning**（客观部分 ✅ 2026-10-23；主观确认待用户 —— M2.0 ✅、M2.5 ✅、M2.4 ✅、M2.1 ✅、M2.2 ✅、M2.6 ✅） |
-| 阻塞项 | M2.3 主观项需用户真机看一眼（六种操作）；另有「满折覆盖度」一个审美选择待拍板（DD-052 §3），不阻塞其余工作 |
-| 最后更新 | 2026-10-23 · M2.3 客观部分：五项检查可测代理 + 端点加严 + loop 端点停留 + 覆盖度指标；单测 138/138、demo 22/22、selftest 9/9 · 八弟 |
+| 当前 Phase | **Phase 4 — M3 Camera Provider**（M2 客观部分全部完成；执行顺序 M3.1→M3.2→M3.3→M3.4→M3.5→M3.6） |
+| 当前小任务 | **M3.2 Screen Detection**（M3.1 Camera Access ✅ 2026-10-23） |
+| 阻塞项 | ① M2.3 主观项需用户真机看一眼（六种操作）＋「满折覆盖度」审美选择待拍板（DD-052 §3）——不阻塞 M3；② M3.1 的「活画面」实证需物理动作（开灯/打开隐私快门后跑 `-RequireContrast`） |
+| 最后更新 | 2026-10-23 · M3.1 Camera Access：设备/算法程序集分离 + 探针结构性门禁 + 18 项验收；单测 202/202、真机探针 18/18 · 八弟 |
 
 ---
 
@@ -71,8 +71,8 @@
 | Phase 0 | — | 立项 · 文档基线 · 仓库基建（README / Topics / 执行文档） | ✅ 已完成 |
 | Phase 1 | M0 | Research & Feasibility：开发环境 / 屏幕捕获 / Overlay / 硬件调研 | ✅ 已完成（M0.1-M0.3 云端；M0.4 真机实测 2026-09-16 回填） |
 | Phase 2 | M1 | Rendering MVP：LidState / Manual Progress / Warp / Mask / Blur / Dimming | ✅ 已完成（M1.1-M1.8；Mask/Blur/Dim 三件套随后被 DD-046 物理景深模型取代） |
-| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 进行中（M2.0 ✅ · M2.5 ✅ · M2.4 ✅ · M2.1 ✅ · M2.2 ✅ · M2.6 ✅ · M2.3 客观 ✅ / 主观待确认） |
-| Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | ⬜ |
+| Phase 3 | M2 | Visual Refinement：Gradient / Light Sweep / Demo Mode / 参数面板 | 🔄 客观全绿（M2.0 ✅ · M2.5 ✅ · M2.4 ✅ · M2.1 ✅ · M2.2 ✅ · M2.6 ✅ · M2.3 客观 ✅）；主观确认 + MaxFold 拍板待用户 |
+| Phase 4 | M3 | Camera Provider：摄像头角度估计驱动动画 | 🔄 进行中（M3.1 ✅ 2026-10-23 · M3.2–M3.6 待做） |
 | Phase 5 | M4 | Sensor Provider：传感器接入 / Provider Manager | ⬜ |
 | Phase 6 | M5 | Windows Integration：电源事件 / 开合动画 / 开机自启 | ⬜ |
 | Phase 7 | M6 | Product UI：设置界面 / 性能模式 | ⬜ |
@@ -567,13 +567,88 @@ Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）
 ### Phase 4 — M3 Camera Provider
 
 > 实施时结合 `docs/HARDWARE_COMPATIBILITY.md` 的 4 层 Camera Adaptation 架构展开细化。
+>
+> **拆分原则（2026-10-23 定）**：设备与算法**彻底分开**——这是 §1.2 的分层要求，
+> 也是"能不能在别人机器上跑"的关键。
+>
+> ```text
+> DuoFlow.Camera  (net8.0-windows)  ← 只做 WinRT：枚举 / 打开 / 帧 / 释放
+> DuoFlow.Vision  (net8.0 纯逻辑)   ← Profile / Selection / Governor / Health / 后续检测与角度
+> ```
+>
+> 算法侧**只吃归一化坐标 0~1**，像素坐标只允许出现在 `CameraProfile` 的进出口。
+> 这条不是洁癖：分辨率/方向/裁剪一旦漏进算法，就会变成"在联想上能跑、在别人机器上寄了"。
+>
+> 执行顺序：M3.1 → M3.2 → M3.3 → M3.4 → M3.5 → M3.6。
 
-* [ ] M3.1 Camera Access（枚举 / 打开默认摄像头 / 获取帧 / 控制 FPS / 释放）
-* [ ] M3.2 Screen Detection（Resize / Edge / Rectangle / Display Region / Confidence）
-* [ ] M3.3 Angle Estimation（几何模型 → Angle / Progress / Confidence）
-* [ ] M3.4 Smoothing（低通滤波 / 防抖 / 检测丢失与突变处理）
-* [ ] M3.5 Calibration（Open / Mid / Close 校准，保存与重校准）
-* [ ] M3.6 Camera Failure（摄像头不存在 / 被占用 / 权限拒绝 / 检测不到屏幕 / Confidence 太低——全部优雅降级）
+#### M3.1 Camera Access ✅ 2026-10-23（DD-053）
+
+* [x] 新项目 `DuoFlow.Vision`（net8.0，纯逻辑）+ `DuoFlow.Camera`（net8.0-windows，WinRT）
+* [x] `CameraDeviceInfo`：Id / Name / Enclosure（Front/Back/External/Unknown）/ 分辨率 / 帧率 / 像素格式 / 旋转 / 镜像
+* [x] `CameraProfile`：像素 ↔ 归一化，顺序固定为 **旋转 → 镜像 → 裁剪**，必须**可逆**（单测往返误差 < 1e-9）
+* [x] `CameraSelection`：策略 `显式 Id > 正面 > 未知 > 背面 > 外接`，同档按 Name 定序（**确定性**，不依赖枚举顺序）
+* [x] `FrameRateGovernor`：按目标帧率丢弃多余帧（纯函数 + 假时钟单测；摄像头给 30、我们只要 10 时不抖）
+* [x] `CameraHealth`：HRESULT / 异常 → `NoDevice / AccessDenied / InUse / Disabled / Unknown`
+* [x] `MediaCaptureCamera`：`MediaCapture` + `MediaFrameReader`（Color 源，CPU 内存，BGRA8）→ 帧回调
+* [x] `--camera-probe`：枚举 → 打开默认 → 抓 30 帧 → 实测 FPS / 分辨率 / 每帧亮度 → 释放 → JSON
+* [x] `scripts/acceptance/camera-probe-verify.ps1`：18 项检查，默认不含场景门禁
+* **隐私红线**：探针**只输出统计量**，绝不落盘任何像素、绝不进日志（PROJECT_SPEC 铁律 5）。
+  每帧只报「平均亮度 + 标准差 + alpha 均值 + 字节范围」，足以证明"帧是真的"，又什么都不泄露。
+  验收脚本额外反查一遍：JSON 里除 `StoredPixels` 外不许出现匹配 `/pixel/` 的键、
+  不许出现逐帧数组、文件必须 < 64 KB。
+* **验收**：单测覆盖 Profile 往返 / Selection 策略 / Governor 丢帧 / Health 分类 ✅；
+  真机探针 exit 0 ✅、`frames=30` ✅、摄像头释放后灯灭 ✅
+
+**真机实测（2026-10-23，LENOVO 83EG，会话锁屏）**
+
+| 项 | 值 |
+|---|---|
+| 枚举 | 1 台，`Integrated Camera`，`Enclosure=Front` |
+| 协商格式 | **1280×720 @30fps NV12**（枚举时故意报 0×0） |
+| `FramesOffered` / `Received` / `Dropped` | 32 / 30 / 2 |
+| `CameraFps` / `MeasuredFps` | 4.88 / 4.57（差 6.4%） |
+| `AlphaMean` | **255** |
+| `ByteMin` / `ByteMax` | 15 / 15 |
+| `ContrastDelta` | 0（`SceneFlat=True`） |
+| `Health` | `None` |
+
+**两处口径修正（原计划写错了，记在这里免得后人再踩）**
+
+1. **「实测 FPS 落在目标 ±30%」是错的门禁。** 原计划假设摄像头会稳定给到目标帧率，
+   实际上暗场下驱动会拉长曝光，本机只有 4.9 fps。这是摄像头的合法行为，
+   代码里没有该改的地方。改为：`MeasuredFps > 0` 且与 `CameraFps` 相差 ≤ 35%
+   （证明瓶颈不在我们的 governor），并单独报 `CameraFps` 供判断。
+2. **「每帧亮度非 0 证明不是黑帧」证明不了任何事。** 锁屏 + 镜头被遮时整帧就是
+   均匀的 15（NV12 有限范围黑电平 Y=16 转换后的值），30 帧标准差全为 0，
+   但管线完全正常。改为结构性判据 **`AlphaMean ≥ 250`**：NV12 无 alpha，
+   正确的 BGRA 转换必然合成 255，读错缓冲区就不会。场景对比度降级为观测项，
+   环境允许时用 `-RequireContrast` 额外证明活画面。详见 DD-053 §2。
+
+> **待办（需要物理动作）**：在灯开着、隐私快门打开的条件下跑一次
+> `.\scripts\acceptance\camera-probe-verify.ps1 -RequireContrast`，
+> 补上"活画面"这一格的实证。
+
+#### M3.2 Screen Detection（待细化）
+
+* [ ] 归一化画面上找屏幕：Edge / Rectangle / Display Region / Confidence
+* [ ] **不假定**摄像头位置与 FOV；检测不到时返回低 Confidence 而不是抛异常
+
+#### M3.3 Angle Estimation（待细化）
+
+* [ ] 几何模型 → Angle / Progress / Confidence（纯函数，可用合成四边形单测）
+* [ ] 输出仍是 `LidState`，与 M1 的 Provider 契约一致
+
+#### M3.4 Smoothing（待细化）
+
+* [ ] 低通滤波 / 防抖 / 检测丢失与突变处理（复用 M1.3 引擎的限速指数逼近思路）
+
+#### M3.5 Calibration（待细化）
+
+* [ ] Open / Mid / Close 三点校准，保存与重校准（复用 DD-051 的 preset 落盘方式）
+
+#### M3.6 Camera Failure（待细化）
+
+* [ ] 摄像头不存在 / 被占用 / 权限拒绝 / 检测不到屏幕 / Confidence 太低——全部优雅降级到 Manual
 
 ### Phase 5 — M4 Sensor Provider
 
@@ -630,6 +705,37 @@ Progress 滑块实时值），真机 **9/9 PASS、退出码 0**（单程 0.6s）
 ---
 
 ## §5 进度日志（append-only，新记录写在最上面）
+
+### 2026-10-23 · M3.1 Camera Access（DD-053：设备/算法程序集分离 + 探针只对管线设门禁） · 八弟
+
+- **背景**：M3 第一步要碰摄像头。`HARDWARE_COMPATIBILITY.md` §1.1 的六条铁律是原则不是结构，
+  而原则会被下一个 Agent 顺手破坏——所以先把边界做成**编译期约束**，再接设备。
+- **程序集切法**：`DuoFlow.Vision`（`net8.0` 纯逻辑，引不到 WinRT）/ `DuoFlow.Camera`
+  （`net8.0-windows`，只有它碰 MediaCapture）/ App（组装）。Vision 里像素坐标唯一的进出口是
+  `CameraProfile`，顺序固定 **旋转 → 镜像 → 裁剪归一化**，`ToNormalized`/`ToSourcePixel`
+  互为逆（8 种朝向×裁剪组合单测容差 9 ulp）。好处是 64 个新单测全部云端可跑，不依赖本机摄像头。
+- **枚举报 0×0 是故意的**：分辨率是"协商出来的源"的属性，不是设备的属性。本机实测
+  枚举 0×0、打开后 1280×720 NV12 @30fps——把宣称值写进 trace 就是让日志撒谎。
+- **真机首跑暴露两个必须查清的数**：实测 4.58 fps（目标 10），且 30 帧亮度完全相同（15.00）。
+  加两个统计量后一次说清：
+  - `FramesOffered=32 / Received=30 / Dropped=2` → **不是我们在丢帧**，摄像头自己只有 4.88 fps
+    （暗场拉长曝光的合法行为）。
+  - `AlphaMean=255` → NV12 无 alpha，255 是转换器合成的，**证明缓冲区是真解码数据**；
+    `ByteMin=ByteMax=15` → 整帧均匀，15 是 NV12 有限范围黑电平（Y=16）。
+  结论：管线通、画面纯黑（锁屏 + 镜头被遮 / 暗房）。
+- **顺手修掉自己写错的两条验收口径**（详见 M3.1 节）：`实测 FPS ±30%` 和 `每帧亮度非 0`
+  都是**场景性**条件，会在合法环境下误报。门禁换成结构性的 `AlphaMean ≥ 250`，
+  场景对比度降级为观测项 + `-RequireContrast` 开关。
+- **顺带发现**：`FrameRateGovernor` 在目标帧率变化时若重置限速时钟，10→1 fps 后仍会放行下一帧
+  ——正好是降速的反面。单测当场抓到，已改为"最小间隔每次从当前目标现算"。
+- **顺手修掉一个静默缺陷**：`Write-Host ""` 在 Windows PowerShell 5.1 下**什么都不输出**
+  （实测 `A/""/B` 打成 `AB`），四个验收脚本里所有空行一直被吞掉。`Log` 改为空串写单空格。
+  同时删掉 `camera-probe-verify.ps1` 里两个**假参数**（`-Frames` / `-TargetFps`）——
+  探针根本不读它们，留着会让脚本看起来能配而实际没接线。
+- **验收**：单测 **202/202**（新增 64）；App 构建 0 警告 0 错误；
+  `camera-probe-verify.ps1` **18/18**（含隐私反查：无 pixel 键、无逐帧数组、JSON 1.8 KB）；
+  五个验收脚本语法解析 0 错误。
+- **未完成（需物理动作）**：灯开 + 隐私快门打开后跑一次 `-RequireContrast`，补"活画面"实证。
 
 ### 2026-10-23 · M2.3 客观部分（DD-052：五项检查的可测代理 + 端点停留 + 覆盖度真相） · 八弟
 
