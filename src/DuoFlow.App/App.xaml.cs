@@ -73,6 +73,7 @@ public partial class App : Application
         string? cameraProbeDir = null;
         string? cameraDetectDir = null;
         string? cameraLidDir = null;
+        string? lidRecordDir = null;
         foreach (string arg in Environment.GetCommandLineArgs())
         {
             if (string.Equals(arg, "--overlay-smoke", StringComparison.OrdinalIgnoreCase))
@@ -120,11 +121,23 @@ public partial class App : Application
                     ? arg[(eq + 1)..]
                     : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "duoflow-camera-lid");
             }
+
+            // M3.3 sampling hook: records the progress series while the user
+            // physically closes the lid. Must be checked AFTER --camera-lid,
+            // because "--lid-record" does not collide but "--camera-lid" would
+            // not match it either - the ordering is explicit rather than lucky.
+            if (arg.StartsWith("--lid-record", StringComparison.OrdinalIgnoreCase))
+            {
+                int eq = arg.IndexOf('=');
+                lidRecordDir = eq > 0
+                    ? arg[(eq + 1)..]
+                    : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "duoflow-lid-record");
+            }
         }
 
         Trace.Log($"smoke={smoke} selfTest={selfTest} lightSweep={lightSweep} " +
                   $"cameraProbe={cameraProbeDir ?? "-"} cameraDetect={cameraDetectDir ?? "-"} " +
-                  $"cameraLid={cameraLidDir ?? "-"}");
+                  $"cameraLid={cameraLidDir ?? "-"} lidRecord={lidRecordDir ?? "-"}");
 
         // The camera probe is a headless mode: no overlay, no console, no
         // rendering. It measures one thing (can this machine deliver frames)
@@ -152,6 +165,18 @@ public partial class App : Application
         {
             RunHeadlessThenExit("camera-lid", dir =>
                 CameraProbe.RunLidAsync(dir, MediaCaptureCamera.DefaultTargetFps, 30), cameraLidDir);
+            return;
+        }
+
+        // M3.3 sampling: waits up to 4 minutes for the lid to START moving, then
+        // records 20 s from that moment (with 3 s of pre-roll). The first
+        // version used a fixed 60 s window and the user was still reading the
+        // instructions when it closed - a fixed window assumes a human
+        // synchronised with a process, which they never are.
+        if (lidRecordDir is not null)
+        {
+            RunHeadlessThenExit("lid-record", dir =>
+                CameraProbe.RecordLidAsync(dir, MediaCaptureCamera.DefaultTargetFps, 240.0, 20.0), lidRecordDir);
             return;
         }
 

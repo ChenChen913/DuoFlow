@@ -30,28 +30,6 @@ public enum DeckCoverageReason
 
     /// <summary>A region was found but the evidence for it is too weak to use.</summary>
     LowConfidence = 5,
-
-    /// <summary>
-    /// The region reaches the TOP edge of the frame, so there is no far scene
-    /// above it and no boundary to measure against.
-    ///
-    /// <para>
-    /// This is a definition failure, not a quality problem. <see cref="DeckCoverage.Coverage"/>
-    /// is defined as "the fraction of the frame BELOW the near surface's far
-    /// edge"; when the region spans the full height there is no such edge, and
-    /// the area becomes "how much of the frame is on one side of a brightness
-    /// split" - a completely different quantity that drifts with the room
-    /// rather than with the lid.
-    /// </para>
-    /// <para>
-    /// Measured: on the development laptop with the lid fully open, a dark
-    /// region spanning the whole frame height covered 0.49-0.55 of it and
-    /// drifted 6 percentage points in 30 frames with the lid stationary, while
-    /// the estimator reported confidence 1.0. Rejecting it is what turns "a
-    /// confident number that means nothing" into "no measurement".
-    /// </para>
-    /// </summary>
-    NoFarBoundary = 6,
 }
 
 public sealed record DeckCoverageOptions
@@ -312,10 +290,17 @@ public static class DeckCoverageEstimator
 
         double confidence = split * size * contrast;
 
-        // A region that reaches the top edge has no far boundary, so Coverage
-        // stops meaning "how much surface is below the boundary" and starts
-        // meaning "how much of the frame is on one side of a brightness split".
-        // The second quantity drifts with the room, not with the lid.
+        // A region that reaches the top edge has no far boundary left, so
+        // Coverage stops meaning "how much surface is below the boundary" and
+        // starts meaning "how much of the frame is on one side of a brightness
+        // split". That reading is weaker evidence, but it is NOT absent
+        // evidence: a near surface that has climbed past the top of the frame
+        // is exactly what a nearly-closed lid looks like, and rejecting it
+        // throws away the last and strongest third of the travel.
+        //
+        // Recorded rather than acted on. The tracker and M3.4's smoothing can
+        // decide what to do with a frame whose far boundary has left the
+        // frame; a single frame cannot.
         bool touchesTop = best.MinY == 0;
         bool fills = coverage >= 0.95;
 
@@ -334,11 +319,6 @@ public static class DeckCoverageEstimator
             Threshold = threshold,
             UsableConfidence = options.UsableConfidence,
         };
-
-        if (touchesTop && !fills)
-        {
-            return result with { Reason = DeckCoverageReason.NoFarBoundary };
-        }
 
         return confidence < options.UsableConfidence
             ? result with { Reason = DeckCoverageReason.LowConfidence }

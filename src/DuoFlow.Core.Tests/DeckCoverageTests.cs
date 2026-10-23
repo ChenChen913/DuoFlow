@@ -318,34 +318,42 @@ public class DeckCoverageTests
     }
 
     /// <summary>
-    /// A region that spans the FULL FRAME HEIGHT is rejected.
+    /// A region that spans the FULL FRAME HEIGHT is still usable.
     ///
     /// <para>
     /// This is the scene the development laptop actually produced with the lid
-    /// fully open: a dark area covering ~half the frame, reaching both the top
-    /// and bottom edges. It is not the surface below the camera, it is a
-    /// left/right brightness split, and its area drifts with the room. Measured
-    /// on the real machine: 0.491 -> 0.551 over 30 stationary frames, i.e. a
-    /// 6-point drift that the previous build turned into a fake 0 -> 0.13
-    /// progress ramp at confidence 1.0.
+    /// fully open: a dark area covering ~60% of the frame, reaching both the
+    /// top and bottom edges. The first version of this estimator rejected it,
+    /// on the reasoning that with no far edge in the frame there is nothing to
+    /// measure.
     /// </para>
     /// <para>
-    /// Coverage is DEFINED as the area below the near surface's far edge. With
-    /// no far edge in the frame there is nothing to measure, so the honest
-    /// answer is "no measurement" rather than a confident number.
+    /// A real lid recording proved that reasoning wrong. In the same gesture
+    /// the far boundary leaves the frame part way through the close, and from
+    /// that moment the near region's area climbs 0.49 -> 0.92 monotonically -
+    /// the deck filling the frame, which is the strongest closing evidence
+    /// there is. The veto discarded 87% of the travel and froze progress at
+    /// 0.268 while the lid kept going.
+    /// </para>
+    /// <para>
+    /// So the area is reported, and <see cref="DeckCoverage.TouchesTop"/> says
+    /// the far boundary has left the frame. That flag is information for the
+    /// tracker, not a rejection. Whether the frame is trustworthy depends on
+    /// history, which one frame does not have.
     /// </para>
     /// </summary>
     [Fact]
-    public void RegionSpanningTheFullHeightIsRejected()
+    public void RegionSpanningTheFullHeightIsUsable()
     {
         GrayImage frame = DeckScene.Uniform(160, 100, 200);
         frame = DeckScene.WithColumn(frame, 0.0, 0.60, 60);
 
         DeckCoverage result = DeckCoverageEstimator.Estimate(frame);
 
-        Assert.Equal(DeckCoverageReason.NoFarBoundary, result.Reason);
+        Assert.Equal(DeckCoverageReason.Ok, result.Reason);
         Assert.True(result.TouchesTop);
-        Assert.False(result.IsUsable);
+        Assert.InRange(result.Coverage, 0.58, 0.62);
+        Assert.True(result.IsUsable);
     }
 
     /// <summary>A genuine bottom band has a far boundary above it and must not be rejected.</summary>

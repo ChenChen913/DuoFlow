@@ -350,12 +350,16 @@ if ($Detect) {
 # ---------------------------------------------------------------------
 # 10. M3.3 lid progress (optional, -Lid).
 #
-#     What is gated: the provider STARTS, delivers every state, and the
-#     vision chain never throws. What is NOT gated: that progress moved.
-#     The probe runs with the laptop sitting still, so a moving progress
-#     would be the bug - and on a fully open lid the surface this provider
-#     watches (the deck) is not even in the frame, which is reported as
-#     NoFarBoundary rather than failed.
+#     What is gated: the provider STARTS, delivers every state, the vision
+#     chain never throws, and a lid that is not moving does not report
+#     motion. What is NOT gated: that progress can reach 1 - the probe runs
+#     with the laptop sitting still and fully open, so there is nothing to
+#     track.
+#
+#     History worth keeping: the first build of this stage gated nothing on
+#     motion and reported 30/30 Ok with progress ramping 0 -> 0.13 while the
+#     lid was stationary. It was green and it was wrong. That is why the
+#     drift check below is a hard check and not a warning.
 # ---------------------------------------------------------------------
 $lidInfo = $null
 if ($Lid) {
@@ -404,6 +408,20 @@ if ($Lid) {
         $noMeasure = ($confMax -le 0.0)
         Check "no measurement means no progress" ((-not $noMeasure) -or ($progMax -le 0.0)) ("confMax=" + $confMax + " progMax=" + $progMax)
 
+        # A STATIONARY lid must not produce a visible fold.
+        #
+        # Deleting the NoFarBoundary veto (DD-055 §3, third correction) bought
+        # back the last third of the travel, and the price is this: with no far
+        # boundary in the frame, room brightness drift now reaches progress at
+        # full confidence. The machine is sitting still for this whole run, so
+        # ANY progress here is drift, not motion.
+        #
+        # 0.05 is the point below which the fold is not perceptible - it is a
+        # statement about what the user can see, not about what the estimator
+        # can resolve. M3.4's smoothing is what has to bring this to zero; until
+        # it does, this check fails on purpose.
+        Check "stationary lid does not report motion" ($progMax -le 0.05) ("progMax=" + $progMax + " (drift - owner: M3.4 smoothing)")
+
         $deckText = ($l.DeckReasons.PSObject.Properties | ForEach-Object { $_.Name + "=" + $_.Value }) -join " "
         $progText = ($l.ProgressReasons.PSObject.Properties | ForEach-Object { $_.Name + "=" + $_.Value }) -join " "
         Log ("  [INFO] open baseline " + $l.OpenBaseline + " (learned=" + $l.HasLearnedBaseline + ")")
@@ -417,10 +435,13 @@ if ($Lid) {
         if ($topFrames -ge $states -and $states -gt 0) {
             # Not a failure: with the lid open the deck is not in the frame, and
             # the measured region is some other surface spanning the full
-            # height. Saying so is the whole point of the NoFarBoundary reason.
+            # height. TouchesTop reports exactly that. It used to be a veto
+            # (NoFarBoundary); it no longer is, because the same signature also
+            # appears - with a monotone rising area - through the last third of
+            # a real close, and vetoing it threw that away (DD-055 §3).
             Log "         [WARN] every region touched the top edge - the deck is not in view."
-            Log "                This is the expected state with the lid fully open:"
-            Log "                progress cannot be meaningful until the lid is part-way down."
+            Log "                Expected with the lid fully open, but it also happens mid-close,"
+            Log "                so TouchesTop alone no longer means 'nothing to measure'."
         }
         if ($noMeasure) {
             Log "         [WARN] no usable measurement this run - progress is frozen at 0,"

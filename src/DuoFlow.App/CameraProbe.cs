@@ -703,6 +703,382 @@ internal static class CameraProbe
     }
 
     /// <summary>
+    /// M3.3 sampling run: record the lid-progress series while the user
+    /// actually closes the lid.
+    ///
+    /// <para>
+    /// <b>Why this is not a gate but a recorder.</b> Every previous camera
+    /// probe ran with the laptop stationary, so it could only prove "the
+    /// pipeline runs and refuses to invent numbers". Whether the series
+    /// actually TRACKS a closing lid cannot be established without a lid that
+    /// closes, and that is a physical action no test can perform. So this mode
+    /// does not judge - it writes down what happened, sample by sample, and
+    /// leaves the judging to whoever reads the file.
+    /// </para>
+    /// <para>
+    /// <b>Triggered by motion, not by a stopwatch.</b> The first attempt gave
+    /// the user a 60-second window and asked them to act inside it; the whole
+    /// series came back flat because they were still reading the instructions
+    /// when the window closed. A fixed window assumes the human is synchronised
+    /// with the process, and they never are. So this waits for the scene to
+    /// actually change, keeps a rolling pre-roll of the moments before, and
+    /// records a fixed span from the moment of the trigger. The user can take
+    /// as long as they like to get ready.
+    /// </para>
+    /// <para>
+    /// <b>Written incrementally, on purpose.</b> Closing a laptop makes Windows
+    /// turn the display off and usually puts the machine to sleep, which can
+    /// suspend or kill this process mid-run. A summary written only at the end
+    /// would then be lost - so every recorded sample is appended to a JSONL
+    /// file and flushed immediately. Whatever happened before the machine slept
+    /// is on disk; the summary at the end is a convenience, not the data.
+    /// </para>
+    /// <para>
+    /// Privacy: one line per frame, scalars only. No pixel, no image path.
+    /// </para>
+    /// </summary>
+    /// <param name="maxWaitSeconds">How long to wait for the lid to start moving.</param>
+    /// <param name="recordSeconds">How much to record after the motion starts.</param>
+    public static async Task<int> RecordLidAsync(
+        string outputDir, double targetFps, double maxWaitSeconds, double recordSeconds)
+    {
+        Directory.CreateDirectory(outputDir);
+        string jsonlPath = Path.Combine(outputDir, "lid-series.jsonl");
+        string summaryPath = Path.Combine(outputDir, "lid-series-summary.json");
+
+        var failures = new List<string>();
+        var recorded = new List<LidSample>();
+        var reasons = new Dictionary<string, int>();
+        var deckReasons = new Dictionary<string, int>();
+        int measured = 0;
+        int touchesTop = 0;
+        int fillsFrame = 0;
+        int armed = 0;
+        string? error = null;
+        double triggerAt = -1.0;
+
+        // AutoFlush, not a buffer: the whole point is that a sleep in the
+        // middle of the run must not take the earlier samples with it.
+        using var writer = new StreamWriter(new FileStream(
+            jsonlPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+        {
+            AutoFlush = true,
+        };
+
+        try
+        {
+            await using var provider = new CameraLidProvider(targetFps);
+            var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var clock = Stopwatch.StartNew();
+
+            // Pre-roll: the moments just before the motion started. Without it
+            // the series begins mid-gesture and the "before" value is missing.
+            const int preRollSamples = 30;
+            var preRoll = new Queue<LidSample>();
+            var recentCoverage = new Queue<double>();
+            var recentTop = new Queue<double>();
+
+            void Write(LidSample sample)
+            {
+                recorded.Add(sample);
+                writer.WriteLine(sample.ToJson());
+
+                reasons[sample.Reason] = reasons.TryGetValue(sample.Reason, out int n) ? n + 1 : 1;
+                deckReasons[sample.Deck] = deckReasons.TryGetValue(sample.Deck, out int m) ? m + 1 : 1;
+                if (sample.Reason != nameof(LidProgressReason.NoMeasurement))
+                {
+                    measured++;
+                }
+
+                if (sample.TouchesTop)
+                {
+                    touchesTop++;
+                }
+
+                if (sample.Fills)
+                {
+                    fillsFrame++;
+                }
+            }
+
+            provider.StateChanged += (_, state) =>
+            {
+                LidProgressEstimate? estimate = provider.LastEstimate;
+                DeckCoverage? coverage = provider.LastCoverage;
+                if (estimate is null || coverage is null)
+                {
+                    return;
+                }
+
+                var sample = new LidSample(
+                    T: Math.Round(clock.Elapsed.TotalSeconds, 3),
+                    Progress: Math.Round(state.Progress, 4),
+                    Confidence: Math.Round(state.Confidence, 4),
+                    Reason: estimate.Reason.ToString(),
+                    Coverage: Math.Round(coverage.Coverage, 4),
+                    Deck: coverage.Reason.ToString(),
+                    NearTop: Math.Round(coverage.NearEdgeTop, 4),
+                    TouchesTop: coverage.TouchesTop,
+                    Fills: coverage.FillsFrame,
+                    Std: Math.Round(coverage.SceneStd, 2),
+                    Separability: Math.Round(coverage.Separability, 3),
+                    Near: Math.Round(coverage.NearMean, 1),
+                    Far: Math.Round(coverage.FarMean, 1));
+
+                if (triggerAt < 0.0)
+                {
+                    // Idle: keep a rolling reference so a slow lighting drift
+                    // does not look like a lid, then look for a real change.
+                    recentCoverage.Enqueue(sample.Coverage);
+                    recentTop.Enqueue(sample.NearTop);
+                    while (recentCoverage.Count > preRollSamples)
+                    {
+                        recentCoverage.Dequeue();
+                        recentTop.Dequeue();
+                    }
+
+                    preRoll.Enqueue(sample);
+                    while (preRoll.Count > preRollSamples)
+                    {
+                        preRoll.Dequeue();
+                    }
+
+                    if (recentCoverage.Count >= 10)
+                    {
+                        armed = recentCoverage.Count;
+                        double medianCoverage = Median(recentCoverage);
+                        double medianTop = Median(recentTop);
+
+                        // 0.04 is ~13x the measured stationary jitter (0.003),
+                        // so a still scene cannot arm this; a 1 cm lid movement
+                        // can.
+                        if (Math.Abs(sample.Coverage - medianCoverage) > 0.04 ||
+                            Math.Abs(sample.NearTop - medianTop) > 0.06)
+                        {
+                            triggerAt = sample.T;
+                            Trace.Log($"lid-record: motion detected at t={triggerAt:0.00}s " +
+                                      $"(coverage {medianCoverage:0.000} -> {sample.Coverage:0.000})");
+                            foreach (LidSample buffered in preRoll)
+                            {
+                                Write(buffered);
+                            }
+                        }
+                    }
+
+                    return;
+                }
+
+                Write(sample);
+
+                if (sample.T - triggerAt >= recordSeconds)
+                {
+                    done.TrySetResult(true);
+                }
+            };
+
+            await provider.StartAsync();
+            if (!provider.IsAvailable)
+            {
+                failures.Add($"provider did not start: {provider.LastError ?? "unknown"}");
+            }
+            else
+            {
+                Trace.Log($"lid-record: waiting up to {maxWaitSeconds:0}s for the lid to move");
+
+                Task completed = await Task.WhenAny(
+                    done.Task, Task.Delay(TimeSpan.FromSeconds(maxWaitSeconds + 10)));
+                if (completed != done.Task)
+                {
+                    failures.Add(triggerAt < 0.0
+                        ? $"no lid motion within {maxWaitSeconds:0}s (armed after {armed} samples)"
+                        : $"recording stopped early at {recorded.Count} samples");
+                }
+
+                await provider.StopAsync();
+            }
+
+            if (provider.FrameErrors > 0)
+            {
+                failures.Add($"vision chain threw on {provider.FrameErrors} frame(s): {provider.LastError}");
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"{ex.GetType().Name}: {ex.Message} (hresult=0x{ex.HResult:X8})";
+            Trace.Log($"lid-record: FAILED {error}");
+            failures.Add(CameraHealth.Describe(CameraHealth.Classify(ex)));
+        }
+
+        // ---- what the series says about tracking -------------------------
+        // Backwards steps are the number M3.4 has to fix, so they are measured
+        // here rather than eyeballed later. A 0.02 dead band keeps a stationary
+        // scene (which jitters by ~0.002) from being counted as a reversal.
+        var progresses = recorded.Select(s => s.Progress).ToList();
+        var coverages = recorded.Select(s => s.Coverage).ToList();
+
+        int backward = 0;
+        int forward = 0;
+        double maxBackward = 0.0;
+        double maxForward = 0.0;
+        for (int i = 1; i < progresses.Count; i++)
+        {
+            double delta = progresses[i] - progresses[i - 1];
+            if (delta < -0.02)
+            {
+                backward++;
+                maxBackward = Math.Max(maxBackward, -delta);
+            }
+            else if (delta > 0.02)
+            {
+                forward++;
+                maxForward = Math.Max(maxForward, delta);
+            }
+        }
+
+        double progMin = progresses.Count > 0 ? progresses.Min() : 0.0;
+        double progMax = progresses.Count > 0 ? progresses.Max() : 0.0;
+        double covMin = coverages.Count > 0 ? coverages.Min() : 0.0;
+        double covMax = coverages.Count > 0 ? coverages.Max() : 0.0;
+        double duration = recorded.Count > 1 ? recorded[^1].T - recorded[0].T : 0.0;
+        string sparkline = Sparkline(progresses, 60);
+
+        var summary = new Dictionary<string, object?>
+        {
+            ["GeneratedAt"] = DateTimeOffset.Now.ToString("s"),
+            ["TargetFps"] = targetFps,
+            ["MaxWaitSeconds"] = maxWaitSeconds,
+            ["RequestedRecordSeconds"] = recordSeconds,
+            ["TriggerAtSeconds"] = triggerAt < 0.0 ? null : Math.Round(triggerAt, 2),
+            ["Samples"] = recorded.Count,
+            ["DurationSeconds"] = Math.Round(duration, 2),
+            ["ProgressFirst"] = progresses.Count > 0 ? Math.Round(progresses[0], 4) : 0.0,
+            ["ProgressLast"] = progresses.Count > 0 ? Math.Round(progresses[^1], 4) : 0.0,
+            ["ProgressMin"] = Math.Round(progMin, 4),
+            ["ProgressMax"] = Math.Round(progMax, 4),
+            ["CoverageMin"] = Math.Round(covMin, 4),
+            ["CoverageMax"] = Math.Round(covMax, 4),
+            ["MeasuredSamples"] = measured,
+            ["MeasuredRate"] = recorded.Count > 0 ? Math.Round((double)measured / recorded.Count, 3) : 0.0,
+            ["TouchesTopSamples"] = touchesTop,
+            ["FillsFrameSamples"] = fillsFrame,
+            ["ForwardSteps"] = forward,
+            ["BackwardSteps"] = backward,
+            ["MaxForwardStep"] = Math.Round(maxForward, 4),
+            ["MaxBackwardStep"] = Math.Round(maxBackward, 4),
+            ["ProgressReasons"] = reasons,
+            ["DeckReasons"] = deckReasons,
+            ["Sparkline"] = sparkline,
+            ["Error"] = error,
+            ["Failures"] = failures,
+            ["StoredPixels"] = false,
+        };
+
+        File.WriteAllText(summaryPath, JsonSerializer.Serialize(summary, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+        }));
+
+        Trace.Log($"lid-record: {recorded.Count} samples over {duration:0.0}s " +
+                  $"progress {progMin:0.000}..{progMax:0.000} " +
+                  $"forward={forward} backward={backward}");
+        Trace.Log($"lid-record: progress {sparkline}");
+        Trace.Log($"lid-record: wrote {jsonlPath}");
+
+        bool ok = error is null && failures.Count == 0 && recorded.Count >= 10;
+
+        Trace.Log($"lid-record: OVERALL={(ok ? "PASS" : "FAIL")}");
+        return ok ? 0 : 1;
+    }
+
+    /// <summary>One recorded sample. A record so the series can be buffered before it is written.</summary>
+    private sealed record LidSample(
+        double T,
+        double Progress,
+        double Confidence,
+        string Reason,
+        double Coverage,
+        string Deck,
+        double NearTop,
+        bool TouchesTop,
+        bool Fills,
+        double Std,
+        double Separability,
+        double Near,
+        double Far)
+    {
+        public string ToJson() => JsonSerializer.Serialize(new Dictionary<string, object?>
+        {
+            ["t"] = T,
+            ["progress"] = Progress,
+            ["confidence"] = Confidence,
+            ["reason"] = Reason,
+            ["coverage"] = Coverage,
+            ["deck"] = Deck,
+            ["nearTop"] = NearTop,
+            ["touchesTop"] = TouchesTop,
+            ["fills"] = Fills,
+            ["std"] = Std,
+            ["sep"] = Separability,
+            ["near"] = Near,
+            ["far"] = Far,
+        });
+    }
+
+    /// <summary>Median of a small window, used as the "before" reference for the trigger.</summary>
+    private static double Median(Queue<double> values)
+    {
+        if (values.Count == 0)
+        {
+            return 0.0;
+        }
+
+        var sorted = new List<double>(values);
+        sorted.Sort();
+        int mid = sorted.Count / 2;
+        return sorted.Count % 2 == 1
+            ? sorted[mid]
+            : (sorted[mid - 1] + sorted[mid]) * 0.5;
+    }
+
+    /// <summary>
+    /// A 60-cell picture of the progress series, for reading a whole run at a
+    /// glance in a log. Resampled, not truncated: 600 samples in 60 cells means
+    /// each cell is the peak of its bucket, so a short spike still shows.
+    /// </summary>
+    private static string Sparkline(List<double> values, int cells)
+    {
+        const string ramp = " .:-=+*#%@";
+        if (values.Count == 0)
+        {
+            return "(no samples)";
+        }
+
+        var text = new char[cells];
+        for (int c = 0; c < cells; c++)
+        {
+            int from = (int)((long)c * values.Count / cells);
+            int to = (int)((long)(c + 1) * values.Count / cells);
+            if (to <= from)
+            {
+                to = from + 1;
+            }
+
+            double peak = 0.0;
+            for (int i = from; i < to && i < values.Count; i++)
+            {
+                peak = Math.Max(peak, values[i]);
+            }
+
+            int index = (int)Math.Round(Math.Clamp(peak, 0.0, 1.0) * (ramp.Length - 1));
+            text[c] = ramp[index];
+        }
+
+        return new string(text);
+    }
+
+    /// <summary>
+    /// Reduces a frame to four scalars: mean luminance (0..255), its standard
+    /// deviation, the alpha mean, and the byte range.
     ///
     /// Sparse on purpose: the numbers only have to prove a live decoded frame,
     /// and touching every pixel of a 1080p frame in managed code would cost
