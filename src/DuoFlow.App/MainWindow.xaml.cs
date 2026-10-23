@@ -590,8 +590,21 @@ public sealed partial class MainWindow : Window
             _lastTuningError = error;
             Trace.Log($"tuning: panel rejected by the renderer ({error}) - keeping the last accepted set");
         }
+        // M2.3: the full-fold coverage is the number that decides MaxFold.
+        // Show it next to the knob so the trade-off is visible while sliding
+        // instead of having to read a dump: at 90 deg the plane is edge-on
+        // and NOTHING is drawn at progress 1 (coverage 0%), at 70 deg a
+        // quarter of the screen is still folded, at 60 deg more than a third.
+        double fullCoverage = 0.0;
+        if (error is null)
+        {
+            try { fullCoverage = WarpGeometry.Compute(1.0, warp).FarEdgeY; }
+            catch { fullCoverage = 0.0; }
+        }
+
         TuningStatus.Text = error is null
-            ? $"生效：MaxFold {warp.MaxFoldDegrees:0}° · r {warp.CameraDistanceRatio:0.00} · " +
+            ? $"生效：MaxFold {warp.MaxFoldDegrees:0}°（满折覆盖 {fullCoverage * 100:0}%）· " +
+              $"r {warp.CameraDistanceRatio:0.00} · " +
               $"{(warp.TiltAwayFromViewer ? "away" : "toward")} · 铰链{(warp.HingeAtTop ? "顶" : "底")} · " +
               $"maxBlur {blur.MaxBlurPixels:0}px · 包络 {blur.StartProgress:0.00}→{blur.FullProgress:0.00} · " +
               $"渐变 {(gradient.Enabled ? $"开 {gradient.Strength:0.00}" : "关")} · " +

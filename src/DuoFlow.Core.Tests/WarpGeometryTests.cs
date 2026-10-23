@@ -68,6 +68,42 @@ public class WarpGeometryTests
         Assert.Equal(0.0, WarpGeometry.Compute(1.0).FarEdgeY, 12);
     }
 
+    /// <summary>
+    /// M2.3: the fraction of the screen height the folded plane still covers
+    /// at progress 1 is FarEdgeY = M00/(M11+|M21|) = r·cos(φ)/(r+sin(φ)).
+    ///
+    /// At the 90° default it is EXACTLY 0 - the glass is edge-on, so nothing
+    /// is drawn at full close. That is a consequence of the model, not a bug,
+    /// but it is the number that decides the default: measured on the real
+    /// machine, coverage runs 74.5% / 48.9% / 24.1% at p = .25 / .50 / .75
+    /// and 0% at p = 1. This test pins the closed form so a future change to
+    /// the default cannot silently change the end state.
+    /// </summary>
+    [Fact]
+    public void FullFoldCoverage_IsZeroAt90Degrees_AndGrowsAsTheFoldIsReduced()
+    {
+        double[] folds  = { 90.0, 80.0, 70.0, 60.0 };
+        double[] expect = { 0.000, 0.125, 0.249, 0.371 };
+        for (int i = 0; i < folds.Length; i++)
+        {
+            var o = new WarpOptions { MaxFoldDegrees = folds[i] };
+            Assert.Equal(expect[i], WarpGeometry.Compute(1.0, o).FarEdgeY, 3);
+        }
+
+        // Monotone in the direction that matters: a smaller fold angle keeps
+        // more of the screen covered at full close.
+        double prev = -1.0;
+        foreach (double fold in folds)
+        {
+            double cov = WarpGeometry.Compute(1.0, new WarpOptions { MaxFoldDegrees = fold }).FarEdgeY;
+            Assert.True(cov > prev, $"coverage must grow as MaxFold shrinks (fold={fold})");
+            prev = cov;
+        }
+
+        // r barely matters - it changes the perspective, not the end state.
+        Assert.Equal(0.0, WarpGeometry.Compute(1.0, new WarpOptions { CameraDistanceRatio = 6.0 }).FarEdgeY, 12);
+    }
+
     [Fact]
     public void FarEdge_TiltToward_WidensPastFrame()
     {

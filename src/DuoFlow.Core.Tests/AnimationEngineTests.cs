@@ -128,6 +128,153 @@ public class AnimationEngineTests
         Assert.Equal(0.0, engine.CurrentVelocity, 9);
     }
 
+    // ---- M2.3: the two operations a user actually does by hand --------------
+    //
+    // "mid stop" and "mid reverse" are the two gestures M2.3 has to sign off
+    // on, and they are the only two where the engine is asked to do something
+    // other than run to an endpoint. Both are asserted here as PROPERTIES, not
+    // as expected numbers: a rate-limited exponential approach that passes
+    // these is smooth for ANY tuning of tau / cap, so the assertions survive
+    // M2.3 changing the defaults.
+
+    [Fact]
+    public void MidStop_SettlesOntoTheHeldTarget_NoOvershootNoOscillation()
+    {
+        // Lid stops at half way: the target stops moving while the smoothed
+        // value is still catching up. Expected: it closes the remaining gap,
+        // touches the target, and then stays there - no overshoot (a springy
+        // look), no ringing (a flicker at rest).
+        var clock = new ManualTimeSource();
+        var engine = new AnimationEngine(clock);
+        engine.Update(Raw(0.0));
+        engine.Update(Raw(1.0));
+
+        clock.AdvanceMilliseconds(150);
+        engine.Tick();
+        double mid = engine.CurrentProgress;
+        Assert.InRange(mid, 0.20, 0.45);   // still well short of the stop point
+
+        // The lid stops at 0.5.
+        engine.Update(Raw(0.5));
+
+        double previous = mid;
+        for (int i = 0; i < 800; i++)
+        {
+            clock.AdvanceMilliseconds(5);
+            engine.Tick();
+            double p = engine.CurrentProgress;
+
+            Assert.True(p >= previous - 1e-9,
+                $"must not fall back while approaching the held target (step {i}: {previous} -> {p})");
+            Assert.True(p <= 0.5 + 1e-9,
+                $"must not overshoot the held target (step {i}: {p})");
+            previous = p;
+        }
+
+        // Converged exactly onto the stop point, and dead still.
+        Assert.Equal(0.5, engine.CurrentProgress, 6);
+        Assert.Equal(0.0, engine.CurrentVelocity, 9);
+
+        // ...and it stays still: the render loop keeps ticking with no input.
+        for (int i = 0; i < 100; i++)
+        {
+            clock.AdvanceMilliseconds(33);
+            engine.Tick();
+            Assert.Equal(0.5, engine.CurrentProgress, 6);
+        }
+    }
+
+    [Fact]
+    public void MidReverse_TurnsExactlyOnce_AndNeverStepsOutsideTheRateCap()
+    {
+        // Lid closes, then the user opens it again mid-way. Expected: the
+        // direction changes ONCE, and no single step moves faster than the
+        // rate cap allows - i.e. the reversal is a turn, not a jump. A sign
+        // flip twice would be a visible shudder.
+        var clock = new ManualTimeSource();
+        var engine = new AnimationEngine(clock);
+        engine.Update(Raw(0.0));
+        engine.Update(Raw(1.0));
+
+        clock.AdvanceMilliseconds(300);
+        engine.Tick();
+        double peak = engine.CurrentProgress;
+        Assert.InRange(peak, 0.40, 0.75);
+
+        engine.Update(Raw(0.0));   // the user changes their mind here
+
+        const double dtSeconds = 0.005;
+        const double cap = 2.0;    // AnimationEngineOptions.MaxProgressPerSecond
+        double previous = peak;
+        int signFlips = 0;
+        // The rise that got us here was the FIRST direction; without seeding it
+        // the post-reversal motion would look like "one direction, no turn".
+        int lastSign = 1;
+
+        for (int i = 0; i < 800; i++)
+        {
+            clock.AdvanceMilliseconds(5);
+            engine.Tick();
+            double p = engine.CurrentProgress;
+
+            double delta = p - previous;
+            Assert.True(Math.Abs(delta) <= cap * dtSeconds * 1.05 + 1e-9,
+                $"step {i} moved {delta:0.0000} in {dtSeconds}s - faster than the rate cap");
+            Assert.InRange(p, 0.0, peak + 1e-9);
+
+            int sign = Math.Sign(Math.Round(delta, 9));
+            if (sign != 0 && lastSign != 0 && sign != lastSign)
+            {
+                signFlips++;
+            }
+            if (sign != 0)
+            {
+                lastSign = sign;
+            }
+
+            previous = p;
+        }
+
+        Assert.Equal(1, signFlips);                       // one turn, no shudder
+        Assert.True(previous < 1e-3, "must finish back at 0");
+        Assert.Equal(0.0, engine.CurrentVelocity, 9);
+    }
+
+    [Fact]
+    public void SlowRamp_IsTrackedMonotonically_WithBoundedLag()
+    {
+        // Slow lid movement: 0.1 progress per second, sampled at 100 Hz for
+        // 5 s. The smoothed value must follow without ever reversing, and the
+        // lag must stay bounded (a lag that grows means the engine is being
+        // dragged, which reads as "the effect is behind my hand").
+        var clock = new ManualTimeSource();
+        var engine = new AnimationEngine(clock);
+        engine.Update(Raw(0.0));
+
+        double previous = 0.0;
+        double worstLag = 0.0;
+        for (int i = 1; i <= 500; i++)
+        {
+            double target = 0.1 * (i * 0.01);   // 0.1 / s
+            engine.Update(Raw(target));
+            clock.AdvanceMilliseconds(10);
+            LidState s = engine.Tick();
+
+            Assert.True(s.Progress >= previous - 1e-9,
+                $"step {i}: slow ramp must never reverse ({previous} -> {s.Progress})");
+            previous = s.Progress;
+
+            double lag = target - s.Progress;
+            Assert.True(lag >= -1e-9, $"step {i}: must not run ahead of the hand (lag {lag})");
+            worstLag = Math.Max(worstLag, lag);
+        }
+
+        // A 0.1/s ramp through a tau=0.10 s filter settles at lag = rate*tau
+        // = 0.01; allow 3x for the discrete-time integration.
+        Assert.True(worstLag < 0.03, $"steady-state lag {worstLag:0.0000} too large");
+        Assert.InRange(engine.CurrentProgress, 0.47, 0.50);
+    }
+
     // ---- extreme inputs -------------------------------------------------------
 
     [Fact]

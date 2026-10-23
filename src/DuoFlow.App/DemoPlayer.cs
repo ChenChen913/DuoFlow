@@ -31,6 +31,7 @@ public sealed class DemoPlayer
     private double _to;
     private double _durationSeconds = 1.5;
     private double _elapsed;
+    private double _dwellRemaining;
     private TimeSpan _lastTick;
 
     public DemoPlayer(DispatcherQueue queue, Action<double> setProgress)
@@ -55,6 +56,19 @@ public sealed class DemoPlayer
         get => _durationSeconds;
         set => _durationSeconds = Math.Clamp(value, 0.2, 30.0);
     }
+
+    /// <summary>
+    /// How long the target HOLDS at an endpoint before a loop turns around.
+    ///
+    /// This exists because the target and the picture are not the same thing:
+    /// the engine is a τ=0.10 s exponential follower, so on a 0.6 s pass it
+    /// arrives at the turnaround roughly 0.06-0.17 short. Without a dwell the
+    /// loop reverses the target while the screen is still visibly short of
+    /// fully closed, which makes the endpoints impossible to judge by eye -
+    /// and judging the endpoints is exactly what M2.3 does.
+    /// 0.35 s leaves ~3% of the gap, i.e. visually arrived.
+    /// </summary>
+    public double DwellSeconds { get; set; } = 0.35;
 
     /// <summary>Raised after each tick so the console can refresh its own
     /// readout (the provider already raised its own StateChanged).</summary>
@@ -81,6 +95,7 @@ public sealed class DemoPlayer
         }
 
         _elapsed = 0.0;
+        _dwellRemaining = 0.0;
         _watch.Restart();
         _lastTick = TimeSpan.Zero;
         IsRunning = true;
@@ -106,6 +121,33 @@ public sealed class DemoPlayer
             return;
         }
 
+        // ---- dwelling at an endpoint (loop mode) ----
+        // The target is pinned at _to and the engine closes the remaining
+        // gap; see DwellSeconds for why this is not cosmetic.
+        if (_dwellRemaining > 0.0)
+        {
+            _dwellRemaining -= dt;
+            _setProgress(_to);
+            if (_dwellRemaining > 0.0)
+            {
+                Ticked?.Invoke();
+                return;
+            }
+
+            if (!Loop)
+            {
+                Pause();
+                Ticked?.Invoke();
+                return;
+            }
+
+            (_from, _to) = (_to, _from);
+            _elapsed = 0.0;
+            _dwellRemaining = 0.0;
+            Ticked?.Invoke();
+            return;
+        }
+
         _elapsed += dt;
         double distance = Math.Abs(_to - _from);
         // Time for THIS pass is proportional to the distance actually
@@ -118,11 +160,18 @@ public sealed class DemoPlayer
             _setProgress(_to);
             if (Loop)
             {
-                // Swap and carry the overshoot: the endpoint is emitted
-                // exactly once and the speed does not hiccup at the turn.
-                (_from, _to) = (_to, _from);
-                _elapsed -= passSeconds;
-                if (_elapsed < 0.0) { _elapsed = 0.0; }
+                // Emit the endpoint, then HOLD it for DwellSeconds before
+                // turning around. (Carrying the overshoot instead - the old
+                // behaviour - made the turn smooth for the target but left
+                // the screen short of the endpoint, which is the opposite of
+                // what a demo is for.)
+                _dwellRemaining = Math.Max(0.0, DwellSeconds);
+                _elapsed = passSeconds;
+                if (_dwellRemaining <= 0.0)
+                {
+                    (_from, _to) = (_to, _from);
+                    _elapsed = 0.0;
+                }
             }
             else
             {

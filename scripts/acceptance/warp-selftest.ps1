@@ -56,7 +56,11 @@ param(
     [string]$RepoRoot = "",
     [string]$OutputDir = "",
     [string]$Exe = "",
-    [int]$TimeoutSeconds = 150
+    [int]$TimeoutSeconds = 150,
+    # "WxH" of the dumps, for -AnalyzeOnly against ARCHIVED dumps. The trace is
+    # capped at 4 MB (M2.6) and rotates, so the "selftest: dumped WxH" line
+    # from an older run may be gone. Only consulted when that line is missing.
+    [string]$DumpGeometry = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -196,7 +200,10 @@ function Get-DumpSize([string]$path) {
         }
     }
     if ($found) { return $found }
-    throw "no 'selftest: dumped $leaf (WxH)' line in $trace - run the sweep first"
+    if ($DumpGeometry -match '^\s*(\d+)\s*[xX]\s*(\d+)\s*$') {
+        return @{ W = [int]$Matches[1]; H = [int]$Matches[2] }
+    }
+    throw "no 'selftest: dumped $leaf (WxH)' line in $trace - run the sweep first, or pass -DumpGeometry WxH"
 }
 
 # Per-row luminance of the rendered frame, averaged across a horizontal
@@ -330,6 +337,64 @@ function Measure-Physics([double[]]$lum, [int]$quadTop, [int]$h, [double]$p) {
     }
 }
 
+# ---------------------------------------------------------------------
+# M2.3: how much of the screen the effect actually covers.
+#
+# This is the number behind the user's "整个屏幕几乎倒下了，根本看不到效果"
+# report, and it is a pure consequence of the homography: with the hinge at
+# the bottom, dest row y is inside the quad iff
+#     sy = M11*y / (M00 + M21*y) <= 1
+# i.e. y <= M00 / (M11 + |M21|) = r*cos(phi) / (r + sin(phi)).
+# At MaxFold=90 deg that is 0 - the glass is edge-on and NOTHING is drawn
+# at progress 1. Measured: 74.6% @ .25, 49.0% @ .50, 24.2% @ .75, 0% @ 1.0.
+#
+# It is reported, not asserted against an aesthetic floor: "how much of the
+# screen should still be folded at full close" is exactly the decision M2.3
+# hands to the user. What IS asserted is the structure - monotone decreasing
+# with progress, and identical on the way back up.
+# ---------------------------------------------------------------------
+function Measure-Coverage([byte[]]$bytes, [int]$w, [int]$h, [double]$p) {
+    # Stride 4 in both axes: coverage is a large-scale property, and a full
+    # 2 M-pixel scan in PowerShell would cost seconds per frame.
+    #
+    # Chroma rides along on the same scan: mean (max - min) channel spread of
+    # the opaque pixels. This is the objective half of M2.3's "过彩" check -
+    # with the gradient pass OFF the fold must be strictly neutral, so any
+    # spread is a bug (premultiply rounding, a stray tint, a mis-set cbuffer).
+    $cov = 0; $n = 0; $chroma = 0.0; $opaque = 0
+    for ($y = 0; $y -lt $h; $y += 4) {
+        $row = $y * $w
+        for ($x = 0; $x -lt $w; $x += 4) {
+            $n++
+            $o = ($row + $x) * 4
+            if ($bytes[$o + 3] -ge 16) {
+                $cov++
+                $opaque++
+                $b = $bytes[$o]; $g = $bytes[$o + 1]; $r = $bytes[$o + 2]
+                $mx = $r; if ($g -gt $mx) { $mx = $g }; if ($b -gt $mx) { $mx = $b }
+                $mn = $r; if ($g -lt $mn) { $mn = $g }; if ($b -lt $mn) { $mn = $b }
+                $chroma += ($mx - $mn)
+            }
+        }
+    }
+
+    # At the fully-open endpoint "invisible" means EVERY pixel, not "the
+    # centre column happens to be transparent" - so scan all alpha bytes
+    # (step 4 straight through the buffer, no inner loop).
+    $maxAlpha = 0
+    if ($p -le 0.01) {
+        for ($i = 3; $i -lt $bytes.Length; $i += 4) {
+            if ($bytes[$i] -gt $maxAlpha) { $maxAlpha = $bytes[$i] }
+        }
+    }
+
+    return [ordered]@{
+        Percent  = [math]::Round(100.0 * $cov / [math]::Max($n, 1), 2)
+        Chroma   = [math]::Round($(if ($opaque -gt 0) { $chroma / $opaque } else { 0.0 }), 2)
+        MaxAlpha = $maxAlpha
+    }
+}
+
 function Analyze-Raw([string]$path, [double]$p) {
     if (-not (Test-Path $path)) { throw "missing dump: $path" }
     $bytes = [IO.File]::ReadAllBytes($path)
@@ -351,20 +416,31 @@ function Analyze-Raw([string]$path, [double]$p) {
     $result = [ordered]@{
         File = (Split-Path $path -Leaf); Progress = $p
         QuadTopMeasured = $quadTop; QuadTopPredicted = $predTop
+        Coverage = (Measure-Coverage $bytes $w $h $p)
         Light = $null; Blur = $null; Pass = $true; Notes = @()
     }
 
     # quad top comparison. Two special cases at the sweep endpoints:
     #   p=1: at MaxFold=90 the plane is edge-on - the quad collapses to zero
-    #        height, no opaque rows (fully folded).
+    #        height, no opaque rows (fully folded). NOTE: this assertion is
+    #        tied to MaxFold=90. If M2.3 lowers the default, the plane is no
+    #        longer edge-on and this branch must change with it - the
+    #        Coverage number in the result JSON is what to look at.
     #   p=0: the M1.8 global fade keeps the fully-open desktop INVISIBLE -
     #        opacity 0 -> no opaque rows either. Both are correct renders.
     if ($p -ge 0.99) {
         if ($quadTop -ne -1) { $result.Pass = $false; $result.Notes += "expected full collapse (no opaque rows), got quadTop=$quadTop" }
         else { $result.Notes += "full fold: quad collapsed (no opaque rows) - expected at MaxFold=90" }
     } elseif ($p -le 0.01) {
-        if ($quadTop -ne -1) { $result.Pass = $false; $result.Notes += "expected fade-in invisible (no opaque rows), got quadTop=$quadTop" }
-        else { $result.Notes += "fully open: effect faded out (no opaque rows) - expected" }
+        # Stronger than "no opaque rows in the centre column": a stray opaque
+        # region anywhere would make the fully-open state visible on screen,
+        # which is the one thing progress 0 must never do.
+        if ($result.Coverage.MaxAlpha -ne 0) {
+            $result.Pass = $false
+            $result.Notes += "progress 0 must be invisible everywhere; max alpha = $($result.Coverage.MaxAlpha)"
+        } elseif ($quadTop -ne -1) {
+            $result.Pass = $false; $result.Notes += "expected fade-in invisible (no opaque rows), got quadTop=$quadTop"
+        } else { $result.Notes += "fully open: every pixel alpha 0 - expected" }
     } else {
         $d = [math]::Abs($quadTop - $predTop)
         if ($d -gt 5) { $result.Pass = $false; $result.Notes += "quadTop off by $d px" }
@@ -418,6 +494,21 @@ function Analyze-Raw([string]$path, [double]$p) {
                 if ($phy.HfHinge -lt 4.0 * $phy.HfFar) {
                     $result.Pass = $false
                     $result.Notes += "blur direction weak: hinge step $($phy.HfHinge) vs far step $($phy.HfFar)"
+                }
+                # 4) M2.3 过暗: the far edge is the darkest point by design, but
+                #    it must still be a surface. Crushed to black reads as "the
+                #    effect died", not as a shadow.
+                if ($phy.FarL -lt 8.0) {
+                    $result.Pass = $false
+                    $result.Notes += "far edge crushed to black (farL=$($phy.FarL))"
+                }
+                # 5) M2.3 过糊: up to mid fold the hinge must still read sharp.
+                #    Below p=0.55 the design radius is <= ~0.5*160 px at the
+                #    hinge, so the ticks have to survive there; if they do not,
+                #    the blur envelope opened too early.
+                if ($p -le 0.55 -and $phy.HfHinge -lt 150.0) {
+                    $result.Pass = $false
+                    $result.Notes += "too blurry for p=$p : hinge row step $($phy.HfHinge) (< 150)"
                 }
             }
         } else {
@@ -476,9 +567,52 @@ if ($AnalyzeOnly) {
         if ($d75 -lt 0.20)               { $physicsOk = $false; Write-Host "PHYSICS: depth(.75)=$d75 below the 0.20 floor" }
     }
 
+    # ---- M2.3: coverage must shrink as the fold closes, and shrink the SAME
+    # way on the way back up. Not an aesthetic bound - a structural one. The
+    # absolute numbers are printed because they are the evidence behind the
+    # "看不到效果" complaint (74.6 / 49.0 / 24.2 / 0.0 % at p=.25/.50/.75/1).
+    $coverageOk = $true
+    $covUp = @($all[1].Coverage.Percent, $all[2].Coverage.Percent, $all[3].Coverage.Percent, $all[4].Coverage.Percent)
+    for ($i = 1; $i -lt $covUp.Count; $i++) {
+        if ($covUp[$i] -gt $covUp[$i - 1] + 0.5) {
+            $coverageOk = $false
+            Write-Host "COVERAGE: not decreasing at step $i ($($covUp -join ' -> '))"
+        }
+    }
+    foreach ($pair in $pairs) {
+        $a = $all[$pair[0]].Coverage.Percent; $b = $all[$pair[1]].Coverage.Percent
+        if ([math]::Abs($a - $b) -gt 1.0) {
+            $coverageOk = $false
+            Write-Host "COVERAGE: up/down differ at p=$($all[$pair[0]].Progress) ($a vs $b)"
+        }
+    }
+
+    # ---- M2.3 过彩: with the gradient pass OFF the fold must be strictly
+    # neutral. Read the panel's own trace line rather than assuming: if the
+    # gradient is ON, a chroma is expected and this check must stand down
+    # instead of reporting a false failure.
+    $chromaOk = $true
+    $gradientState = "<unknown>"
+    $tailForChroma = Read-TraceTail
+    if ($tailForChroma) {
+        $gline = ($tailForChroma -split "`r?`n" | Select-String 'tuning: gradient enabled=' | Select-Object -Last 1)
+        if ($gline) {
+            $gradientState = $gline.Line.Trim()
+            if ($gradientState -match 'enabled=False') {
+                foreach ($r in $all) {
+                    if ($r.Coverage.Chroma -gt 2.0) {
+                        $chromaOk = $false
+                        Write-Host ("CHROMA: {0} p={1} chroma={2} - gradient is off, the fold must be neutral" -f `
+                            $r.File, $r.Progress, $r.Coverage.Chroma)
+                    }
+                }
+            }
+        }
+    }
+
     foreach ($r in $all) {
         $flag = if ($r.Pass) { "PASS" } else { "FAIL" }
-        Write-Host ("{0} p={1} quadTop={2}/{3} -> {4} {5}" -f $r.File, $r.Progress, $r.QuadTopMeasured, $r.QuadTopPredicted, $flag, ($r.Notes -join '; '))
+        Write-Host ("{0} p={1} quadTop={2}/{3} cov={4}% chroma={5} -> {6} {7}" -f $r.File, $r.Progress, $r.QuadTopMeasured, $r.QuadTopPredicted, $r.Coverage.Percent, $r.Coverage.Chroma, $flag, ($r.Notes -join '; '))
         if ($r.Light) {
             Write-Host ("     light hinge={0} far={1} depth={2} drops={3} | blur hingeStep={4} farStep={5}" -f `
                 $r.Light.HingeL, $r.Light.FarL, $r.Light.Depth, $r.Light.MonoViolations, $r.Blur.HingeMaxStep, $r.Blur.FarMaxStep)
@@ -487,14 +621,20 @@ if ($AnalyzeOnly) {
     }
     Write-Host "HYSTERESIS OK: $hysteresisOk"
     Write-Host "PHYSICS OK: $physicsOk"
+    Write-Host ("COVERAGE OK: {0}   (p=.25 {1}% -> .50 {2}% -> .75 {3}% -> 1.0 {4}%)" -f `
+        $coverageOk, $covUp[0], $covUp[1], $covUp[2], $covUp[3])
+    Write-Host ("CHROMA OK: {0}   ({1})" -f $chromaOk, $gradientState)
 
-    $overall = ($all | Where-Object { -not $_.Pass }).Count -eq 0 -and $hysteresisOk -and $physicsOk
+    $overall = ($all | Where-Object { -not $_.Pass }).Count -eq 0 -and $hysteresisOk -and $physicsOk -and $coverageOk -and $chromaOk
     [ordered]@{
-        GeneratedAt  = (Get-Date).ToString("s")
-        Steps        = $all
-        HysteresisOk = $hysteresisOk
-        PhysicsOk    = $physicsOk
-        Overall      = $overall
+        GeneratedAt   = (Get-Date).ToString("s")
+        Steps         = $all
+        HysteresisOk  = $hysteresisOk
+        PhysicsOk     = $physicsOk
+        CoverageOk    = $coverageOk
+        ChromaOk      = $chromaOk
+        GradientState = $gradientState
+        Overall       = $overall
     } | ConvertTo-Json -Depth 7 | Out-File "$root\warp-selftest-result.json" -Encoding utf8
     Write-Host "SELFTEST OVERALL: $overall"
     if (-not $overall) { exit 1 }

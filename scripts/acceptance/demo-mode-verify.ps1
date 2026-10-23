@@ -1,28 +1,37 @@
 ﻿# =====================================================================
-# DuoFlow - demo mode acceptance (M2.4).  [scripts/acceptance]
+# DuoFlow - demo mode acceptance (M2.4) + the six M2.3 operations.
 #
 # WHAT IT PROVES: the demo player walks the REAL progress chain end to end -
 # provider -> engine -> render - and stops where it says it stops.
 #
-#   1. 开盖 0->1   reaches 1.0, is monotone, and STAYS at 1.0 afterwards
-#                  (auto-stop at the endpoint, no creep, no bounce)
-#   2. 合盖 1->0   reaches 0.0 and stays
-#   3. 循环往返    the direction reverses at BOTH endpoints (observed rising
-#                  AND falling phases with max ~1 and min ~0) - a loop that
-#                  only goes one way, or that jumps, fails here
+#   1. 开盖 0->1   reaches 1.0, is monotone, at/under the rate cap, and STAYS
+#                  at 1.0 afterwards (auto-stop, no creep, no bounce)
+#   2. 合盖 1->0   same, downward
+#   3. 循环往返    the direction reverses at BOTH endpoints
 #   4. 暂停        the value freezes
+#   5. 慢开 3 s    tracked monotonically at ~0.33/s - the regime the fast pass
+#                  cannot exercise (it is rate-capped almost the whole way)
+#   6. 慢合 3 s    same, downward
+#   7. 中途停      pause mid pass: settles BETWEEN the endpoints and stays
+#                  dead still (spread <= 0.02 over 1.4 s)
+#   8. 中途反向    reverse mid pass: exactly ONE direction change, no jump
+#
+# "No jump" is measured as progress per SECOND from timestamped samples, not
+# as a per-sample delta: RangeValue reads cost 10-40 ms, so a fixed per-sample
+# threshold either false-fails on a slow read or hides a real jump. The bound
+# is the engine's own MaxProgressPerSecond (2.0/s) plus 30% sampling headroom.
 #
 # HOW: UIAutomation drives the buttons and reads the Progress slider's live
-# RangeValue every ~120 ms. That is the same value the provider holds, so the
-# samples prove the chain moved - not just that a timer fired.
+# RangeValue. That is the same value the provider holds, so the samples prove
+# the chain moved - not just that a timer fired.
 #
 # USAGE (Windows PowerShell 5.1, no admin, interactive desktop):
 #   .\scripts\acceptance\demo-mode-verify.ps1
 #   .\scripts\acceptance\demo-mode-verify.ps1 -OutputDir D:\tmp\demo
 #
 # OUTPUT: demo-mode-verify.txt (log incl. every sample) + demo-mode-result.json
-# EXIT CODE: 0 = all four checks passed, 1 = at least one did not.
-# NOTE: ~35 s. Does not move the mouse, but the app takes over the screen.
+# EXIT CODE: 0 = all checks passed, 1 = at least one did not.
+# NOTE: ~70 s. Does not move the mouse, but the app takes over the screen.
 # =====================================================================
 
 param(
@@ -137,17 +146,63 @@ function Set-Loop([bool]$on) {
     if ($cur -ne $on) { $pat.Toggle(); Start-Sleep -Milliseconds 300 }
     return ($pat.Current.ToggleState -eq [System.Windows.Automation.ToggleState]::On)
 }
-# Sample the live progress until the predicate holds or the deadline passes.
-function Sample-Until([scriptblock]$pred, [int]$timeoutMs, [System.Collections.ArrayList]$into) {
-    $deadline = (Get-Date).AddMilliseconds($timeoutMs)
-    while ((Get-Date) -lt $deadline) {
+# Sample the live progress on a clock, keeping the TIMESTAMP of every sample.
+# The timestamps are the whole point for M2.3: "no jump" is a statement about
+# progress per SECOND, and a bare value series cannot distinguish "moved 0.2
+# in 100 ms" (at the 2.0/s rate cap) from "moved 0.2 in 400 ms" (slower than
+# the cap, perfectly fine). Reading RangeValue itself costs ~10-40 ms, so the
+# interval is a floor, never an assumption - always divide by the measured dt.
+function Sample-Timed([int]$durationMs, [int]$intervalMs) {
+    $series = New-Object System.Collections.ArrayList
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $durationMs) {
         $v = Read-Progress
-        [void]$into.Add($v)
-        if (& $pred $v) { return $true }
-        Start-Sleep -Milliseconds 120
+        [void]$series.Add([ordered]@{ T = [int]$sw.ElapsedMilliseconds; V = $v })
+        Start-Sleep -Milliseconds $intervalMs
     }
-    return $false
+    $sw.Stop()
+    return $series
 }
+
+# Fastest observed progress rate, in progress units per second.
+function Measure-MaxRate($series) {
+    $maxRate = 0.0
+    for ($i = 1; $i -lt $series.Count; $i++) {
+        $dt = ($series[$i].T - $series[$i - 1].T) / 1000.0
+        if ($dt -le 0.001) { continue }
+        $rate = [math]::Abs($series[$i].V - $series[$i - 1].V) / $dt
+        if ($rate -gt $maxRate) { $maxRate = $rate }
+    }
+    return $maxRate
+}
+
+# How many times the direction of travel flips (ignoring sub-tolerance noise).
+# startSign seeds the direction of travel from BEFORE the sample window: the
+# mid-reverse run is already rising when sampling starts, and without the seed
+# a perfectly good single turn reports as "0 changes".
+function Measure-DirectionChanges($series, [double]$tolerance, [int]$startSign = 0) {
+    $changes = 0
+    $lastSign = $startSign
+    for ($i = 1; $i -lt $series.Count; $i++) {
+        $d = $series[$i].V - $series[$i - 1].V
+        if ([math]::Abs($d) -lt $tolerance) { continue }
+        $sign = [math]::Sign($d)
+        if ($lastSign -ne 0 -and $sign -ne $lastSign) { $changes++ }
+        $lastSign = $sign
+    }
+    return $changes
+}
+
+function Format-Series($series) {
+    return (($series | ForEach-Object { [math]::Round($_.V, 2) }) -join ' ')
+}
+
+# The engine's anti-jump guarantee (AnimationEngineOptions.MaxProgressPerSecond).
+# Sampled rates are compared against it with 30% headroom for the sampling
+# itself: the slider value is read from the UI thread, so a sample can land
+# either side of a tick and report a rate slightly above the true one.
+$script:RateCap = 2.0
+$script:RateSlack = 1.30
 
 # ---------------------------------------------------------------------
 # Prepare: fast pass, no loop, start from fully open
@@ -163,48 +218,58 @@ try {
 }
 
 # ---------------------------------------------------------------------
-# 1. 开盖 0 -> 1 : reaches 1.0, monotone, and stays
+# 1. 开盖 0 -> 1 (fast) : reaches 1.0, monotone, at or under the rate cap,
+#    and stays
 # ---------------------------------------------------------------------
 $s1 = New-Object System.Collections.ArrayList
-$reached = $false
 try {
     Invoke-Button 'PlayOpeningButton'
-    $reached = Sample-Until { param($v) $v -ge 0.995 } 5000 $s1
+    $s1 = Sample-Timed 1600 120
 } catch {
     Log ("  play opening failed: " + $_.Exception.Message)
 }
+$v1 = @($s1 | ForEach-Object { $_.V })
+$peak = if ($v1.Count -gt 0) { ($v1 | Measure-Object -Maximum).Maximum } else { -1 }
+$reached = ($peak -ge 0.995)
 $mono = $true
-for ($i = 1; $i -lt $s1.Count; $i++) {
-    if ($s1[$i] -lt $s1[$i - 1] - 0.02) { $mono = $false }
+for ($i = 1; $i -lt $v1.Count; $i++) {
+    if ($v1[$i] -lt $v1[$i - 1] - 0.02) { $mono = $false }
 }
-$peak = if ($s1.Count -gt 0) { ($s1 | Measure-Object -Maximum).Maximum } else { -1 }
-Check "opening reaches 1.0" $reached ("peak={0} samples={1}" -f $peak, $s1.Count)
-Check "opening monotone" $mono ("{0} samples: {1}" -f $s1.Count, (($s1 | ForEach-Object { [math]::Round($_, 2) }) -join ' '))
+$rate1 = Measure-MaxRate $s1
+Check "opening reaches 1.0" $reached ("peak={0} samples={1}" -f $peak, $v1.Count)
+Check "opening monotone" $mono ("{0} samples: {1}" -f $v1.Count, (($v1 | ForEach-Object { [math]::Round($_, 2) }) -join ' '))
+Check "opening has no jump" ($rate1 -le ($script:RateCap * $script:RateSlack)) `
+    ("max rate={0:0.00}/s (cap {1}/s)" -f $rate1, $script:RateCap)
 
 # auto-stop: after reaching the endpoint the value must not creep or bounce
 Start-Sleep -Milliseconds 900
 $after = New-Object System.Collections.ArrayList
 for ($i = 0; $i -lt 5; $i++) { [void]$after.Add((Read-Progress)); Start-Sleep -Milliseconds 150 }
-$stillAtEnd = (($after | Where-Object { $_ -lt 0.99 }).Count -eq 0)
+$stillAtEnd = (@($after | Where-Object { $_ -lt 0.99 }).Count -eq 0)
 Check "opening auto-stops at 1.0" $stillAtEnd ("after 0.9s: " + (($after | ForEach-Object { [math]::Round($_, 2) }) -join ' '))
 
 # ---------------------------------------------------------------------
-# 2. 合盖 1 -> 0 : reaches 0.0 and stays
+# 2. 合盖 1 -> 0 (fast) : reaches 0.0, monotone, at or under the cap, stays
 # ---------------------------------------------------------------------
 $s2 = New-Object System.Collections.ArrayList
-$reached0 = $false
 try {
     Invoke-Button 'PlayClosingButton'
-    $reached0 = Sample-Until { param($v) $v -le 0.005 } 5000 $s2
+    $s2 = Sample-Timed 1600 120
 } catch {
     Log ("  play closing failed: " + $_.Exception.Message)
 }
+$v2 = @($s2 | ForEach-Object { $_.V })
+$low2 = if ($v2.Count -gt 0) { ($v2 | Measure-Object -Minimum).Minimum } else { 1.0 }
+$reached0 = ($low2 -le 0.005)
 $mono2 = $true
-for ($i = 1; $i -lt $s2.Count; $i++) {
-    if ($s2[$i] -gt $s2[$i - 1] + 0.02) { $mono2 = $false }
+for ($i = 1; $i -lt $v2.Count; $i++) {
+    if ($v2[$i] -gt $v2[$i - 1] + 0.02) { $mono2 = $false }
 }
-Check "closing reaches 0.0" $reached0 ("samples={0}" -f $s2.Count)
-Check "closing monotone" $mono2 ((($s2 | ForEach-Object { [math]::Round($_, 2) }) -join ' '))
+$rate2 = Measure-MaxRate $s2
+Check "closing reaches 0.0" $reached0 ("min={0} samples={1}" -f $low2, $v2.Count)
+Check "closing monotone" $mono2 (($v2 | ForEach-Object { [math]::Round($_, 2) }) -join ' ')
+Check "closing has no jump" ($rate2 -le ($script:RateCap * $script:RateSlack)) `
+    ("max rate={0:0.00}/s (cap {1}/s)" -f $rate2, $script:RateCap)
 Start-Sleep -Milliseconds 700
 $low = Read-Progress
 Check "closing auto-stops at 0.0" ($low -le 0.01) ("value={0}" -f $low)
@@ -245,6 +310,93 @@ Start-Sleep -Milliseconds 800
 $p2 = Read-Progress
 Check "pause freezes progress" ([math]::Abs($p2 - $p1) -le 0.02) ("{0} -> {1}" -f $p1, $p2)
 [void](Set-Loop $false)
+
+# ---------------------------------------------------------------------
+# 5/6. 慢开 / 慢合 (3 s per pass) - the "慢" half of M2.3's six operations.
+# A slow pass is where a lag or a stutter is most visible, and it is the
+# regime the fast pass cannot exercise (the fast pass is rate-capped almost
+# the whole way, so it says nothing about tracking).
+# ---------------------------------------------------------------------
+try { [void](Set-Duration 3.0) } catch { Log ("  set duration failed: " + $_.Exception.Message) }
+Set-Progress 0
+Start-Sleep -Milliseconds 400
+try { Invoke-Button 'PlayOpeningButton' } catch { Log ("  slow open failed: " + $_.Exception.Message) }
+$s5 = Sample-Timed 3400 120
+$v5 = @($s5 | ForEach-Object { $_.V })
+$mono5 = $true
+for ($i = 1; $i -lt $v5.Count; $i++) {
+    if ($v5[$i] -lt $v5[$i - 1] - 0.02) { $mono5 = $false }
+}
+$peak5 = if ($v5.Count -gt 0) { ($v5 | Measure-Object -Maximum).Maximum } else { -1 }
+$rate5 = Measure-MaxRate $s5
+Check "slow opening reaches 1.0" ($peak5 -ge 0.995) ("peak={0} samples={1}" -f $peak5, $v5.Count)
+Check "slow opening monotone" $mono5 (Format-Series $s5)
+Check "slow opening tracks at ~0.33/s" ($rate5 -le ($script:RateCap * $script:RateSlack) -and $rate5 -le 0.75) `
+    ("max rate={0:0.00}/s (expected ~0.33)" -f $rate5)
+
+Start-Sleep -Milliseconds 500
+try { Invoke-Button 'PlayClosingButton' } catch { Log ("  slow close failed: " + $_.Exception.Message) }
+$s6 = Sample-Timed 3400 120
+$v6 = @($s6 | ForEach-Object { $_.V })
+$mono6 = $true
+for ($i = 1; $i -lt $v6.Count; $i++) {
+    if ($v6[$i] -gt $v6[$i - 1] + 0.02) { $mono6 = $false }
+}
+$low6 = if ($v6.Count -gt 0) { ($v6 | Measure-Object -Minimum).Minimum } else { 1.0 }
+$rate6 = Measure-MaxRate $s6
+Check "slow closing reaches 0.0" ($low6 -le 0.005) ("min={0} samples={1}" -f $low6, $v6.Count)
+Check "slow closing monotone" $mono6 (Format-Series $s6)
+Check "slow closing has no jump" ($rate6 -le ($script:RateCap * $script:RateSlack)) `
+    ("max rate={0:0.00}/s" -f $rate6)
+
+# ---------------------------------------------------------------------
+# 7. 中途停: stop the pass half way - the value must settle and stay dead
+#    still. A springy settle (overshoot then return) or a jitter at rest is
+#    a visible flicker at a fixed progress, which is exactly what M2.3's
+#    "中途停" check is about.
+# ---------------------------------------------------------------------
+try { [void](Set-Duration 2.0) } catch { }
+Set-Progress 0
+Start-Sleep -Milliseconds 400
+try { Invoke-Button 'PlayOpeningButton' } catch { Log ("  mid-stop run failed: " + $_.Exception.Message) }
+$stopAt = 0.0
+$deadline = (Get-Date).AddMilliseconds(2500)
+while ((Get-Date) -lt $deadline) {
+    $stopAt = Read-Progress
+    if ($stopAt -ge 0.40) { break }
+    Start-Sleep -Milliseconds 60
+}
+try { Invoke-Button 'PauseDemoButton' } catch { Log ("  pause failed: " + $_.Exception.Message) }
+$s7 = Sample-Timed 1400 100
+$v7 = @($s7 | ForEach-Object { $_.V })
+$spread7 = if ($v7.Count -gt 1) { ($v7 | Measure-Object -Maximum).Maximum - ($v7 | Measure-Object -Minimum).Minimum } else { 1.0 }
+$held7 = if ($v7.Count -gt 0) { $v7[$v7.Count - 1] } else { -1 }
+Check "mid-stop stops between the endpoints" ($held7 -gt 0.10 -and $held7 -lt 0.95) ("paused at {0:0.000}" -f $held7)
+Check "mid-stop is dead still" ($spread7 -le 0.02) ("spread over 1.4 s = {0:0.0000}" -f $spread7)
+
+# ---------------------------------------------------------------------
+# 8. 中途反向: reverse mid pass - exactly ONE direction change, no jump.
+#    Two changes would be a shudder; zero would mean the reverse was ignored.
+# ---------------------------------------------------------------------
+Set-Progress 0
+Start-Sleep -Milliseconds 400
+try { Invoke-Button 'PlayOpeningButton' } catch { Log ("  mid-reverse run failed: " + $_.Exception.Message) }
+$deadline = (Get-Date).AddMilliseconds(2500)
+while ((Get-Date) -lt $deadline) {
+    if ((Read-Progress) -ge 0.40) { break }
+    Start-Sleep -Milliseconds 60
+}
+$turnAt = Read-Progress
+try { Invoke-Button 'PlayClosingButton' } catch { Log ("  reverse failed: " + $_.Exception.Message) }
+$s8 = Sample-Timed 2400 120
+$v8 = @($s8 | ForEach-Object { $_.V })
+$changes8 = Measure-DirectionChanges $s8 0.01 1   # the rise preceded the window
+$rate8 = Measure-MaxRate $s8
+$end8 = if ($v8.Count -gt 0) { $v8[$v8.Count - 1] } else { 1.0 }
+Check "mid-reverse turns exactly once" ($changes8 -eq 1) ("turned at p~{0:0.00}, direction changes={1}" -f $turnAt, $changes8)
+Check "mid-reverse has no jump" ($rate8 -le ($script:RateCap * $script:RateSlack)) ("max rate={0:0.00}/s" -f $rate8)
+Check "mid-reverse finishes at 0.0" ($end8 -le 0.03) ("final={0:0.000}" -f $end8)
+Log ("  mid-reverse samples: " + (Format-Series $s8))
 
 # ---------------------------------------------------------------------
 # Summary
