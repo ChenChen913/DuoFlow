@@ -169,7 +169,7 @@ public static class ScreenDetector
         }
 
         GrayImage work = image.Downscaled(options.MaxWorkSide);
-        (double mean, double std) = MeanAndStd(work.Pixels);
+        (double mean, double std) = GrayStats.MeanAndStd(work.Pixels);
         _ = mean;
 
         if (std < FlatFrameStd)
@@ -208,25 +208,6 @@ public static class ScreenDetector
 
     private static ScreenDetection Fail(ScreenDetectionReason reason, ScreenDetectionOptions options)
         => new() { Reason = reason, UsableConfidence = options.UsableConfidence };
-
-    private static (double Mean, double Std) MeanAndStd(ReadOnlySpan<byte> pixels)
-    {
-        if (pixels.Length == 0)
-        {
-            return (0.0, 0.0);
-        }
-
-        double sum = 0.0;
-        double sumSq = 0.0;
-        foreach (byte b in pixels)
-        {
-            sum += b;
-            sumSq += b * b;
-        }
-
-        double mean = sum / pixels.Length;
-        return (mean, Math.Sqrt(Math.Max(0.0, (sumSq / pixels.Length) - (mean * mean))));
-    }
 
     private static ScreenDetection DetectPolarity(
         GrayImage work,
@@ -373,70 +354,18 @@ public static class ScreenDetector
     private static double Score(
         double areaFraction, double rectangularity, double fill, double edgeContrast, double aspect)
     {
-        double area = Window(areaFraction, 0.02, 0.12, 0.60, 0.95);
-        double rect = Window(rectangularity, 0.60, 0.85, 1.00, 1.00);
-        double filled = Window(fill, 0.60, 0.85, 1.00, 1.00);
+        double area = ScoreShapes.Window(areaFraction, 0.02, 0.12, 0.60, 0.95);
+        double rect = ScoreShapes.Window(rectangularity, 0.60, 0.85, 1.00, 1.00);
+        double filled = ScoreShapes.Window(fill, 0.60, 0.85, 1.00, 1.00);
 
         // Contrast veto: a boundary below ~6 gray levels is not a boundary.
         // Above 22 it is unambiguous, and more contrast stops mattering.
-        double contrastVeto = Window(edgeContrast, 6.0, 22.0, 1000.0, 1000.0);
-        double shapeVeto = Window(aspect, 0.50, 0.90, 2.80, 4.00);
-        double coverageVeto = HighTaper(areaFraction, 0.85, 0.95);
+        double contrastVeto = ScoreShapes.Window(edgeContrast, 6.0, 22.0, 1000.0, 1000.0);
+        double shapeVeto = ScoreShapes.Window(aspect, 0.50, 0.90, 2.80, 4.00);
+        double coverageVeto = ScoreShapes.HighTaper(areaFraction, 0.85, 0.95);
 
         double baseScore = (0.34 * area) + (0.36 * rect) + (0.30 * filled);
         return Math.Clamp(baseScore * contrastVeto * shapeVeto * coverageVeto, 0.0, 1.0);
-    }
-
-    /// <summary>
-    /// 1.0 below <paramref name="plateauEnd"/>, 0.0 above <paramref name="zeroAt"/>.
-    ///
-    /// Used as a veto on "the candidate is basically the whole frame". Such a
-    /// region has no measurable boundary - its edge contrast is whatever noise
-    /// sits between one frame border and another - yet it scores a perfect
-    /// rectangularity and fill because it IS a rectangle. Without this, the
-    /// inverted polarity of a thin-line scene reports the background as a
-    /// 98%-of-frame "screen" with 0.56 confidence. Measured, not hypothesised:
-    /// that is exactly the failure the thin-line test caught.
-    /// </summary>
-    private static double HighTaper(double value, double plateauEnd, double zeroAt)
-    {
-        if (double.IsNaN(value) || value >= zeroAt)
-        {
-            return 0.0;
-        }
-
-        if (value <= plateauEnd)
-        {
-            return 1.0;
-        }
-
-        return (zeroAt - value) / (zeroAt - plateauEnd);
-    }
-
-    /// <summary>Trapezoid: 0 below <paramref name="zero"/>, 1 inside the plateau, 0 above <paramref name="zeroHigh"/>.</summary>
-    private static double Window(double value, double zero, double one, double oneHigh, double zeroHigh)
-    {
-        if (double.IsNaN(value))
-        {
-            return 0.0;
-        }
-
-        if (value < zero || value > zeroHigh)
-        {
-            return 0.0;
-        }
-
-        if (value < one)
-        {
-            return (value - zero) / (one - zero);
-        }
-
-        if (value <= oneHigh)
-        {
-            return 1.0;
-        }
-
-        return (zeroHigh - value) / (zeroHigh - oneHigh);
     }
 
     /// <summary>

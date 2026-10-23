@@ -474,8 +474,235 @@ internal static class CameraProbe
     }
 
     /// <summary>
-    /// Reduces a frame to four scalars: mean luminance (0..255), its standard
-    /// deviation, the alpha mean, and the byte range.
+    /// M3.3 acceptance probe: run the REAL provider end to end and report what
+    /// it produced.
+    ///
+    /// <para>
+    /// Deliberately uses <see cref="CameraLidProvider"/> rather than repeating
+    /// its steps: a probe that re-implements the pipeline proves the probe
+    /// works, not the provider. This one exercises the same object the app will
+    /// construct, including device selection, the frame governor, the coverage
+    /// estimate and the progress mapping.
+    /// </para>
+    /// <para>
+    /// <b>What is gated and what is not.</b> The gate is structural - the
+    /// provider started, it delivered N frames, the vision chain never threw,
+    /// and it reported a plausible confidence. It is NOT "the progress moved":
+    /// the probe runs with the laptop sitting still, so a moving progress would
+    /// be the bug. Stability is reported instead, because it is the number that
+    /// says whether M3.4 has anything to smooth.
+    /// </para>
+    /// <para>
+    /// Privacy is unchanged: <see cref="GrayImage"/> is built and consumed
+    /// inside the frame callback, and only coverage, progress and confidence
+    /// scalars reach this method.
+    /// </para>
+    /// </summary>
+    public static async Task<int> RunLidAsync(string outputDir, double targetFps, int frameCount)
+    {
+        Directory.CreateDirectory(outputDir);
+        string jsonPath = Path.Combine(outputDir, "camera-lid-result.json");
+
+        var report = new Dictionary<string, object?>();
+        var failures = new List<string>();
+
+        IReadOnlyList<CameraDeviceInfo> devices = Array.Empty<CameraDeviceInfo>();
+        var coverages = new List<double>();
+        var nearTops = new List<double>();
+        var progresses = new List<double>();
+        var confidences = new List<double>();
+        var progressReasons = new Dictionary<string, int>();
+        var deckReasons = new Dictionary<string, int>();
+        int fillsFrame = 0;
+        int touchesTop = 0;
+        double openBaseline = 0.0;
+        bool hasLearnedBaseline = false;
+        string? lastCoverageText = null;
+        string? error = null;
+
+        try
+        {
+            devices = await MediaCaptureCamera.EnumerateAsync();
+            Trace.Log($"camera-lid: enumerated {devices.Count} device(s)");
+
+            await using var provider = new CameraLidProvider(targetFps);
+            var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            provider.StateChanged += (_, state) =>
+            {
+                LidProgressEstimate? estimate = provider.LastEstimate;
+                DeckCoverage? coverage = provider.LastCoverage;
+
+                progresses.Add(state.Progress);
+                confidences.Add(state.Confidence);
+
+                string progressReason = estimate?.Reason.ToString() ?? "null";
+                progressReasons[progressReason] =
+                    progressReasons.TryGetValue(progressReason, out int n) ? n + 1 : 1;
+
+                if (coverage is not null)
+                {
+                    coverages.Add(coverage.Coverage);
+                    nearTops.Add(coverage.NearEdgeTop);
+                    if (coverage.FillsFrame)
+                    {
+                        fillsFrame++;
+                    }
+
+                    if (coverage.TouchesTop)
+                    {
+                        touchesTop++;
+                    }
+
+                    string deckReason = coverage.Reason.ToString();
+                    deckReasons[deckReason] = deckReasons.TryGetValue(deckReason, out int m) ? m + 1 : 1;
+                    lastCoverageText = coverage.Describe();
+                }
+
+                if (progresses.Count >= frameCount)
+                {
+                    done.TrySetResult(true);
+                }
+            };
+
+            await provider.StartAsync();
+            if (!provider.IsAvailable)
+            {
+                failures.Add($"provider did not start: {provider.LastError ?? "unknown"}");
+            }
+            else
+            {
+                Trace.Log($"camera-lid: opened {provider.Device?.Width}x{provider.Device?.Height} " +
+                          $"@30fps max, '{provider.Device?.Name}' ({provider.Device?.Enclosure})");
+
+                Task completed = await Task.WhenAny(done.Task, Task.Delay(TimeSpan.FromSeconds(20)));
+                if (completed != done.Task)
+                {
+                    failures.Add($"timed out after 20 s with {progresses.Count}/{frameCount} states");
+                }
+
+                await provider.StopAsync();
+                if (provider.IsAvailable)
+                {
+                    failures.Add("provider still available after StopAsync");
+                }
+            }
+
+            openBaseline = provider.OpenBaseline;
+            hasLearnedBaseline = provider.HasLearnedBaseline;
+
+            if (provider.FrameErrors > 0)
+            {
+                failures.Add($"vision chain threw on {provider.FrameErrors} frame(s): {provider.LastError}");
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"{ex.GetType().Name}: {ex.Message} (hresult=0x{ex.HResult:X8})";
+            Trace.Log($"camera-lid: FAILED {error}");
+            failures.Add(CameraHealth.Describe(CameraHealth.Classify(ex)));
+        }
+
+        static (double Min, double Max, double Mean, double Std) Summarise(List<double> values)
+        {
+            if (values.Count == 0)
+            {
+                return (0.0, 0.0, 0.0, 0.0);
+            }
+
+            double min = double.MaxValue, max = double.MinValue, sum = 0.0;
+            foreach (double v in values)
+            {
+                min = Math.Min(min, v);
+                max = Math.Max(max, v);
+                sum += v;
+            }
+
+            double mean = sum / values.Count;
+            double variance = 0.0;
+            foreach (double v in values)
+            {
+                double d = v - mean;
+                variance += d * d;
+            }
+
+            return (min, max, mean, Math.Sqrt(variance / values.Count));
+        }
+
+        (double covMin, double covMax, double covMean, double covStd) = Summarise(coverages);
+        (double topMin, double topMax, double topMean, double _) = Summarise(nearTops);
+        (double progMin, double progMax, double progMean, double progStd) = Summarise(progresses);
+        (double confMin, double confMax, double confMean, double confStd) = Summarise(confidences);
+
+        report["GeneratedAt"] = DateTimeOffset.Now.ToString("s");
+        report["TargetFps"] = targetFps;
+        report["RequestedFrames"] = frameCount;
+        report["Devices"] = devices;
+        report["States"] = progresses.Count;
+        report["OpenBaseline"] = Math.Round(openBaseline, 4);
+        report["HasLearnedBaseline"] = hasLearnedBaseline;
+        report["CoverageMin"] = Math.Round(covMin, 4);
+        report["CoverageMax"] = Math.Round(covMax, 4);
+        report["CoverageMean"] = Math.Round(covMean, 4);
+        report["CoverageStd"] = Math.Round(covStd, 4);
+        report["NearEdgeTopMin"] = Math.Round(topMin, 4);
+        report["NearEdgeTopMax"] = Math.Round(topMax, 4);
+        report["NearEdgeTopMean"] = Math.Round(topMean, 4);
+        report["FillsFrameFrames"] = fillsFrame;
+        report["TouchesTopFrames"] = touchesTop;
+        report["ProgressMin"] = Math.Round(progMin, 4);
+        report["ProgressMax"] = Math.Round(progMax, 4);
+        report["ProgressMean"] = Math.Round(progMean, 4);
+        report["ProgressStd"] = Math.Round(progStd, 4);
+        report["ConfidenceMin"] = Math.Round(confMin, 4);
+        report["ConfidenceMax"] = Math.Round(confMax, 4);
+        report["ConfidenceMean"] = Math.Round(confMean, 4);
+        report["ConfidenceStd"] = Math.Round(confStd, 4);
+        report["ProgressReasons"] = progressReasons;
+        report["DeckReasons"] = deckReasons;
+        report["LastCoverage"] = lastCoverageText;
+        report["Error"] = error;
+        report["Failures"] = failures;
+        // Deliberately NOT reported: any pixel, any image path, any frame data.
+        report["StoredPixels"] = false;
+
+        File.WriteAllText(jsonPath, JsonSerializer.Serialize(report, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+        }));
+        Trace.Log($"camera-lid: wrote {jsonPath}");
+        if (lastCoverageText is not null)
+        {
+            Trace.Log($"camera-lid: last coverage -> {lastCoverageText}");
+        }
+
+        // Gate on the PIPELINE, not on the scene - the M3.1/M3.2 lesson. "Did we
+        // measure anything" depends on where the lid is standing and where the
+        // camera is pointing; on a laptop with the lid wide open the surface
+        // this provider is supposed to watch is simply not in the frame, and
+        // that is reported (DeckReasons / TouchesTopFrames), not failed.
+        bool ok = error is null
+                  && failures.Count == 0
+                  && progresses.Count >= frameCount;
+
+        if (ok && confMax <= 0.0)
+        {
+            Trace.Log("camera-lid: no usable measurement - expected with the lid open, " +
+                      "capped lens or dark room; the contract here is 'runs and decides', " +
+                      "not 'finds the deck'");
+        }
+
+        if (ok && confMax > 0.0 && progStd < 1e-9)
+        {
+            Trace.Log("camera-lid: progress is perfectly still - expected, the lid did not move; " +
+                      "this probe proves the chain runs, not that it tracks a closing lid");
+        }
+
+        Trace.Log($"camera-lid: OVERALL={(ok ? "PASS" : "FAIL")}");
+        return ok ? 0 : 1;
+    }
+
+    /// <summary>
     ///
     /// Sparse on purpose: the numbers only have to prove a live decoded frame,
     /// and touching every pixel of a 1080p frame in managed code would cost

@@ -40,14 +40,16 @@
 #   .\scripts\acceptance\camera-probe-verify.ps1
 #   .\scripts\acceptance\camera-probe-verify.ps1 -RequireContrast
 #   .\scripts\acceptance\camera-probe-verify.ps1 -Detect              # + M3.2
-#   .\scripts\acceptance\camera-probe-verify.ps1 -Detect -RequireContrast
+#   .\scripts\acceptance\camera-probe-verify.ps1 -Lid                 # + M3.3
+#   .\scripts\acceptance\camera-probe-verify.ps1 -Detect -Lid -RequireContrast
 #   .\scripts\acceptance\camera-probe-verify.ps1 -OutputDir D:\tmp\cam
 #
 # OUTPUT: camera-probe-verify.txt + probe\camera-probe-result.json
 #         (+ detect\camera-detect-result.json when -Detect)
+#         (+ lid\camera-lid-result.json when -Lid)
 # EXIT CODE: 0 = all checks passed, 1 = at least one did not.
 # NOTE: headless - opens no window and does not touch the screen.
-#       ~10 s without -Detect, ~20 s with it.
+#       ~10 s without options, ~20 s with -Detect, ~30 s with both.
 # =====================================================================
 
 param(
@@ -56,7 +58,8 @@ param(
     [string]$Exe = "",
     [int]$TimeoutSeconds = 90,
     [switch]$RequireContrast,
-    [switch]$Detect
+    [switch]$Detect,
+    [switch]$Lid
 )
 
 $ErrorActionPreference = "Stop"
@@ -345,6 +348,105 @@ if ($Detect) {
 }
 
 # ---------------------------------------------------------------------
+# 10. M3.3 lid progress (optional, -Lid).
+#
+#     What is gated: the provider STARTS, delivers every state, and the
+#     vision chain never throws. What is NOT gated: that progress moved.
+#     The probe runs with the laptop sitting still, so a moving progress
+#     would be the bug - and on a fully open lid the surface this provider
+#     watches (the deck) is not even in the frame, which is reported as
+#     NoFarBoundary rather than failed.
+# ---------------------------------------------------------------------
+$lidInfo = $null
+if ($Lid) {
+    Log ""
+    Log "10. running lid progress (M3.3)"
+
+    $lidDir = Join-Path $OutputDir "lid"
+    New-Item -ItemType Directory -Force -Path $lidDir | Out-Null
+    $lidProc = Start-Process -FilePath $Exe -ArgumentList ("--camera-lid=" + $lidDir) -PassThru -WindowStyle Hidden
+    $lidTimedOut = -not $lidProc.WaitForExit($TimeoutSeconds * 1000)
+    if ($lidTimedOut) {
+        try { $lidProc.Kill() } catch { }
+    }
+
+    $lidExit = if ($lidTimedOut) { -1 } else { $lidProc.ExitCode }
+    Check "lid probe exits 0" ($lidExit -eq 0) ("exit=" + $lidExit)
+
+    $lidJsonPath = Join-Path $lidDir "camera-lid-result.json"
+    $l = $null
+    if (Test-Path $lidJsonPath) {
+        try { $l = Get-Content $lidJsonPath -Raw | ConvertFrom-Json } catch { $l = $null }
+    }
+    Check "lid report written" ($null -ne $l) ($lidJsonPath)
+
+    if ($null -ne $l) {
+        $states = [int]$l.States
+        $failCount = @($l.Failures).Count
+        $progMin = [double]$l.ProgressMin
+        $progMax = [double]$l.ProgressMax
+        $covMin = [double]$l.CoverageMin
+        $covMax = [double]$l.CoverageMax
+        $confMax = [double]$l.ConfidenceMax
+        $topFrames = [int]$l.TouchesTopFrames
+        $fillsFrames = [int]$l.FillsFrameFrames
+
+        Check "provider delivered every state" ($states -ge [int]$l.RequestedFrames) ("states=" + $states + "/" + $l.RequestedFrames)
+        Check "vision chain never threw" ($failCount -eq 0) ("failures=" + $failCount + $(if ($l.Error) { " error=" + $l.Error } else { "" }))
+        Check "lid report stores no pixels" ($l.StoredPixels -eq $false) ("StoredPixels=" + $l.StoredPixels)
+        Check "progress stays in 0..1" (($progMin -ge 0.0) -and ($progMax -le 1.0)) ("progress=" + $progMin + ".." + $progMax)
+        Check "coverage stays in 0..1" (($covMin -ge 0.0) -and ($covMax -le 1.0)) ("coverage=" + $covMin + ".." + $covMax)
+
+        # The invariant that catches "a frozen progress leaking out as a
+        # measurement": if nothing was measurable, progress must not have moved
+        # off its start value. A tracker that reports progress without a
+        # measurement is worse than one that reports nothing.
+        $noMeasure = ($confMax -le 0.0)
+        Check "no measurement means no progress" ((-not $noMeasure) -or ($progMax -le 0.0)) ("confMax=" + $confMax + " progMax=" + $progMax)
+
+        $deckText = ($l.DeckReasons.PSObject.Properties | ForEach-Object { $_.Name + "=" + $_.Value }) -join " "
+        $progText = ($l.ProgressReasons.PSObject.Properties | ForEach-Object { $_.Name + "=" + $_.Value }) -join " "
+        Log ("  [INFO] open baseline " + $l.OpenBaseline + " (learned=" + $l.HasLearnedBaseline + ")")
+        Log ("         coverage " + $l.CoverageMin + ".." + $l.CoverageMax + " (std " + $l.CoverageStd + ")" +
+             "  nearTop " + $l.NearEdgeTopMin + ".." + $l.NearEdgeTopMax)
+        Log ("         progress " + $l.ProgressMin + ".." + $l.ProgressMax + " (std " + $l.ProgressStd + ")" +
+             "  confidence " + $l.ConfidenceMin + ".." + $l.ConfidenceMax)
+        Log ("         deck: " + $deckText + "  |  progress: " + $progText)
+        Log ("         touchesTop " + $topFrames + "/" + $states + "  fillsFrame " + $fillsFrames + "/" + $states)
+
+        if ($topFrames -ge $states -and $states -gt 0) {
+            # Not a failure: with the lid open the deck is not in the frame, and
+            # the measured region is some other surface spanning the full
+            # height. Saying so is the whole point of the NoFarBoundary reason.
+            Log "         [WARN] every region touched the top edge - the deck is not in view."
+            Log "                This is the expected state with the lid fully open:"
+            Log "                progress cannot be meaningful until the lid is part-way down."
+        }
+        if ($noMeasure) {
+            Log "         [WARN] no usable measurement this run - progress is frozen at 0,"
+            Log "                which is the honest answer, not a pass for tracking."
+        }
+
+        $lidInfo = [ordered]@{
+            States           = $states
+            Failures         = $failCount
+            OpenBaseline     = $l.OpenBaseline
+            HasLearnedBaseline = $l.HasLearnedBaseline
+            CoverageMin      = $covMin
+            CoverageMax      = $covMax
+            CoverageStd      = $l.CoverageStd
+            ProgressMin      = $progMin
+            ProgressMax      = $progMax
+            ProgressStd      = $l.ProgressStd
+            ConfidenceMax    = $confMax
+            TouchesTopFrames = $topFrames
+            FillsFrameFrames = $fillsFrames
+            DeckReasons      = $deckText
+        }
+    }
+}
+
+# ---------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------
 # Wrap in @(): with exactly one match, Where-Object returns the object itself,
@@ -370,6 +472,7 @@ Log ("OVERALL = " + $(if ($overall) { "PASS (" + $script:steps.Count + "/" + $sc
     Exe             = $Exe
     RequireContrast = [bool]$RequireContrast
     Detect          = [bool]$Detect
+    Lid             = [bool]$Lid
     ExitCode        = $exitCode
     TargetFps       = $targetFps
     CameraFps       = $cameraFps
@@ -381,6 +484,7 @@ Log ("OVERALL = " + $(if ($overall) { "PASS (" + $script:steps.Count + "/" + $sc
     SceneFlat       = $sceneFlat
     ContrastDelta   = $contrastDelta
     Detection       = $detectInfo
+    LidProgress     = $lidInfo
     Steps           = $script:steps
     Overall         = $overall
 } | ConvertTo-Json -Depth 6 | Out-File (Join-Path $OutputDir "camera-probe-verify-result.json") -Encoding utf8

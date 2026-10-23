@@ -28,6 +28,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DuoFlow.Vision\DuoFlow.Vision.csproj" />
+    <!-- M3.3 (DD-055): the adapter implements DuoFlow.Core's ILidStateProvider,
+         so the contract has to be visible where the adapter lives. The
+         dependency only points one way - Core knows nothing about cameras, and
+         Vision still knows nothing about Core (it returns LidProgressEstimate,
+         not LidState). A windows-TFM project may reference a net8.0 one; the
+         reverse would not build. -->
+    <ProjectReference Include="..\DuoFlow.Core\DuoFlow.Core.csproj" />
   </ItemGroup>
 
 </Project>

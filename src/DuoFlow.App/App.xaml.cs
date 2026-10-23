@@ -72,6 +72,7 @@ public partial class App : Application
         bool lightSweep = false;
         string? cameraProbeDir = null;
         string? cameraDetectDir = null;
+        string? cameraLidDir = null;
         foreach (string arg in Environment.GetCommandLineArgs())
         {
             if (string.Equals(arg, "--overlay-smoke", StringComparison.OrdinalIgnoreCase))
@@ -109,10 +110,21 @@ public partial class App : Application
                     ? arg[(eq + 1)..]
                     : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "duoflow-camera-detect");
             }
+            // M3.3 acceptance hook: the real provider, end to end - coverage
+            // estimate, progress mapping, LidState. Same privacy rule: only
+            // scalars leave the frame callback.
+            if (arg.StartsWith("--camera-lid", StringComparison.OrdinalIgnoreCase))
+            {
+                int eq = arg.IndexOf('=');
+                cameraLidDir = eq > 0
+                    ? arg[(eq + 1)..]
+                    : System.IO.Path.Combine(System.IO.Path.GetTempPath(), "duoflow-camera-lid");
+            }
         }
 
         Trace.Log($"smoke={smoke} selfTest={selfTest} lightSweep={lightSweep} " +
-                  $"cameraProbe={cameraProbeDir ?? "-"} cameraDetect={cameraDetectDir ?? "-"}");
+                  $"cameraProbe={cameraProbeDir ?? "-"} cameraDetect={cameraDetectDir ?? "-"} " +
+                  $"cameraLid={cameraLidDir ?? "-"}");
 
         // The camera probe is a headless mode: no overlay, no console, no
         // rendering. It measures one thing (can this machine deliver frames)
@@ -131,6 +143,15 @@ public partial class App : Application
         {
             RunHeadlessThenExit("camera-detect", dir =>
                 CameraProbe.RunDetectAsync(dir, MediaCaptureCamera.DefaultTargetFps, 30), cameraDetectDir);
+            return;
+        }
+
+        // M3.3: the provider itself, not a re-implementation of it. If this
+        // passes, the path the app will ship is the path that was measured.
+        if (cameraLidDir is not null)
+        {
+            RunHeadlessThenExit("camera-lid", dir =>
+                CameraProbe.RunLidAsync(dir, MediaCaptureCamera.DefaultTargetFps, 30), cameraLidDir);
             return;
         }
 

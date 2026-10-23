@@ -68,17 +68,25 @@ DuoFlow 是一个运行于 Windows 11 上的桌面视觉特效程序：
 4. 用下方「渲染参数」面板实时改折叠角度 / 相机距离 / 方向 / 铰链边 / 模糊与包络 /
    渐变色相 / 光带扫过（渐变与光带默认关闭，两者正交：渐变改色相，光带加亮度）
 
-- 单元测试 283/283 通过（`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`）
+- 单元测试 333/333 通过（`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`）
 - 渲染采用物理景深模型：缝隙高度驱动磨砂半径与光衰减，mip 预过滤 + Vogel 螺旋采样
 - 透明度、点击穿透（click-through）、折叠几何均已真机验证
 - 真机量化验收脚本在 `scripts/acceptance/`：几何/光影方向/模糊方向/无滞回/覆盖度（9/9）、
   P0 三件套、参数面板接线（20/20）、六种开合操作与速率合规（22/22）、光带位置与幅度（14/14）、
-  摄像头枚举/打开/真解码帧/隐私（18/18）、屏幕检测契约（+9 → 27/27），退出码可直接判
+  摄像头枚举/打开/真解码帧/隐私（18/18）、屏幕检测契约（27/27）、盖子进度链路（33/33），退出码可直接判
 - 摄像头按「设备与算法在程序集层分离」接入（DD-053）：`DuoFlow.Vision` 是纯 `net8.0`
   且**引不到 WinRT**，像素坐标唯一的进出口是 `CameraProfile`；`DuoFlow.Camera` 才碰设备。
   真机实测 1280×720 NV12、`AlphaMean=255`（真 BGRA）、无任何像素落盘
 - 屏幕检测是**确定性几何**（Otsu → 连通域 → 凸包 → 四点拟合），没有模型：
   活画面下真机 30/30 帧可用、最佳置信度 0.864；镜头被遮时 0/30 并如实报 `FlatScene`（DD-054）
+- 盖子进度不靠"看屏幕"（盖子上的摄像头看不到自己的屏幕），而是靠**近平面占比**：
+  盖子每合一度，摄像头光轴就下俯一度，画面下半部的近平面就多占一分（DD-055）。
+  这个量在三种情况下会被结构性否决而不是硬报数字——区域触顶无远边界（`NoFarBoundary`）、
+  整帧平坦（`FlatScene`）、边界对比不足（`LowConfidence`）
+- 全开时进度为 0 由**运行时基线学习**保证：首个可用样本即"全开"基准，
+  而不是靠一个对所有桌子都猜不对的常数（真机上常数会让启动即折 42%）
+- `Angle` 明确标注为**名义值**：占比无法反解成角度，且项目禁止假设焦距与安装位置；
+  真实可信度全部走 `Confidence`（DD-055）
 - 渲染参数自动保存到 `%LOCALAPPDATA%\DuoFlow\tuning.json`，重启后保留（DD-051）
 - 特效不可见时渲染心跳自动静默：静止桌面下不再每秒 33 帧空转（DD-051）
 - 参数面板实时显示「满折覆盖 X%」：`MaxFold=90°` 时满折覆盖恒为 0，拖动即可看到取舍（DD-052）
@@ -187,11 +195,11 @@ DuoFlow/
 ├── src/
 │   ├── DuoFlow.App/            # WinUI 3 应用（覆盖层 / 控制台 / 渲染管线 / 探针）
 │   ├── DuoFlow.Core/           # LidState / AnimationEngine / Provider 契约
-│   ├── DuoFlow.Core.Tests/     # xUnit 单元测试（202）
+│   ├── DuoFlow.Core.Tests/     # xUnit 单元测试（333）
 │   ├── DuoFlow.Capture/        # Windows Graphics Capture 与 D3D 互操作
 │   ├── DuoFlow.Render/         # 折叠几何 / 渲染参数（纯 C#，可单测）
-│   ├── DuoFlow.Vision/         # 摄像头几何 / 选型 / 限速 / 健康（纯 net8.0，无 WinRT）
-│   └── DuoFlow.Camera/         # MediaCapture 设备层（唯一碰摄像头的程序集）
+│   ├── DuoFlow.Vision/         # 几何 / 检测 / 占比估算 / 进度映射 / 选型 / 限速（纯 net8.0，无 WinRT）
+│   └── DuoFlow.Camera/         # MediaCapture 设备层 + LidState 适配器（唯一碰摄像头的程序集）
 ├── scripts/                    # run.ps1（一键构建+启动）/ 环境准备 / 硬件探针
 │   └── acceptance/             # 真机量化验收（几何 / P0 三件套 / 参数面板 / 摄像头）
 ├── docs/                       # 规格 / 设计决策 / 路线图 / 硬件兼容性

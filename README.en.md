@@ -66,12 +66,15 @@ A demo you can run today:
 2. Drag the progress slider on the console at the bottom-left
 3. The whole desktop folds in real time: sharp and bright at the hinge, progressively frosted and shadowed toward the far edge
 
-- Unit tests 283/283 passing (`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`)
+- Unit tests 333/333 passing (`dotnet test src/DuoFlow.Core.Tests/DuoFlow.Core.Tests.csproj`)
 - Rendering uses a physical depth-of-field model: the gap height drives the frost radius and the light falloff, with mip pre-filtering and Vogel-spiral sampling
 - Transparency, click-through and the fold geometry are all verified on real hardware
-- Quantified on-device acceptance scripts live in `scripts/acceptance/`: geometry / light direction / blur direction / no hysteresis / coverage (9/9), the P0 transparency trio, tuning-panel wiring (20/20), six lid operations with rate compliance (22/22), light-sweep position and amplitude (14/14), and camera enumerate/open/real-decoded-frames/privacy (18/18) and screen-detection contract (27/27 with -Detect)
+- Quantified on-device acceptance scripts live in `scripts/acceptance/`: geometry / light direction / blur direction / no hysteresis / coverage (9/9), the P0 transparency trio, tuning-panel wiring (20/20), six lid operations with rate compliance (22/22), light-sweep position and amplitude (14/14), camera enumerate/open/real-decoded-frames/privacy (18/18), screen-detection contract (27/27 with -Detect) and the lid-progress chain (33/33 with -Detect -Lid)
 - The camera is wired in with devices and algorithms split at the assembly level (DD-053): `DuoFlow.Vision` is plain `net8.0` and **cannot reference WinRT**, and the only door for pixel coordinates is `CameraProfile`; only `DuoFlow.Camera` touches a device. Measured on real hardware: 1280x720 NV12, `AlphaMean=255` (genuine BGRA), no pixel ever persisted
 - Screen detection is **deterministic geometry** (Otsu -> connected components -> convex hull -> four-corner fit), no model: on a live scene 30/30 frames usable at 0.864 best confidence; with the lens capped 0/30 and an honest `FlatScene` (DD-054)
+- Lid progress does not look at the screen - a lid-mounted camera cannot see its own display - it measures **how much of the frame the near surface occupies**: every degree the lid closes pitches the optical axis down by a degree, so the surface below takes up more of the picture (DD-055). The quantity is structurally vetoed rather than faked in three cases: region reaching the top edge with no far boundary (`NoFarBoundary`), a featureless frame (`FlatScene`), and a boundary with too little contrast (`LowConfidence`)
+- Progress starting at 0 with the lid open is guaranteed by **runtime baseline learning** - the first usable sample defines "open" - rather than by a constant that cannot be right for every desk (on real hardware the constant made the app launch already 42% folded)
+- `Angle` is explicitly marked **nominal**: a coverage fraction cannot be inverted into degrees, and the project forbids assuming focal length or mounting position; the honest number is `Confidence` (DD-055)
 - Render tuning is saved to `%LOCALAPPDATA%\DuoFlow\tuning.json` and restored on the next launch (DD-051)
 - The render heartbeat goes quiet while the effect is off screen: no 33 FPS idle spin on a static desktop (DD-051)
 
@@ -173,11 +176,11 @@ DuoFlow/
 ├── src/
 │   ├── DuoFlow.App/            # WinUI 3 app (overlay / console / render pipeline / probes)
 │   ├── DuoFlow.Core/           # LidState / AnimationEngine / provider contracts
-│   ├── DuoFlow.Core.Tests/     # xUnit unit tests (202)
+│   ├── DuoFlow.Core.Tests/     # xUnit unit tests (333)
 │   ├── DuoFlow.Capture/        # Windows Graphics Capture & D3D interop
 │   ├── DuoFlow.Render/         # fold geometry / render parameters (pure C#, testable)
-│   ├── DuoFlow.Vision/         # camera geometry / selection / throttling / health (plain net8.0, no WinRT)
-│   └── DuoFlow.Camera/         # MediaCapture device layer (the only assembly touching a camera)
+│   ├── DuoFlow.Vision/         # geometry / detection / coverage / progress mapping / selection (plain net8.0, no WinRT)
+│   └── DuoFlow.Camera/         # MediaCapture device layer + LidState adapter (the only assembly touching a camera)
 ├── scripts/                    # environment setup / hardware probe
 │   └── acceptance/             # quantified on-device acceptance (geometry / P0 trio / panel / camera)
 ├── docs/                       # spec / design decisions / roadmap / hardware compatibility
